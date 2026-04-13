@@ -509,12 +509,25 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 
 		activeAlerts, _ := s.store.GetActiveAlerts(name)
 
-		// Compute area statuses from active alerts.
+		// Separate fresh vs stale alerts (stale = no update in >24h).
+		staleThreshold := 24 * time.Hour
+		var freshAlerts []store.Alert
+		for _, a := range activeAlerts {
+			updatedAt := a.UpdatedAt
+			if updatedAt.IsZero() {
+				updatedAt = a.CreatedAt
+			}
+			if time.Since(updatedAt) <= staleThreshold {
+				freshAlerts = append(freshAlerts, a)
+			}
+		}
+
+		// Compute area statuses from fresh alerts only.
 		areaWorst := map[string]string{
 			"memory": "ok", "cpu": "ok", "queries": "ok",
 			"storage": "ok", "s3": "ok", "pipelines": "ok",
 		}
-		for _, a := range activeAlerts {
+		for _, a := range freshAlerts {
 			area, ok := categoryToArea[a.Category]
 			if !ok {
 				continue
@@ -582,9 +595,9 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 
-		// Top alerts: sort by severity (critical first), take top 3.
-		sorted := make([]topAlert, 0, len(activeAlerts))
-		for _, a := range activeAlerts {
+		// Top alerts: use fresh only, sort by severity (critical first), take top 3.
+		sorted := make([]topAlert, 0, len(freshAlerts))
+		for _, a := range freshAlerts {
 			sorted = append(sorted, topAlert{
 				Severity: a.Severity,
 				Category: a.Category,
@@ -602,7 +615,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 			Name:         name,
 			HealthScore:  score,
 			Status:       status,
-			ActiveAlerts: len(activeAlerts),
+			ActiveAlerts: len(freshAlerts),
 			KeyMetrics:   keyMetrics,
 			AreaStatus:   areas,
 			TopAlerts:    sorted,

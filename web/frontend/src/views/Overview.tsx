@@ -1,5 +1,5 @@
-import { useEffect, useState, useCallback } from 'react'
-import { Sparkles } from 'lucide-react'
+import { useEffect, useState, useCallback, useRef } from 'react'
+import { Sparkles, RefreshCw } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
@@ -13,11 +13,12 @@ import type { Instance, Alert } from '../types/api'
 /* ------------------------------------------------------------------ */
 /*  Stat Card                                                         */
 /* ------------------------------------------------------------------ */
-function StatCard({ label, value, color }: { label: string; value: string | number; color?: string }) {
+function StatCard({ label, value, color, sub }: { label: string; value: string | number; color?: string; sub?: string }) {
   return (
     <Card>
       <div className="text-3xl font-bold" style={{ color }}>{value}</div>
       <div className="text-xs text-[var(--dim)] mt-1 uppercase tracking-wider">{label}</div>
+      {sub && <div className="text-xs text-[var(--dim)] mt-0.5">{sub}</div>}
     </Card>
   )
 }
@@ -51,19 +52,28 @@ function Skeleton() {
 /* ------------------------------------------------------------------ */
 /*  Overview view                                                     */
 /* ------------------------------------------------------------------ */
-export default function Overview() {
+export default function Overview({ refreshKey }: { refreshKey?: number }) {
   const { setView, setInstance, setInstances } = useStore()
-  const { analyze } = useAIAnalysis('')
+  // Pick the worst-health instance for analysis (so the analyze call has a valid instance)
+  const [analyzeInstance, setAnalyzeInstance] = useState('')
+  const { analyze } = useAIAnalysis(analyzeInstance)
   const handleAnalyze = useCallback((data: Record<string, any>) => {
     analyze('Overview', data, { contextType: 'tab', tab: 'overview' })
   }, [analyze])
   const [instances, setLocalInstances] = useState<Instance[]>([])
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
+  const isFirstLoad = useRef(true)
 
   useEffect(() => {
     let cancelled = false
     async function load() {
+      if (isFirstLoad.current) {
+        setLoading(true)
+      } else {
+        setRefreshing(true)
+      }
       try {
         const [inst, alrt] = await Promise.all([
           api.overview(),
@@ -73,16 +83,25 @@ export default function Overview() {
           setLocalInstances(inst)
           setAlerts(alrt)
           setInstances(inst.map((i) => i.name))
+          // Pick worst-health instance for the analyze button
+          if (inst.length > 0) {
+            const worst = [...inst].sort((a, b) => a.health_score - b.health_score)[0]
+            setAnalyzeInstance(worst.name)
+          }
         }
       } catch {
         // silently handle — user sees empty state
       } finally {
-        if (!cancelled) setLoading(false)
+        if (!cancelled) {
+          setLoading(false)
+          setRefreshing(false)
+          isFirstLoad.current = false
+        }
       }
     }
     load()
     return () => { cancelled = true }
-  }, [setInstances])
+  }, [setInstances, refreshKey])
 
   if (loading) return <Skeleton />
 
@@ -90,8 +109,14 @@ export default function Overview() {
   const totalInstances = instances.length
   const staleHours = (() => { try { return parseInt(localStorage.getItem('ch-stale-hours') ?? '24', 10) || 24 } catch { return 24 } })()
   const now = Date.now() / 1000
-  const freshFiring = alerts.filter((a) => !a.resolved && (now - (a.updated_at ?? a.created_at)) <= staleHours * 3600).length
+  const isFresh = (a: Alert) => !a.resolved && (now - (a.updated_at ?? a.created_at)) <= staleHours * 3600
+  const freshAlerts = alerts.filter(isFresh)
   const staleCount = alerts.filter((a) => !a.resolved && (now - (a.updated_at ?? a.created_at)) > staleHours * 3600).length
+
+  // Severity breakdown for fresh (non-stale, non-resolved) alerts
+  const critFiring = freshAlerts.filter((a) => a.severity === 'critical').length
+  const warnFiring = freshAlerts.filter((a) => a.severity === 'warn').length
+  const infoFiring = freshAlerts.filter((a) => a.severity !== 'critical' && a.severity !== 'warn').length
 
   const staleByInstance = new Map<string, number>()
   for (const a of alerts) {
@@ -99,7 +124,16 @@ export default function Overview() {
       staleByInstance.set(a.instance, (staleByInstance.get(a.instance) ?? 0) + 1)
     }
   }
-  const firingAlerts = freshFiring
+  const firingAlerts = freshAlerts.length
+  // Worst severity color: red if any critical, yellow if any warn, blue if only info
+  const firingColor = critFiring > 0 ? '#ef4444' : warnFiring > 0 ? '#eab308' : infoFiring > 0 ? '#3b82f6' : undefined
+  // Build breakdown sub-label
+  const firingParts: string[] = []
+  if (critFiring > 0) firingParts.push(`${critFiring} crit`)
+  if (warnFiring > 0) firingParts.push(`${warnFiring} warn`)
+  if (infoFiring > 0) firingParts.push(`${infoFiring} info`)
+  const firingSub = firingAlerts > 0 ? firingParts.join(' · ') : undefined
+
   const avgHealth =
     totalInstances > 0
       ? Math.round(instances.reduce((s, i) => s + i.health_score, 0) / totalInstances)
@@ -144,6 +178,12 @@ export default function Overview() {
           Overview always shows <strong>current state</strong> — health scores, alerts, and metrics reflect right now.
           Use <strong>Detail</strong> or <strong>Explore</strong> to view historical data with the time range selector.
         </div>
+        {refreshing && (
+          <div className="flex items-center gap-1.5 text-xs text-[var(--dim)] shrink-0">
+            <RefreshCw size={11} className="animate-spin" />
+            Refreshing…
+          </div>
+        )}
         <button
           onClick={() => handleAnalyze({ instances, alerts, avgHealth, firingAlerts, staleCount, runningQueries, activeMerges })}
           className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-purple-400 hover:bg-purple-500/15 border border-purple-500/20 transition-colors shrink-0"
@@ -158,8 +198,9 @@ export default function Overview() {
         <StatCard label="Instances" value={totalInstances} />
         <StatCard
           label="Firing Alerts"
-          value={staleCount > 0 ? `${firingAlerts} + ${staleCount}` : firingAlerts}
-          color={firingAlerts > 0 ? '#ef4444' : staleCount > 0 ? '#9ca3af' : undefined}
+          value={firingAlerts}
+          color={firingColor}
+          sub={firingSub ?? (staleCount > 0 ? `+${staleCount} stale` : undefined)}
         />
         <StatCard label="Avg Health" value={avgHealth} color={scoreColor(avgHealth)} />
         <StatCard label="Running Queries" value={fmtNum(runningQueries)} />
@@ -178,10 +219,10 @@ export default function Overview() {
         ))}
       </div>
 
-      {/* ---- Active alerts table ---- */}
-      {alerts.length > 0 && (
-        <Card title="Active Alerts">
-          <DataTable columns={alertCols} data={alerts} maxRows={30} />
+      {/* ---- Active alerts table (fresh only — no stale/resolved) ---- */}
+      {freshAlerts.length > 0 && (
+        <Card title={`Active Alerts${staleCount > 0 ? ` · ${staleCount} stale hidden` : ''}`}>
+          <DataTable columns={alertCols} data={freshAlerts} maxRows={30} />
         </Card>
       )}
     </div>

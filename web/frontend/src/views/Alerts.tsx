@@ -1,5 +1,5 @@
-import { useEffect, useState, useMemo, useCallback } from 'react'
-import { Brain, ChevronDown, ChevronRight, Clock, Sparkles, Table2, Trash2 } from 'lucide-react'
+import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
+import { Brain, ChevronDown, ChevronRight, Clock, RefreshCw, Sparkles, Table2, Trash2 } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
@@ -408,7 +408,7 @@ function StatCard({ label, value, color, sub }: { label: string; value: string |
 /* ------------------------------------------------------------------ */
 type ViewMode = 'grouped' | 'flat' | 'timeline'
 
-export default function Alerts() {
+export default function Alerts({ refreshKey }: { refreshKey?: number }) {
   const { instances: cachedInstances, customFrom, customTo, setView, selectedInstance } = useStore()
   const { analyze } = useAIAnalysis(selectedInstance)
   const handleAnalyzeAlert = useCallback((alert: Alert) => {
@@ -420,7 +420,10 @@ export default function Alerts() {
   const [activeAlerts, setActiveAlerts] = useState<Alert[]>([])
   const [historyAlerts, setHistoryAlerts] = useState<Alert[]>([])
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [resolving, setResolving] = useState(false)
+  const resolvingRef = useRef(false)
+  const isFirstLoad = useRef(true)
 
   const [viewMode, setViewMode] = useState<ViewMode>('grouped')
   const [staleHours, setStaleHours] = useState<number>(loadStaleHours)
@@ -440,21 +443,31 @@ export default function Alerts() {
   }, [])
 
   useEffect(() => {
+    // Don't auto-refresh while a resolve operation is running
+    if (resolvingRef.current) return
     let cancelled = false
     async function load() {
-      setLoading(true)
+      if (isFirstLoad.current) {
+        setLoading(true)
+      } else {
+        setRefreshing(true)
+      }
       try {
         const [active, history] = await Promise.all([api.alerts.active(), api.alerts.history()])
         if (!cancelled) { setActiveAlerts(active); setHistoryAlerts(history) }
       } catch {
         // keep empty
       } finally {
-        if (!cancelled) setLoading(false)
+        if (!cancelled) {
+          setLoading(false)
+          setRefreshing(false)
+          isFirstLoad.current = false
+        }
       }
     }
     load()
     return () => { cancelled = true }
-  }, [customFrom, customTo])
+  }, [customFrom, customTo, refreshKey])
 
   const allAlerts = useMemo(() => {
     const map = new Map<number, Alert>()
@@ -498,7 +511,21 @@ export default function Alerts() {
     })
   }
 
-  const firing = filtered.filter((a) => !a.resolved && !isStale(a, staleHours)).length
+  const firingAlerts = filtered.filter((a) => !a.resolved && !isStale(a, staleHours))
+  const firing = firingAlerts.length
+  const critFiring = firingAlerts.filter((a) => a.severity === 'critical').length
+  const warnFiring = firingAlerts.filter((a) => a.severity === 'warn').length
+  const infoFiring = firingAlerts.filter((a) => a.severity !== 'critical' && a.severity !== 'warn').length
+  // Firing stat card color: worst severity
+  const firingColor = firing > 0
+    ? (critFiring > 0 ? '#ef4444' : warnFiring > 0 ? '#eab308' : '#3b82f6')
+    : undefined
+  // Build breakdown sub-label
+  const firingParts: string[] = []
+  if (critFiring > 0) firingParts.push(`${critFiring} crit`)
+  if (warnFiring > 0) firingParts.push(`${warnFiring} warn`)
+  if (infoFiring > 0) firingParts.push(`${infoFiring} info`)
+  const firingSub = firing > 0 ? firingParts.join(' · ') : undefined
   const staleCount = filtered.filter((a) => isStale(a, staleHours)).length
   const resolved = filtered.filter((a) => a.resolved).length
 
@@ -510,10 +537,11 @@ export default function Alerts() {
 
   const handleResolveStale = useCallback(async () => {
     if (!totalStaleUnfiltered) return
+    resolvingRef.current = true
     setResolving(true)
     try {
       const { resolved: n } = await api.alerts.resolveStale(staleHours)
-      // Refresh
+      // Refresh data after resolving
       const [active, history] = await Promise.all([api.alerts.active(), api.alerts.history()])
       setActiveAlerts(active)
       setHistoryAlerts(history)
@@ -521,6 +549,7 @@ export default function Alerts() {
     } catch (e: any) {
       console.error('[CH-Analyzer] Resolve stale failed:', e.message)
     } finally {
+      resolvingRef.current = false
       setResolving(false)
     }
   }, [staleHours, totalStaleUnfiltered])
@@ -561,7 +590,7 @@ export default function Alerts() {
       {/* ---- Stat cards + actions ---- */}
       <div className="flex items-start gap-4">
         <div className="grid grid-cols-3 gap-4 flex-1">
-          <StatCard label="Firing" value={firing} color={firing > 0 ? '#ef4444' : undefined} />
+          <StatCard label="Active" value={firing} color={firingColor} sub={firingSub} />
           <StatCard
             label="Stale"
             value={staleCount}
@@ -603,6 +632,12 @@ export default function Alerts() {
 
       {/* ---- View mode + staleness threshold ---- */}
       <div className="flex items-center gap-4 flex-wrap">
+        {refreshing && (
+          <div className="flex items-center gap-1.5 text-xs text-[var(--dim)]">
+            <RefreshCw size={11} className="animate-spin" />
+            Refreshing…
+          </div>
+        )}
         <div className="flex gap-1 bg-[var(--surface)] border border-[var(--border)] rounded-lg p-1">
           {(['grouped', 'flat', 'timeline'] as ViewMode[]).map((m) => (
             <button
@@ -666,14 +701,19 @@ export default function Alerts() {
           {groups.map(([key, groupAlerts]) => {
             const [inst, cat] = key.split('::')
             const isCollapsed = collapsedGroups.has(key)
-            const groupFiring = groupAlerts.filter((a) => !a.resolved && !isStale(a, staleHours)).length
+            const groupFiringAlerts = groupAlerts.filter((a) => !a.resolved && !isStale(a, staleHours))
+            const groupFiring = groupFiringAlerts.length
             const groupStale = groupAlerts.filter((a) => isStale(a, staleHours)).length
             const groupResolved = groupAlerts.filter((a) => a.resolved).length
-            const worstSev = groupAlerts.some((a) => a.severity === 'critical' && !isStale(a, staleHours))
+            const worstSev = groupAlerts.some((a) => a.severity === 'critical' && !isStale(a, staleHours) && !a.resolved)
               ? 'critical'
-              : groupAlerts.some((a) => a.severity === 'warn' && !isStale(a, staleHours))
+              : groupAlerts.some((a) => a.severity === 'warn' && !isStale(a, staleHours) && !a.resolved)
                 ? 'warn'
                 : 'info'
+            // Color "X active" text by worst severity of actually-firing alerts
+            const hasCritFiring = groupFiringAlerts.some((a) => a.severity === 'critical')
+            const hasWarnFiring = groupFiringAlerts.some((a) => a.severity === 'warn')
+            const firingTextColor = hasCritFiring ? 'text-red-400' : hasWarnFiring ? 'text-yellow-400' : 'text-blue-400'
 
             return (
               <Card key={key} className="!p-0">
@@ -687,7 +727,7 @@ export default function Alerts() {
                   <span className="text-sm">{cat}</span>
                   <Badge severity={worstSev} />
                   <div className="flex-1" />
-                  {groupFiring > 0 && <span className="text-xs text-red-400">{groupFiring} firing</span>}
+                  {groupFiring > 0 && <span className={`text-xs ${firingTextColor}`}>{groupFiring} active</span>}
                   {groupStale > 0 && <span className="text-xs text-gray-400 ml-2">{groupStale} stale</span>}
                   {groupResolved > 0 && <span className="text-xs text-green-400 ml-2">{groupResolved} resolved</span>}
                 </button>

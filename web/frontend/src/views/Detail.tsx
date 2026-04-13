@@ -1,5 +1,5 @@
-import { useEffect, useState, useCallback } from 'react'
-import { ArrowLeft, Sparkles } from 'lucide-react'
+import { useEffect, useState, useCallback, useRef } from 'react'
+import { ArrowLeft, ChevronRight, RefreshCw, Sparkles } from 'lucide-react'
 import { Bar } from 'react-chartjs-2'
 import {
   Chart as ChartJS,
@@ -11,7 +11,7 @@ import {
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
-import { fmtBytes, fmtNum, fmtTime, fmtDuration } from '../lib/utils'
+import { fmtBytes, fmtNum, fmtTime, fmtDuration, cn } from '../lib/utils'
 import { Card } from '../components/Card'
 import { Badge } from '../components/Badge'
 import { MetricChart } from '../components/MetricChart'
@@ -24,14 +24,14 @@ ChartJS.register(CategoryScale, LinearScale, BarElement, ChartTooltip)
 /* ------------------------------------------------------------------ */
 /*  Detail view                                                       */
 /* ------------------------------------------------------------------ */
-export default function Detail() {
-  const { instance, setView, setInstance } = useStore()
+export default function Detail({ refreshKey }: { refreshKey?: number }) {
+  const { instance, setView, setInstance, customFrom, customTo } = useStore()
   const { analyze } = useAIAnalysis(instance ?? '')
   const handleAnalyze = useCallback((data: Record<string, any>) => {
     analyze('Instance Detail', data, { contextType: 'tab', tab: 'detail' })
   }, [analyze])
 
-  const [alerts, setAlerts] = useState<Alert[]>([])
+  const [alertHistory, setAlertHistory] = useState<Alert[]>([])
   const [queries, setQueries] = useState<Record<string, any>[]>([])
   const [tables, setTables] = useState<Record<string, any>[]>([])
   const [disks, setDisks] = useState<DiskInfo[]>([])
@@ -40,43 +40,83 @@ export default function Detail() {
   const [cacheStats, setCacheStats] = useState<any>(null)
   const [tableMemory, setTableMemory] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
+  const isFirstLoad = useRef(true)
+  // Time-range-aware historical data (re-fetches when from/to changes)
+  const [queryPatterns, setQueryPatterns] = useState<Record<string, any>[]>([])
+  const [queryFailures, setQueryFailures] = useState<Record<string, any>[]>([])
+  const [mergeHistory, setMergeHistory] = useState<Record<string, any>[]>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+
+  // Collapsible sections
+  const [showRunning, setShowRunning] = useState(false)
+  const [showMVs, setShowMVs] = useState(false)
+  const [showStorage, setShowStorage] = useState(false)
+  const [showHistory, setShowHistory] = useState(true)
 
   useEffect(() => {
     if (!instance) return
     let cancelled = false
 
     async function load() {
-      setLoading(true)
+      if (isFirstLoad.current) {
+        setLoading(true)
+      } else {
+        setRefreshing(true)
+      }
       try {
-        const [al, q, t, d, m, s3, cs, tm] = await Promise.all([
-          api.alerts.active(),
-          api.queries(instance!),
-          api.tables(instance!),
-          api.disks(instance!),
-          api.mvs(instance!),
-          api.s3Stats(instance!),
+        const [ah, q, t, d, m, s3, cs, tm] = await Promise.all([
+          api.alerts.history(500).catch(() => [] as Alert[]),
+          api.queries(instance!).catch(() => []),
+          api.tables(instance!).catch(() => []),
+          api.disks(instance!).catch(() => []),
+          api.mvs(instance!).catch(() => []),
+          api.s3Stats(instance!).catch(() => null),
           api.cacheStats(instance!).catch(() => null),
           api.tableMemory(instance!).catch(() => []),
         ])
         if (!cancelled) {
-          setAlerts(al.filter((a) => a.instance === instance))
+          setAlertHistory((ah as Alert[]).filter((a) => a.instance === instance))
           setQueries(q)
           setTables(t)
-          setDisks(d)
+          setDisks(d as DiskInfo[])
           setMvs(m)
-          setS3Stats(s3)
+          setS3Stats(s3 as any)
           setCacheStats(cs)
           setTableMemory(tm ?? [])
         }
       } catch {
         // keep empty state
       } finally {
-        if (!cancelled) setLoading(false)
+        if (!cancelled) {
+          setLoading(false)
+          setRefreshing(false)
+          isFirstLoad.current = false
+        }
       }
     }
     load()
     return () => { cancelled = true }
-  }, [instance])
+  }, [instance, refreshKey])
+
+  // Separate effect: re-runs whenever the time range changes
+  useEffect(() => {
+    if (!instance) return
+    let cancelled = false
+    setHistoryLoading(true)
+    Promise.all([
+      api.history.queryPatterns(instance, customFrom, customTo, 20).catch(() => []),
+      api.history.failures(instance, customFrom, customTo).catch(() => []),
+      api.history.merges(instance, customFrom, customTo).catch(() => []),
+    ]).then(([qp, qf, mg]) => {
+      if (!cancelled) {
+        setQueryPatterns(qp as Record<string, any>[])
+        setQueryFailures(qf as Record<string, any>[])
+        setMergeHistory(mg as Record<string, any>[])
+      }
+    }).finally(() => { if (!cancelled) setHistoryLoading(false) })
+    return () => { cancelled = true }
+  }, [instance, customFrom, customTo])
 
   if (!instance) return null
 
@@ -129,6 +169,12 @@ export default function Detail() {
     },
   }
 
+  /* ---- Time-range filtered alerts ---- */
+  const rangeAlerts = alertHistory.filter(
+    (a) => a.created_at >= customFrom && a.created_at <= customTo
+  )
+  const activeAlerts = alertHistory.filter((a) => !a.resolved)
+
   /* ---- Table columns (DataTable format API: format receives cell value) ---- */
   const alertCols = [
     {
@@ -138,6 +184,13 @@ export default function Detail() {
     },
     { key: 'category', label: 'Category' },
     { key: 'title', label: 'Title' },
+    {
+      key: 'resolved',
+      label: 'Status',
+      format: (v: any) => v
+        ? <span className="text-xs text-green-400">resolved</span>
+        : <span className="text-xs text-[var(--dim)]">active</span>,
+    },
     {
       key: 'created_at',
       label: 'Time',
@@ -248,8 +301,14 @@ export default function Detail() {
           <ArrowLeft size={20} />
         </button>
         <h1 className="text-xl font-bold flex-1">{instance}</h1>
+        {refreshing && (
+          <div className="flex items-center gap-1.5 text-xs text-[var(--dim)]">
+            <RefreshCw size={11} className="animate-spin" />
+            Refreshing…
+          </div>
+        )}
         <button
-          onClick={() => handleAnalyze({ instance, alerts, queries, tables, disks, s3Stats, cacheStats, tableMemory })}
+          onClick={() => handleAnalyze({ instance, activeAlerts, queries, tables, disks, s3Stats, cacheStats, tableMemory })}
           className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-purple-400 hover:bg-purple-500/15 border border-purple-500/20 transition-colors"
         >
           <Sparkles size={11} />
@@ -260,199 +319,245 @@ export default function Detail() {
       {/* ---- Health checklist ---- */}
       <HealthChecklist instance={instance} />
 
-      {/* ---- 8 Metric charts in 2-col x 4-row grid ---- */}
-      <div className="grid grid-cols-2 gap-4">
-        <MetricChart
-          instance={instance}
-          title="Memory %"
-          metrics={['system.memory.rss_percent', 'system.memory.used_percent']}
-          yFormat="percent"
-        />
-        <MetricChart
-          instance={instance}
-          title="Memory Bytes"
-          metrics={[
-            'system.memory.rss_bytes',
-            'system.memory.available_bytes',
-            'system.metrics.MemoryTracking',
-          ]}
-          yFormat="bytes"
-        />
-        <MetricChart
-          instance={instance}
-          title="CPU %"
-          metrics={['system.cpu.busy_percent']}
-          yFormat="percent"
-        />
-        <MetricChart
-          instance={instance}
-          title="Load Average"
-          metrics={[
-            'system.async.LoadAverage1',
-            'system.async.LoadAverage5',
-            'system.async.LoadAverage15',
-          ]}
-        />
-        <MetricChart
-          instance={instance}
-          title="Queries"
-          metrics={['system.metrics.Query', 'queries.failed_5m']}
-        />
-        <MetricChart
-          instance={instance}
-          title="Parts & Merges"
-          metrics={['tables.merges.active_count']}
-        />
-        <MetricChart
-          instance={instance}
-          title="Insert Throughput"
-          metrics={['inserts.total.rows']}
-        />
-        <MetricChart
-          instance={instance}
-          title="S3 Latency"
-          metrics={['storage.s3.avg_latency_ms', 'storage.s3.max_latency_ms']}
-          yFormat="ms"
-        />
+      {/* ---- Metric charts: 3-col compact grid (time-range aware) ---- */}
+      <div className="grid grid-cols-3 gap-3">
+        <MetricChart instance={instance} title="Memory %" metrics={['system.memory.rss_percent', 'system.memory.used_percent']} yFormat="percent" height={130} />
+        <MetricChart instance={instance} title="Memory Bytes" metrics={['system.memory.rss_bytes', 'system.memory.available_bytes', 'system.metrics.MemoryTracking']} yFormat="bytes" height={130} />
+        <MetricChart instance={instance} title="CPU %" metrics={['system.cpu.busy_percent']} yFormat="percent" height={130} />
+        <MetricChart instance={instance} title="Load Average" metrics={['system.async.LoadAverage1', 'system.async.LoadAverage5', 'system.async.LoadAverage15']} height={130} />
+        <MetricChart instance={instance} title="Queries" metrics={['system.metrics.Query', 'queries.failed_5m']} height={130} />
+        <MetricChart instance={instance} title="Parts & Merges" metrics={['tables.merges.active_count']} height={130} />
+        <MetricChart instance={instance} title="Insert Throughput" metrics={['inserts.total.rows']} height={130} />
+        <MetricChart instance={instance} title="S3 Latency" metrics={['storage.s3.avg_latency_ms', 'storage.s3.max_latency_ms']} yFormat="ms" height={130} />
       </div>
 
-      {/* ---- Disk Usage (local only) ---- */}
-      {localDisks.length > 0 && (
-        <Card title="Disk Usage">
-          <div style={{ height: Math.max(80, localDisks.length * 40) }}>
-            <Bar data={diskChartData} options={diskChartOpts} />
+      {/* ---- Alerts (time-range aware) ---- */}
+      <Card title={`Alerts in Range${rangeAlerts.length > 0 ? ` (${rangeAlerts.length})` : ''}${activeAlerts.length > 0 ? ` · ${activeAlerts.length} active` : ''}`}>
+        {rangeAlerts.length === 0 ? (
+          <div className="text-sm text-[var(--dim)] py-4 text-center">No alerts fired in selected time range</div>
+        ) : (
+          <DataTable columns={alertCols} data={rangeAlerts.sort((a, b) => b.created_at - a.created_at)} maxHeight="320px" />
+        )}
+      </Card>
+
+      {/* ---- Historical activity (time-range aware) ---- */}
+      <div>
+        <button
+          onClick={() => setShowHistory(!showHistory)}
+          className="w-full flex items-center gap-2 py-2 text-sm font-medium text-[var(--dim)] hover:text-[var(--text)] transition-colors"
+        >
+          <ChevronRight size={14} className={cn('transition-transform', showHistory && 'rotate-90')} />
+          Activity in Range
+          {historyLoading && <span className="text-xs font-normal animate-pulse">loading…</span>}
+        </button>
+        {showHistory && (
+          <div className="space-y-3 mt-2">
+            {queryPatterns.length > 0 && (
+              <Card title={`Top Query Patterns (${queryPatterns.length})`}>
+                <DataTable
+                  columns={[
+                    { key: 'sample_query', label: 'Query', format: (v: any) => <span className="font-mono text-xs truncate block max-w-sm" title={v}>{String(v ?? '').slice(0, 80)}</span> },
+                    { key: 'cnt', label: 'Count', format: (v: any) => fmtNum(v) },
+                    { key: 'avg_ms', label: 'Avg', format: (v: any) => fmtDuration(v) },
+                    { key: 'p95_ms', label: 'p95', format: (v: any) => fmtDuration(v) },
+                    { key: 'avg_memory', label: 'Avg Mem', format: (v: any) => fmtBytes(v ?? 0) },
+                    { key: 'failures', label: 'Failures', format: (v: any) => v > 0 ? <span className="text-red-400">{fmtNum(v)}</span> : <span className="text-[var(--dim)]">0</span> },
+                  ]}
+                  data={queryPatterns}
+                  maxHeight="240px"
+                />
+              </Card>
+            )}
+            {queryFailures.length > 0 && (
+              <Card title={`Query Failures (${queryFailures.length} buckets)`}>
+                <DataTable
+                  columns={[
+                    { key: 'ts', label: 'Time', format: (v: any) => <span className="text-[var(--dim)]">{fmtTime(typeof v === 'string' ? new Date(v).getTime() / 1000 : v)}</span> },
+                    { key: 'exception_code', label: 'Code' },
+                    { key: 'cnt', label: 'Count', format: (v: any) => <span className="text-red-400">{fmtNum(v)}</span> },
+                    { key: 'sample', label: 'Sample', format: (v: any) => <span className="text-xs text-[var(--dim)]">{String(v ?? '').slice(0, 80)}</span> },
+                  ]}
+                  data={queryFailures}
+                  maxHeight="200px"
+                />
+              </Card>
+            )}
+            {mergeHistory.length > 0 && (
+              <Card title={`Merge Activity (${mergeHistory.length} time buckets)`}>
+                <DataTable
+                  columns={[
+                    { key: 'ts', label: 'Time', format: (v: any) => <span className="text-[var(--dim)]">{fmtTime(typeof v === 'string' ? new Date(v).getTime() / 1000 : v)}</span> },
+                    { key: 'merge_count', label: 'Merges', format: (v: any) => fmtNum(v) },
+                    { key: 'new_part_count', label: 'New Parts', format: (v: any) => fmtNum(v) },
+                    { key: 'avg_merge_ms', label: 'Avg Merge', format: (v: any) => fmtDuration(v) },
+                    { key: 'merged_rows', label: 'Rows Merged', format: (v: any) => fmtNum(v) },
+                    { key: 'merged_bytes', label: 'Data Merged', format: (v: any) => fmtBytes(v ?? 0) },
+                  ]}
+                  data={mergeHistory}
+                  maxHeight="200px"
+                />
+              </Card>
+            )}
+            {!historyLoading && queryPatterns.length === 0 && queryFailures.length === 0 && mergeHistory.length === 0 && (
+              <div className="text-sm text-[var(--dim)] text-center py-4">No activity data for selected range</div>
+            )}
           </div>
+        )}
+      </div>
+
+      {/* ---- Tables (current state) ---- */}
+      {tables.length > 0 && (
+        <Card title={`Tables · ${tables.length} total`}>
+          <DataTable
+            columns={tableCols}
+            data={tables}
+            maxHeight="300px"
+          />
         </Card>
       )}
 
-      {/* ---- S3 Storage ---- */}
-      {s3Stats && s3Stats.volume_by_table && Array.isArray(s3Stats.volume_by_table) && s3Stats.volume_by_table.length > 0 && (() => {
-        const volTable = s3Stats.volume_by_table as any[]
-        const totalS3Bytes = volTable.reduce((sum: number, r: any) => sum + (r.bytes ?? 0), 0)
-        const fsBytes = cacheStats?.filesystem_cache_bytes ?? 0
-        const fsLimit = cacheStats?.filesystem_cache_limit ?? 0
-        const fsElements = cacheStats?.filesystem_cache_elements ?? 0
-        const fsPct = fsLimit > 0 ? Math.min(100, (fsBytes / fsLimit) * 100) : 0
-        return (
-          <div className="space-y-4">
-            <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--dim)]">S3 Storage</h2>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <Card>
-                <div className="text-2xl font-bold">{fmtBytes(totalS3Bytes)}</div>
-                <div className="text-xs text-[var(--dim)] mt-1 uppercase tracking-wider">Total S3 Data</div>
-                <div className="text-xs text-[var(--dim)]">{fmtNum(volTable.length)} tables</div>
-              </Card>
-              <Card>
-                <div className="text-2xl font-bold">{fsLimit > 0 ? fsPct.toFixed(1) + '%' : '--'}</div>
-                <div className="text-xs text-[var(--dim)] mt-1 uppercase tracking-wider">Local S3 Cache</div>
-                <div className="text-xs text-[var(--dim)]">{fmtBytes(fsBytes)} / {fmtBytes(fsLimit)}</div>
-                {fsLimit > 0 && (
-                  <div className="mt-2 h-1.5 rounded-full bg-[var(--hover)] overflow-hidden">
-                    <div
-                      className={`h-full rounded-full transition-all ${fsPct > 90 ? 'bg-red-500' : fsPct > 70 ? 'bg-yellow-500' : 'bg-green-500'}`}
-                      style={{ width: fsPct + '%' }}
-                    />
+      {/* ---- Per-Table Memory (current state) ---- */}
+      {tableMemory.length > 0 && (
+        <Card title="Table Memory & Parts">
+          <DataTable
+            columns={[
+              { key: 'database', label: 'DB' },
+              { key: 'table_name', label: 'Table' },
+              { key: 'pk_readable', label: 'PK Mem' },
+              { key: 'marks_readable', label: 'Marks Mem' },
+              { key: 'parts', label: 'Parts', format: (v: any) => fmtNum(v) },
+              { key: 'total_rows', label: 'Rows', format: (v: any) => fmtNum(v) },
+              { key: 'disk_size', label: 'Disk', format: (v: any) => fmtBytes(v ?? 0) },
+            ]}
+            data={[...tableMemory].sort((a, b) => (b.pk_bytes ?? 0) - (a.pk_bytes ?? 0))}
+            maxHeight="300px"
+          />
+        </Card>
+      )}
+
+      {/* ---- Storage section (collapsible) ---- */}
+      {(localDisks.length > 0 || s3Stats || cacheStats) && (
+        <div>
+          <button
+            onClick={() => setShowStorage(!showStorage)}
+            className="w-full flex items-center gap-2 py-2 text-sm font-medium text-[var(--dim)] hover:text-[var(--text)] transition-colors"
+          >
+            <ChevronRight size={14} className={cn('transition-transform', showStorage && 'rotate-90')} />
+            Storage, S3 & Cache
+            <span className="text-xs font-normal px-1.5 py-0.5 rounded bg-[var(--hover)] text-[var(--dim)] border border-[var(--border)]">now</span>
+          </button>
+          {showStorage && (
+            <div className="space-y-4 mt-2">
+              {localDisks.length > 0 && (
+                <Card title="Disk Usage">
+                  <div style={{ height: Math.max(60, localDisks.length * 40) }}>
+                    <Bar data={diskChartData} options={diskChartOpts} />
                   </div>
-                )}
-              </Card>
-              <Card>
-                <div className="text-2xl font-bold">{fmtNum(fsElements)}</div>
-                <div className="text-xs text-[var(--dim)] mt-1 uppercase tracking-wider">Cached Elements</div>
-                <div className="text-xs text-[var(--dim)]">files in local cache</div>
-              </Card>
-              <Card>
-                <div className="text-2xl font-bold">{fmtBytes(cacheStats?.mark_cache_bytes ?? 0)}</div>
-                <div className="text-xs text-[var(--dim)] mt-1 uppercase tracking-wider">Mark Cache</div>
-                <div className="text-xs text-[var(--dim)]">{fmtNum(cacheStats?.mark_cache_files ?? 0)} files</div>
-              </Card>
-            </div>
-            <Card title="S3 Data Volume">
-              <DataTable columns={s3VolCols} data={volTable} />
-            </Card>
-          </div>
-        )
-      })()}
-
-      {/* ---- S3 Latency by Table ---- */}
-      {s3Stats && s3Stats.latency_by_table && Array.isArray(s3Stats.latency_by_table) && s3Stats.latency_by_table.length > 0 && (
-        <Card title="S3 Latency by Table">
-          <DataTable columns={s3LatCols} data={s3Stats.latency_by_table} />
-        </Card>
-      )}
-
-      {/* ---- Cache & Index Memory ---- */}
-      {(cacheStats || tableMemory.length > 0) && (
-        <div className="space-y-4">
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--dim)]">Cache & Index Memory</h2>
-          {cacheStats && (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <Card>
-                <div className="text-2xl font-bold">{fmtBytes(cacheStats.mark_cache_bytes ?? 0)}</div>
-                <div className="text-xs text-[var(--dim)] mt-1 uppercase tracking-wider">Mark Cache</div>
-                <div className="text-xs text-[var(--dim)]">{fmtNum(cacheStats.mark_cache_files ?? 0)} files</div>
-              </Card>
-              <Card>
-                <div className="text-2xl font-bold">{fmtBytes(cacheStats.primary_key_bytes ?? 0)}</div>
-                <div className="text-xs text-[var(--dim)] mt-1 uppercase tracking-wider">Primary Key Memory</div>
-              </Card>
-              <Card>
-                <div className="text-2xl font-bold">{fmtBytes(cacheStats.index_granularity_bytes ?? 0)}</div>
-                <div className="text-xs text-[var(--dim)] mt-1 uppercase tracking-wider">Index Granularity</div>
-              </Card>
-              <Card>
-                <div className="text-2xl font-bold">{fmtBytes(cacheStats.filesystem_cache_bytes ?? 0)}</div>
-                <div className="text-xs text-[var(--dim)] mt-1 uppercase tracking-wider">Filesystem Cache</div>
-                <div className="text-xs text-[var(--dim)]">{fmtBytes(cacheStats.filesystem_cache_limit ?? 0)} limit</div>
-              </Card>
+                </Card>
+              )}
+              {cacheStats && (
+                <div className="grid grid-cols-4 gap-3">
+                  <Card>
+                    <div className="text-lg font-bold">{fmtBytes(cacheStats.mark_cache_bytes ?? 0)}</div>
+                    <div className="text-xs text-[var(--dim)] mt-1">Mark Cache</div>
+                    <div className="text-xs text-[var(--dim)]">{fmtNum(cacheStats.mark_cache_files ?? 0)} files</div>
+                  </Card>
+                  <Card>
+                    <div className="text-lg font-bold">{fmtBytes(cacheStats.primary_key_bytes ?? 0)}</div>
+                    <div className="text-xs text-[var(--dim)] mt-1">Primary Key Mem</div>
+                  </Card>
+                  <Card>
+                    <div className="text-lg font-bold">{fmtBytes(cacheStats.filesystem_cache_bytes ?? 0)}</div>
+                    <div className="text-xs text-[var(--dim)] mt-1">FS Cache</div>
+                    <div className="text-xs text-[var(--dim)]">{fmtBytes(cacheStats.filesystem_cache_limit ?? 0)} limit</div>
+                  </Card>
+                  <Card>
+                    <div className="text-lg font-bold">{fmtBytes(cacheStats.index_granularity_bytes ?? 0)}</div>
+                    <div className="text-xs text-[var(--dim)] mt-1">Index Granularity</div>
+                  </Card>
+                </div>
+              )}
+              {s3Stats && s3Stats.volume_by_table && Array.isArray(s3Stats.volume_by_table) && s3Stats.volume_by_table.length > 0 && (() => {
+                const volTable = s3Stats.volume_by_table as any[]
+                const totalS3Bytes = volTable.reduce((sum: number, r: any) => sum + (r.bytes ?? 0), 0)
+                const fsBytes = cacheStats?.filesystem_cache_bytes ?? 0
+                const fsLimit = cacheStats?.filesystem_cache_limit ?? 0
+                const fsPct = fsLimit > 0 ? Math.min(100, (fsBytes / fsLimit) * 100) : 0
+                return (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-3 gap-3">
+                      <Card>
+                        <div className="text-lg font-bold">{fmtBytes(totalS3Bytes)}</div>
+                        <div className="text-xs text-[var(--dim)] mt-1">Total S3 Data</div>
+                        <div className="text-xs text-[var(--dim)]">{volTable.length} tables</div>
+                      </Card>
+                      <Card>
+                        <div className="text-lg font-bold">{fsLimit > 0 ? fsPct.toFixed(1) + '%' : '--'}</div>
+                        <div className="text-xs text-[var(--dim)] mt-1">S3 Local Cache</div>
+                        <div className="text-xs text-[var(--dim)]">{fmtBytes(fsBytes)} / {fmtBytes(fsLimit)}</div>
+                        {fsLimit > 0 && (
+                          <div className="mt-1.5 h-1 rounded-full bg-[var(--hover)] overflow-hidden">
+                            <div className={`h-full rounded-full ${fsPct > 90 ? 'bg-red-500' : fsPct > 70 ? 'bg-yellow-500' : 'bg-green-500'}`} style={{ width: fsPct + '%' }} />
+                          </div>
+                        )}
+                      </Card>
+                      <Card>
+                        <div className="text-lg font-bold">{fmtNum(cacheStats?.filesystem_cache_elements ?? 0)}</div>
+                        <div className="text-xs text-[var(--dim)] mt-1">Cached Elements</div>
+                      </Card>
+                    </div>
+                    <Card title="S3 Volume by Table">
+                      <DataTable columns={s3VolCols} data={volTable} maxHeight="250px" />
+                    </Card>
+                    {s3Stats.latency_by_table && Array.isArray(s3Stats.latency_by_table) && s3Stats.latency_by_table.length > 0 && (
+                      <Card title="S3 Latency by Table">
+                        <DataTable columns={s3LatCols} data={s3Stats.latency_by_table} maxHeight="250px" />
+                      </Card>
+                    )}
+                  </div>
+                )
+              })()}
             </div>
           )}
-          {tableMemory.length > 0 && (
-            <Card title="Per-Table Memory">
-              <DataTable
-                columns={[
-                  { key: 'database', label: 'Database' },
-                  { key: 'table_name', label: 'Table' },
-                  { key: 'pk_readable', label: 'PK Memory' },
-                  { key: 'marks_readable', label: 'Marks Memory' },
-                  { key: 'mark_count', label: 'Mark Count', format: (v: any) => fmtNum(v) },
-                  { key: 'parts', label: 'Parts', format: (v: any) => fmtNum(v) },
-                  { key: 'total_rows', label: 'Rows', format: (v: any) => fmtNum(v) },
-                  { key: 'disk_size', label: 'Disk Size', format: (v: any) => fmtBytes(v ?? 0) },
-                ]}
-                data={[...tableMemory].sort((a, b) => (b.pk_bytes ?? 0) - (a.pk_bytes ?? 0))}
-                maxHeight="400px"
-              />
+        </div>
+      )}
+
+      {/* ---- Running Queries (collapsible, current state) ---- */}
+      {queries.length > 0 && (
+        <div>
+          <button
+            onClick={() => setShowRunning(!showRunning)}
+            className="w-full flex items-center gap-2 py-2 text-sm font-medium text-[var(--dim)] hover:text-[var(--text)] transition-colors"
+          >
+            <ChevronRight size={14} className={cn('transition-transform', showRunning && 'rotate-90')} />
+            Running Queries ({queries.length})
+            <span className="text-xs font-normal px-1.5 py-0.5 rounded bg-[var(--hover)] text-[var(--dim)] border border-[var(--border)]">now</span>
+          </button>
+          {showRunning && (
+            <Card className="mt-2">
+              <DataTable columns={queryCols} data={queries} maxHeight="280px" />
             </Card>
           )}
         </div>
       )}
 
-      {/* ---- Active Alerts ---- */}
-      {alerts.length > 0 && (
-        <Card title="Active Alerts">
-          <DataTable columns={alertCols} data={alerts} />
-        </Card>
-      )}
-
-      {/* ---- Running Queries ---- */}
-      {queries.length > 0 && (
-        <Card title="Running Queries">
-          <DataTable columns={queryCols} data={queries} />
-        </Card>
-      )}
-
-      {/* ---- Tables ---- */}
-      {tables.length > 0 && (
-        <Card title="Tables">
-          <DataTable columns={tableCols} data={tables} />
-        </Card>
-      )}
-
-      {/* ---- Materialized Views ---- */}
+      {/* ---- Materialized Views (collapsible, current state) ---- */}
       {mvs.length > 0 && (
-        <Card title="Materialized Views">
-          <DataTable columns={mvCols} data={mvs} />
-        </Card>
+        <div>
+          <button
+            onClick={() => setShowMVs(!showMVs)}
+            className="w-full flex items-center gap-2 py-2 text-sm font-medium text-[var(--dim)] hover:text-[var(--text)] transition-colors"
+          >
+            <ChevronRight size={14} className={cn('transition-transform', showMVs && 'rotate-90')} />
+            Materialized Views ({mvs.length})
+            <span className="text-xs font-normal px-1.5 py-0.5 rounded bg-[var(--hover)] text-[var(--dim)] border border-[var(--border)]">now</span>
+          </button>
+          {showMVs && (
+            <Card className="mt-2">
+              <DataTable columns={mvCols} data={mvs} maxHeight="250px" />
+            </Card>
+          )}
+        </div>
       )}
     </div>
   )

@@ -40,9 +40,9 @@ function Layout() {
   }, [refreshInterval])
 
   const views: Record<string, React.ReactNode> = {
-    overview: <Overview key={tick} />,
-    detail: <Detail key={tick} />,
-    alerts: <Alerts key={tick} />,
+    overview: <Overview refreshKey={tick} />,
+    detail: <Detail refreshKey={tick} />,
+    alerts: <Alerts refreshKey={tick} />,
     explore: <Explore key={tick} />,
     compare: <Compare key={tick} />,
     advisor: <Advisor key={tick} />,
