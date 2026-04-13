@@ -47,14 +47,18 @@ export function TopBar() {
     setCustomRange(fromTs, toTs)
   }
 
+  // These views don't use the time range selector
+  const timeRangeViews = ['detail', 'alerts', 'explore', 'compare', 'advisor']
+  const showTimeRange = timeRangeViews.includes(view)
+
   return (
     <header className="sticky top-0 z-30 bg-[var(--bg)]/80 backdrop-blur-sm border-b border-[var(--border)]">
       <div className="flex items-center justify-between px-6 h-12">
         {/* Left: page title */}
         <h1 className="text-sm font-semibold truncate">{title}</h1>
 
-        {/* Right: time range controls */}
-        <div className="flex items-center gap-2">
+        {/* Right: time range controls — only for time-aware views */}
+        {!showTimeRange ? <div /> : <div className="flex items-center gap-2">
           {/* Presets */}
           <div className="flex items-center bg-[var(--surface)] rounded-lg border border-[var(--border)] p-0.5">
             {PRESETS.map(p => (
@@ -116,7 +120,7 @@ export function TopBar() {
               Go
             </button>
           </div>
-        </div>
+        </div>}
       </div>
     </header>
   )

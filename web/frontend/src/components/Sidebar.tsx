@@ -88,8 +88,9 @@ export function Sidebar() {
         {instances.length > 0 && (
           <div className="mt-4 px-2">
             {!collapsed && (
-              <div className="px-3 pb-1.5 text-[10px] font-semibold uppercase tracking-widest text-[var(--dim)]">
-                Instances
+              <div className="px-3 pb-1.5 flex items-center justify-between">
+                <span className="text-[10px] font-semibold uppercase tracking-widest text-[var(--dim)]">Instances</span>
+                <span className="text-[10px] text-[var(--dim)]">health</span>
               </div>
             )}
             <div className="space-y-0.5">

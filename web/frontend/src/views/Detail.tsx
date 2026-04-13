@@ -177,12 +177,21 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
   const activeAlerts = alertHistory.filter((a) => !a.resolved)
 
   /* ---- Table columns (DataTable format API: format receives cell value) ---- */
+  const handleResolveDetailAlert = useCallback(async (dedupKey: string) => {
+    try {
+      await api.alerts.resolve(dedupKey)
+      // Refresh alert history
+      const ah = await api.alerts.history(500).catch(() => [] as Alert[])
+      setAlertHistory((ah as Alert[]).filter((a) => a.instance === instance))
+    } catch (e: any) {
+      console.error('resolve alert failed:', e)
+    }
+  }, [instance])
+
+  const [showActiveOnly, setShowActiveOnly] = useState(false)
+
   const alertCols = [
-    {
-      key: 'severity',
-      label: 'Severity',
-      format: (v: any) => <Badge severity={v} />,
-    },
+    { key: 'severity', label: 'Sev', format: (v: any) => <Badge severity={v} /> },
     { key: 'category', label: 'Category' },
     { key: 'title', label: 'Title' },
     {
@@ -190,12 +199,20 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
       label: 'Status',
       format: (v: any) => v
         ? <span className="text-xs text-green-400">resolved</span>
-        : <span className="text-xs text-[var(--dim)]">active</span>,
+        : <span className="text-xs text-yellow-400">active</span>,
     },
+    { key: 'created_at', label: 'Time', format: (v: any) => <span className="text-[var(--dim)]">{fmtTime(v)}</span> },
     {
-      key: 'created_at',
-      label: 'Time',
-      format: (v: any) => <span className="text-[var(--dim)]">{fmtTime(v)}</span>,
+      key: 'dedup_key',
+      label: '',
+      format: (_v: any, row: Record<string, any>) => !row.resolved ? (
+        <button
+          onClick={(e) => { e.stopPropagation(); handleResolveDetailAlert(row.dedup_key) }}
+          className="text-xs text-green-400 hover:underline whitespace-nowrap"
+        >
+          Resolve
+        </button>
+      ) : null,
     },
   ]
 
@@ -343,10 +360,27 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
 
       {/* ---- Alerts (time-range aware) ---- */}
       <Card title={`Alerts in Range${rangeAlerts.length > 0 ? ` (${rangeAlerts.length})` : ''}${activeAlerts.length > 0 ? ` · ${activeAlerts.length} active` : ''}`}>
+        <div className="flex items-center gap-3 mb-3">
+          <button
+            onClick={() => setShowActiveOnly(!showActiveOnly)}
+            className={cn(
+              'text-xs px-2.5 py-1 rounded border transition-colors',
+              showActiveOnly
+                ? 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30'
+                : 'text-[var(--dim)] border-[var(--border)] hover:text-[var(--text)]'
+            )}
+          >
+            {showActiveOnly ? 'Active only' : 'All (active + resolved)'}
+          </button>
+        </div>
         {rangeAlerts.length === 0 ? (
           <div className="text-sm text-[var(--dim)] py-4 text-center">No alerts fired in selected time range</div>
         ) : (
-          <DataTable columns={alertCols} data={rangeAlerts.sort((a, b) => b.created_at - a.created_at)} maxHeight="320px" />
+          <DataTable
+            columns={alertCols}
+            data={(showActiveOnly ? rangeAlerts.filter(a => !a.resolved) : rangeAlerts).sort((a, b) => b.created_at - a.created_at)}
+            maxHeight="320px"
+          />
         )}
       </Card>
 

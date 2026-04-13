@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useState, useCallback } from 'react'
 import { ChevronRight, RotateCcw } from 'lucide-react'
 import { cn, scoreColor, sevColor, fmtTime } from '../lib/utils'
+import { api } from '../lib/api'
 import { Card } from './Card'
 import { Badge } from './Badge'
 import { useStore } from '../hooks/useStore'
@@ -22,13 +23,29 @@ export function NodeCard({
   instance,
   onClick,
   staleAlerts = 0,
+  onResolved,
 }: {
   instance: Instance
   onClick: () => void
   staleAlerts?: number
+  onResolved?: () => void
 }) {
   const { navToDetail } = useStore()
   const [expandedAlert, setExpandedAlert] = useState<number | null>(null)
+  const [resolvingKey, setResolvingKey] = useState<string | null>(null)
+
+  const handleResolve = useCallback(async (e: React.MouseEvent, dedupKey: string) => {
+    e.stopPropagation()
+    setResolvingKey(dedupKey)
+    try {
+      await api.alerts.resolve(dedupKey)
+      onResolved?.()
+    } catch (err) {
+      console.error('resolve failed', err)
+    } finally {
+      setResolvingKey(null)
+    }
+  }, [onResolved])
 
   const areas = instance.area_status ?? []
   const topAlerts = instance.top_alerts ?? []
@@ -142,7 +159,7 @@ export function NodeCard({
               </button>
               {expandedAlert === i && (
                 <div
-                  className="mx-1 mb-1 p-2 rounded bg-[var(--hover)] border border-[var(--border)] text-xs space-y-1"
+                  className="mx-1 mb-1 p-2 rounded bg-[var(--hover)] border border-[var(--border)] text-xs space-y-1.5"
                   onClick={(e) => e.stopPropagation()}
                 >
                   <div className="text-[var(--dim)]">
@@ -151,15 +168,26 @@ export function NodeCard({
                   {a.possibly_recovered && (
                     <div className="flex items-center gap-1 text-green-400">
                       <RotateCcw size={10} />
-                      Current metrics suggest this may have recovered
+                      Metrics look ok — condition may have cleared
                     </div>
                   )}
-                  <button
-                    onClick={handleAlertNav}
-                    className="text-[var(--accent)] hover:underline"
-                  >
-                    → Open instance detail
-                  </button>
+                  <div className="flex items-center gap-2 pt-0.5">
+                    <button
+                      onClick={handleAlertNav}
+                      className="text-[var(--accent)] hover:underline"
+                    >
+                      → Instance detail
+                    </button>
+                    {a.dedup_key && (
+                      <button
+                        onClick={(e) => handleResolve(e, a.dedup_key)}
+                        disabled={resolvingKey === a.dedup_key}
+                        className="text-green-400 hover:underline disabled:opacity-50"
+                      >
+                        {resolvingKey === a.dedup_key ? 'Resolving…' : 'Mark resolved'}
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
             </div>

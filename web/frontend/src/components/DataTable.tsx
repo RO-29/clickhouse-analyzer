@@ -5,7 +5,7 @@ import { cn } from '../lib/utils'
 interface Column {
   key: string
   label: string
-  format?: (v: any) => ReactNode
+  format?: (v: any, row: Record<string, any>) => ReactNode
   className?: string
 }
 
@@ -107,7 +107,7 @@ export function DataTable({
             >
               {columns.map(col => (
                 <td key={col.key} className={cn('py-2 px-3 font-mono text-xs', col.className)}>
-                  {col.format ? col.format(row[col.key]) : String(row[col.key] ?? '')}
+                  {col.format ? col.format(row[col.key], row) : String(row[col.key] ?? '')}
                 </td>
               ))}
               {onRowAnalyze && (

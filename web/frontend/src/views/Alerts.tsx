@@ -166,7 +166,7 @@ function AlertMessageRenderer({ message, instance }: { message: string; instance
 /* ------------------------------------------------------------------ */
 /*  AlertRow (expandable)                                             */
 /* ------------------------------------------------------------------ */
-function AlertRow({ alert, showMeta, staleHours, onAnalyze }: { alert: Alert; showMeta?: boolean; staleHours: number; onAnalyze?: (alert: Alert) => void }) {
+function AlertRow({ alert, showMeta, staleHours, onAnalyze, onResolve }: { alert: Alert; showMeta?: boolean; staleHours: number; onAnalyze?: (alert: Alert) => void; onResolve?: (dedupKey: string) => void }) {
   const [expanded, setExpanded] = useState(false)
   const [suggestions, setSuggestions] = useState<Suggestion | null>(null)
   const [loadingSugg, setLoadingSugg] = useState(false)
@@ -272,15 +272,25 @@ function AlertRow({ alert, showMeta, staleHours, onAnalyze }: { alert: Alert; sh
             </div>
           </div>
 
-          {onAnalyze && (
-            <button
-              onClick={() => onAnalyze(alert)}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-purple-400 hover:bg-purple-500/15 border border-purple-500/20 transition-colors"
-            >
-              <Sparkles size={11} />
-              Analyze this alert with AI
-            </button>
-          )}
+          <div className="flex items-center gap-2">
+            {onAnalyze && (
+              <button
+                onClick={() => onAnalyze(alert)}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-purple-400 hover:bg-purple-500/15 border border-purple-500/20 transition-colors"
+              >
+                <Sparkles size={11} />
+                Analyze with AI
+              </button>
+            )}
+            {onResolve && !alert.resolved && (
+              <button
+                onClick={() => onResolve(alert.dedup_key)}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-green-400 hover:bg-green-500/15 border border-green-500/20 transition-colors"
+              >
+                Mark resolved
+              </button>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -494,9 +504,15 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
       if (filterStatus === 'firing' && (a.resolved || isStale(a, staleHours))) return false
       if (filterStatus === 'stale' && !isStale(a, staleHours)) return false
       if (filterStatus === 'resolved' && !a.resolved) return false
+      // Time range filter: show alerts created in range, plus always show active unresolved
+      if (customFrom && customTo) {
+        const inRange = a.created_at >= customFrom && a.created_at <= customTo
+        const isActive = !a.resolved && !isStale(a, staleHours)
+        if (!inRange && !isActive) return false
+      }
       return true
     })
-  }, [allAlerts, filterInstance, filterSeverity, filterCategory, filterType, filterStatus, staleHours])
+  }, [allAlerts, filterInstance, filterSeverity, filterCategory, filterType, filterStatus, staleHours, customFrom, customTo])
 
   const groups = useMemo(() => {
     const map = new Map<string, Alert[]>()
@@ -540,6 +556,17 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
     [allAlerts, staleHours],
   )
 
+  const handleResolveAlert = useCallback(async (dedupKey: string) => {
+    try {
+      await api.alerts.resolve(dedupKey)
+      const [active, history] = await Promise.all([api.alerts.active(), api.alerts.history()])
+      setActiveAlerts(active)
+      setHistoryAlerts(history)
+    } catch (e: any) {
+      console.error('[CH-Analyzer] Resolve alert failed:', e.message)
+    }
+  }, [])
+
   const handleResolveStale = useCallback(async () => {
     if (!totalStaleUnfiltered) return
     resolvingRef.current = true
@@ -577,13 +604,27 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
 
   if (loading) {
     return (
-      <div className="space-y-6 animate-pulse">
-        <div className="grid grid-cols-3 gap-4">
+      <div className="space-y-6">
+        <div className="grid grid-cols-3 gap-4 animate-pulse">
           {[...Array(3)].map((_, i) => (
             <Card key={i}>
-              <div className="h-9 bg-[var(--hover)] rounded w-1/3 mb-2" />
+              <div className="h-8 bg-[var(--hover)] rounded w-1/3 mb-2" />
               <div className="h-3 bg-[var(--hover)] rounded w-1/2" />
             </Card>
+          ))}
+        </div>
+        <div className="flex items-center gap-2 text-sm text-[var(--dim)] animate-pulse">
+          <RefreshCw size={14} className="animate-spin" />
+          Loading alerts…
+        </div>
+        <div className="space-y-2 animate-pulse">
+          {[...Array(8)].map((_, i) => (
+            <div key={i} className="h-10 bg-[var(--surface)] border border-[var(--border)] rounded-lg px-4 flex items-center gap-3">
+              <div className="w-14 h-5 bg-[var(--hover)] rounded-full" />
+              <div className="w-24 h-3 bg-[var(--hover)] rounded" />
+              <div className="flex-1 h-3 bg-[var(--hover)] rounded" style={{ maxWidth: `${40 + i * 7}%` }} />
+              <div className="w-20 h-3 bg-[var(--hover)] rounded" />
+            </div>
           ))}
         </div>
       </div>
@@ -699,7 +740,7 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
         <TimelineView alerts={filtered} staleHours={staleHours} />
       ) : viewMode === 'flat' ? (
         <Card className="!p-0">
-          {filtered.map((alert) => <AlertRow key={alert.id} alert={alert} showMeta staleHours={staleHours} onAnalyze={handleAnalyzeAlert} />)}
+          {filtered.map((alert) => <AlertRow key={alert.id} alert={alert} showMeta staleHours={staleHours} onAnalyze={handleAnalyzeAlert} onResolve={!alert.resolved ? handleResolveAlert : undefined} />)}
         </Card>
       ) : (
         <div className="space-y-3">
@@ -738,7 +779,7 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
                 </button>
                 {!isCollapsed && (
                   <div className="border-t border-[var(--border)]">
-                    {groupAlerts.map((alert) => <AlertRow key={alert.id} alert={alert} staleHours={staleHours} onAnalyze={handleAnalyzeAlert} />)}
+                    {groupAlerts.map((alert) => <AlertRow key={alert.id} alert={alert} staleHours={staleHours} onAnalyze={handleAnalyzeAlert} onResolve={!alert.resolved ? handleResolveAlert : undefined} />)}
                   </div>
                 )}
               </Card>

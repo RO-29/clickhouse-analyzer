@@ -8,6 +8,7 @@ export interface TopAlert {
   severity: string
   category: string
   title: string
+  dedup_key: string
   possibly_recovered: boolean
   created_at: number
 }

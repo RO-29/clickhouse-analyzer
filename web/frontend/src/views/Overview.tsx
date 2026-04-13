@@ -230,6 +230,7 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
             instance={inst}
             onClick={() => goToInstance(inst.name)}
             staleAlerts={staleByInstance.get(inst.name) ?? 0}
+            onResolved={() => setManualRefreshTick(t => t + 1)}
           />
         ))}
       </div>

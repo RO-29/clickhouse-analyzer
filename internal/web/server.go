@@ -111,6 +111,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/alerts/active", s.handleActiveAlerts)
 	mux.HandleFunc("GET /api/alerts/history", s.handleAlertHistory)
 	mux.HandleFunc("POST /api/alerts/resolve-stale", s.handleResolveStale)
+	mux.HandleFunc("POST /api/alerts/resolve", s.handleResolveAlert)
 	mux.HandleFunc("GET /api/logs", s.handleLogs)
 	mux.HandleFunc("GET /api/instances/{name}/ch-logs", s.handleCHLogs)
 
@@ -454,6 +455,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		Severity          string `json:"severity"`
 		Category          string `json:"category"`
 		Title             string `json:"title"`
+		DedupKey          string `json:"dedup_key"`
 		PossiblyRecovered bool   `json:"possibly_recovered"`
 		CreatedAt         int64  `json:"created_at"`
 	}
@@ -531,7 +533,15 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Compute area statuses from fresh alerts only.
+		// metricArea tracks area status from CURRENT METRICS ONLY (no alerts).
+		// Used for possibly_recovered detection: if metrics say "ok" but alert
+		// is still active, the condition has likely cleared.
+		metricArea := map[string]string{
+			"memory": "ok", "cpu": "ok", "queries": "ok",
+			"storage": "ok", "s3": "ok", "pipelines": "ok",
+		}
+
+		// Compute area statuses from BOTH alerts AND metrics (for the area pills).
 		areaWorst := map[string]string{
 			"memory": "ok", "cpu": "ok", "queries": "ok",
 			"storage": "ok", "s3": "ok", "pipelines": "ok",
@@ -556,9 +566,11 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 				switch m.Name {
 				case "memory_rss", "memory_tracked", "cpu_user", "cpu_system", "insert_rows_per_sec":
 					keyMetrics[m.Name] = m.Value
-				case "memory_usage_percent":
+				case "system.memory.used_percent":
 					keyMetrics["memory_pct"] = m.Value
-				case "cpu_usage_percent":
+				case "system.memory.rss_percent":
+					keyMetrics["memory_rss_pct"] = m.Value
+				case "system.cpu.busy_percent":
 					keyMetrics["cpu_pct"] = m.Value
 				case "queries.running_count":
 					keyMetrics["running_queries"] = m.Value
@@ -567,33 +579,48 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 				case "tables.parts.count":
 					keyMetrics["total_parts"] += m.Value
 				}
-				// Metric-based area escalation.
+				// Metric-based area escalation — applied to BOTH maps.
+				var metricSev string
 				switch m.Name {
-				case "memory_usage_percent":
+				case "system.memory.used_percent":
 					if m.Value > 90 {
-						areaWorst["memory"] = worstSev(areaWorst["memory"], "critical")
+						metricSev = "critical"
 					} else if m.Value > 80 {
-						areaWorst["memory"] = worstSev(areaWorst["memory"], "warn")
+						metricSev = "warn"
 					}
-				case "cpu_usage_percent":
+					if metricSev != "" {
+						areaWorst["memory"] = worstSev(areaWorst["memory"], metricSev)
+						metricArea["memory"] = worstSev(metricArea["memory"], metricSev)
+					}
+				case "system.cpu.busy_percent":
 					if m.Value > 95 {
-						areaWorst["cpu"] = worstSev(areaWorst["cpu"], "critical")
+						metricSev = "critical"
 					} else if m.Value > 80 {
-						areaWorst["cpu"] = worstSev(areaWorst["cpu"], "warn")
+						metricSev = "warn"
 					}
-				case "disk_usage_percent":
+					if metricSev != "" {
+						areaWorst["cpu"] = worstSev(areaWorst["cpu"], metricSev)
+						metricArea["cpu"] = worstSev(metricArea["cpu"], metricSev)
+					}
+				case "storage.disk.used_percent":
 					if m.Value > 90 {
-						areaWorst["storage"] = worstSev(areaWorst["storage"], "critical")
+						metricSev = "critical"
 					} else if m.Value > 80 {
-						areaWorst["storage"] = worstSev(areaWorst["storage"], "warn")
+						metricSev = "warn"
+					}
+					if metricSev != "" {
+						areaWorst["storage"] = worstSev(areaWorst["storage"], metricSev)
+						metricArea["storage"] = worstSev(metricArea["storage"], metricSev)
 					}
 				}
 			}
 			// Area escalation from summed total_parts.
 			if tp := keyMetrics["total_parts"]; tp > 500 {
 				areaWorst["storage"] = worstSev(areaWorst["storage"], "critical")
+				metricArea["storage"] = worstSev(metricArea["storage"], "critical")
 			} else if tp := keyMetrics["total_parts"]; tp > 300 {
 				areaWorst["storage"] = worstSev(areaWorst["storage"], "warn")
+				metricArea["storage"] = worstSev(metricArea["storage"], "warn")
 			}
 		}
 
@@ -622,17 +649,19 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Top alerts: fresh only, sorted by severity (critical first), top 3.
-		// Mark possibly_recovered when current area metrics are back to "ok"
-		// despite the alert still being active.
+		// possibly_recovered = metric-only area is "ok" but alert is still active.
+		// We deliberately use metricArea (not areaWorst) so an active alert
+		// doesn't prevent itself from being marked as recovered.
 		sorted := make([]topAlert, 0, len(freshAlerts))
 		for _, a := range freshAlerts {
 			area := categoryToArea[a.Category]
-			currentStatus := areaWorst[area]
-			possiblyRecovered := (a.Severity == "critical" || a.Severity == "warn") && currentStatus == "ok"
+			metricStatus := metricArea[area] // metric-only, ignores alerts
+			possiblyRecovered := (a.Severity == "critical" || a.Severity == "warn") && metricStatus == "ok"
 			sorted = append(sorted, topAlert{
 				Severity:          a.Severity,
 				Category:          a.Category,
 				Title:             a.Title,
+				DedupKey:          a.DedupKey,
 				PossiblyRecovered: possiblyRecovered,
 				CreatedAt:         a.CreatedAt.Unix(),
 			})
@@ -948,6 +977,23 @@ func marshalAlerts(alerts []store.Alert) []alertJSON {
 		}
 	}
 	return out
+}
+
+// POST /api/alerts/resolve — resolve a single alert by dedup_key.
+func (s *Server) handleResolveAlert(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		DedupKey string `json:"dedup_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.DedupKey == "" {
+		writeErr(w, http.StatusBadRequest, "dedup_key required")
+		return
+	}
+	if err := s.store.ResolveAlert(body.DedupKey); err != nil {
+		writeErr(w, http.StatusInternalServerError, "resolve failed: "+err.Error())
+		return
+	}
+	slog.Info("alert resolved via API", "dedup_key", body.DedupKey)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "resolved"})
 }
 
 // POST /api/alerts/resolve-stale?hours=24 — bulk-resolve stale alerts.

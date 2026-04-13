@@ -52,6 +52,8 @@ export const api = {
       get<HealthCheck[]>(`/api/instances/${inst}/alerts-at?from=${from}&to=${to}`),
     resolveStale: (hours: number) =>
       post<{ resolved: number }>(`/api/alerts/resolve-stale?hours=${hours}`, {}),
+    resolve: (dedupKey: string) =>
+      post<{ status: string }>('/api/alerts/resolve', { dedup_key: dedupKey }),
   },
   queries: (inst: string) => get<Record<string, any>[]>(`/api/instances/${inst}/queries`),
   tables: (inst: string) => get<Record<string, any>[]>(`/api/instances/${inst}/tables`),
