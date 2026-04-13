@@ -88,7 +88,19 @@ function EntryCard({
           {entry.label}
         </span>
         <span className="text-xs text-[var(--dim)] flex-none">
-          {entry.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          {(() => {
+            const now = new Date()
+            const ts = entry.timestamp
+            const sameDay =
+              ts.getFullYear() === now.getFullYear() &&
+              ts.getMonth() === now.getMonth() &&
+              ts.getDate() === now.getDate()
+            return sameDay
+              ? ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+              : ts.toLocaleDateString('en-GB', { month: 'short', day: 'numeric' }) +
+                ' ' +
+                ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          })()}
         </span>
         <span className="flex items-center gap-1 text-xs text-[var(--dim)] flex-none">
           <span className={cn('inline-block w-1.5 h-1.5 rounded-full', statusDot)} />

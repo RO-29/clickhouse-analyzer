@@ -45,10 +45,31 @@ export function HistoryChart({
     return fmtNum(v)
   }
 
+  const spanMs = (() => {
+    if (data.length < 2) return 0
+    const first = data[0].ts
+    const last = data[data.length - 1].ts
+    const t0 = typeof first === 'string' ? new Date(first).getTime() : first * 1000
+    const t1 = typeof last === 'string' ? new Date(last).getTime() : last * 1000
+    return Math.abs(t1 - t0)
+  })()
+  const MS_DAY = 86_400_000
+
   const labels = data.map(row => {
     const ts = row.ts
     if (!ts) return ''
     const d = typeof ts === 'string' ? new Date(ts) : new Date(ts * 1000)
+    if (spanMs > 7 * MS_DAY) {
+      // just date
+      return d.toLocaleDateString('en-GB', { month: 'short', day: 'numeric' })
+    } else if (spanMs > MS_DAY) {
+      // date + time
+      return (
+        d.toLocaleDateString('en-GB', { month: 'short', day: 'numeric' }) +
+        ' ' +
+        d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+      )
+    }
     return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
   })
 

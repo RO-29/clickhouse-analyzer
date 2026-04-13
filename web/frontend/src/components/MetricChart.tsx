@@ -82,9 +82,25 @@ export function MetricChart({ instance, title, metrics, height = 160, yFormat = 
     return fmtNum(v)
   }
 
-  const labels = series[0]?.points.map(p =>
-    new Date(p.ts * 1000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
-  ) ?? []
+  const points0 = series[0]?.points ?? []
+  const spanMs = points0.length >= 2
+    ? Math.abs(points0[points0.length - 1].ts - points0[0].ts) * 1000
+    : 0
+  const MS_DAY = 86_400_000
+
+  const labels = points0.map(p => {
+    const d = new Date(p.ts * 1000)
+    if (spanMs > 7 * MS_DAY) {
+      return d.toLocaleDateString('en-GB', { month: 'short', day: 'numeric' })
+    } else if (spanMs > MS_DAY) {
+      return (
+        d.toLocaleDateString('en-GB', { month: 'short', day: 'numeric' }) +
+        ' ' +
+        d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+      )
+    }
+    return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+  })
 
   const data = {
     labels,

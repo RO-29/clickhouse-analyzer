@@ -105,3 +105,22 @@ export interface DiskInfo {
   disk_name: string; path: string; free_space: number; total_space: number
   free_readable: string; total_readable: string; used_percent: number
 }
+
+export interface AnalysisEntry {
+  id: string
+  label: string
+  contextType: 'tab' | 'row' | 'chart'
+  tab: string
+  elementId?: string
+  status: 'streaming' | 'done' | 'error'
+  output: string
+  timestamp: Date
+}
+
+export interface AnalyzeOptions {
+  contextType: 'tab' | 'row' | 'chart'
+  tab: string
+  elementId?: string
+  mode?: 'quick' | 'deep'
+  deepQueries?: string[]
+}

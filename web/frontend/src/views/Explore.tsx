@@ -1,13 +1,12 @@
 import { useState, useEffect, useMemo, useCallback, type ChangeEvent } from 'react'
 import { Sparkles } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
-import { useAIAnalysis, PANEL_EXPANDED_HEIGHT, PANEL_COLLAPSED_HEIGHT } from '../hooks/useAIAnalysis'
+import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
 import { fmtBytes, fmtNum, fmtDuration, cn } from '../lib/utils'
 import { Card } from '../components/Card'
 import { HistoryChart } from '../components/HistoryChart'
 import { DataTable } from '../components/DataTable'
-import { AIAnalysisPanel } from '../components/AIAnalysisPanel'
 import type {
   QueryPattern,
   HistoryFailure,
@@ -799,7 +798,7 @@ export default function Explore() {
   const [tab, setTab] = useState<Tab>('patterns')
   const inst = selectedInstance || instances[0] || ''
 
-  const { entries, isOpen, setIsOpen, analyze, clearEntries } = useAIAnalysis(inst)
+  const { analyze } = useAIAnalysis(inst)
 
   const handleInstChange = useCallback(
     (e: ChangeEvent<HTMLSelectElement>) => setSelectedInstance(e.target.value),
@@ -812,9 +811,6 @@ export default function Explore() {
     },
     [analyze],
   )
-
-  // Bottom spacer height keeps content from hiding behind the fixed panel
-  const spacerHeight = isOpen ? PANEL_EXPANDED_HEIGHT : PANEL_COLLAPSED_HEIGHT
 
   return (
     <div className="space-y-4">
@@ -875,18 +871,6 @@ export default function Explore() {
         </>
       )}
 
-      {/* Spacer so content doesn't hide behind the fixed panel */}
-      <div style={{ height: spacerHeight }} aria-hidden />
-
-      {/* AI Analysis panel — fixed to bottom of viewport */}
-      <AIAnalysisPanel
-        instance={inst}
-        entries={entries}
-        isOpen={isOpen}
-        onToggle={() => setIsOpen(o => !o)}
-        onAnalyze={handleAnalyze}
-        onClear={clearEntries}
-      />
     </div>
   )
 }

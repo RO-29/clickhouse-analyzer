@@ -1,34 +1,19 @@
-import { useState, useCallback } from 'react'
+import { useCallback } from 'react'
+import { useStore } from './useStore'
+import type { AnalysisEntry, AnalyzeOptions } from '../types/api'
+
+// Re-export so existing imports from this module keep working
+export type { AnalysisEntry, AnalyzeOptions }
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 9)
-}
-
-export interface AnalysisEntry {
-  id: string
-  label: string
-  contextType: 'tab' | 'row' | 'chart'
-  tab: string
-  elementId?: string
-  status: 'streaming' | 'done' | 'error'
-  output: string
-  timestamp: Date
-}
-
-export interface AnalyzeOptions {
-  contextType: 'tab' | 'row' | 'chart'
-  tab: string
-  elementId?: string
-  mode?: 'quick' | 'deep'
-  deepQueries?: string[]
 }
 
 export const PANEL_EXPANDED_HEIGHT = 'calc(45vh + 8px)'
 export const PANEL_COLLAPSED_HEIGHT = '36px'
 
 export function useAIAnalysis(instance: string) {
-  const [entries, setEntries] = useState<AnalysisEntry[]>([])
-  const [isOpen, setIsOpen] = useState(false)
+  const { aiEntries: entries, aiPanelOpen: isOpen, setAiEntries: setEntries, setAiPanelOpen: setIsOpen, clearAiEntries: clearEntries } = useStore()
 
   const analyze = useCallback(
     async (
@@ -166,10 +151,8 @@ export function useAIAnalysis(instance: string) {
         )
       }
     },
-    [instance],
+    [instance, setEntries, setIsOpen],
   )
-
-  const clearEntries = useCallback(() => setEntries([]), [])
 
   return { entries, isOpen, setIsOpen, analyze, clearEntries }
 }

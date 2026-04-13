@@ -13,13 +13,17 @@ import AppLogs from './views/AppLogs'
 import CHLogs from './views/CHLogs'
 import QueryAnalyzer from './views/QueryAnalyzer'
 import { TableDetail } from './components/TableDetail'
+import { AIAnalysisPanel } from './components/AIAnalysisPanel'
+import { useAIAnalysis, PANEL_EXPANDED_HEIGHT, PANEL_COLLAPSED_HEIGHT } from './hooks/useAIAnalysis'
 import { cn } from './lib/utils'
 import { api } from './lib/api'
 
 function Layout() {
-  const { view, refreshInterval, sidebarCollapsed, setInstances, tableDetail, closeTableDetail } = useStore()
+  const { view, refreshInterval, sidebarCollapsed, setInstances, tableDetail, closeTableDetail, selectedInstance } = useStore()
   const intervalRef = useRef<number>(0)
   const [tick, setTick] = useState(0)
+  const { entries: aiEntries, isOpen: aiOpen, setIsOpen: setAiOpen, analyze: aiAnalyze, clearEntries: clearAiEntries } = useAIAnalysis(selectedInstance)
+  const aiSpacerHeight = aiOpen ? PANEL_EXPANDED_HEIGHT : PANEL_COLLAPSED_HEIGHT
 
   // Load instances on mount
   useEffect(() => {
@@ -60,6 +64,10 @@ function Layout() {
             : 'p-6 max-w-[1600px] mx-auto overflow-auto',
         )}>
           {views[view] || <Overview />}
+          {/* Spacer so content doesn't hide behind the fixed AI panel */}
+          {view !== 'analyzer' && view !== 'terminal' && (
+            <div style={{ height: aiSpacerHeight }} aria-hidden />
+          )}
         </main>
       </div>
       {tableDetail && (
@@ -70,6 +78,14 @@ function Layout() {
           onClose={closeTableDetail}
         />
       )}
+      <AIAnalysisPanel
+        instance={selectedInstance}
+        entries={aiEntries}
+        isOpen={aiOpen}
+        onToggle={() => setAiOpen(o => !o)}
+        onAnalyze={aiAnalyze}
+        onClear={clearAiEntries}
+      />
     </div>
   )
 }
