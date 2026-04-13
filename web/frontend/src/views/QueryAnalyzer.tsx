@@ -379,6 +379,17 @@ export default function QueryAnalyzer() {
                 if (idx + 1 < next.length) next[idx + 1] = { ...next[idx + 1], status: 'running' as const }
                 return next
               })
+            } else if (event === 'debug') {
+              console.group('%c[CH-Analyzer AI Debug]', 'color:#6366f1;font-weight:bold')
+              console.log('Prompt size:', (payload as {prompt_kb:number}).prompt_kb + ' KB', '/', (payload as {prompt_bytes:number}).prompt_bytes + ' bytes')
+              console.log('Row counts:', (payload as {row_counts:unknown}).row_counts)
+              console.log('Auth envs present:', (payload as {auth_envs_present:unknown}).auth_envs_present)
+              console.log('Config home:', (payload as {config_home:string}).config_home)
+              console.log('Config keys:', (payload as {config_keys:unknown}).config_keys)
+              console.log('Truncated:', (payload as {truncated:boolean}).truncated)
+              console.log('Prompt head (800 chars):', (payload as {prompt_head:string}).prompt_head)
+              console.log('Prompt tail (400 chars):', (payload as {prompt_tail:string}).prompt_tail)
+              console.groupEnd()
             } else if (event === 'error') {
               setErrorMsg(payload as string)
               setPhase('error')

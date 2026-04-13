@@ -187,18 +187,92 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	// ── Build prompt ──────────────────────────────────────────────────────────
 	prompt := buildAnalysisPrompt(ac, req.Mode, req.Question)
 
-	slog.Info("analyze: prompt built",
+	// ── Env vars audit ────────────────────────────────────────────────────────
+	authEnvs := map[string]string{}
+	for _, key := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_OAUTH_TOKEN", "CLAUDE_MODEL", "ANTHROPIC_BASE_URL"} {
+		if v := os.Getenv(key); v != "" {
+			authEnvs[key] = fmt.Sprintf("len=%d prefix=%.8s…", len(v), v)
+		}
+	}
+
+	// ── Config home ───────────────────────────────────────────────────────────
+	claudeCfgHome := findClaudeHome()
+	cfgKeys := []string{}
+	if claudeCfgHome != "" {
+		if cfgBytes, readErr := os.ReadFile(filepath.Join(claudeCfgHome, ".claude.json")); readErr == nil {
+			var cfgMap map[string]interface{}
+			if json.Unmarshal(cfgBytes, &cfgMap) == nil {
+				for k := range cfgMap {
+					cfgKeys = append(cfgKeys, k)
+				}
+			}
+		}
+	}
+
+	// ── Collection row counts ─────────────────────────────────────────────────
+	rowCounts := map[string]int{}
+	countRows := func(label string, v interface{}) {
+		if rows, ok := v.([]map[string]interface{}); ok {
+			rowCounts[label] = len(rows)
+		}
+	}
+	countRows("cluster_status", ac.ClusterStatus)
+	countRows("disks", ac.Disks)
+	countRows("slow_queries_duration", ac.SlowQueriesDuration)
+	countRows("slow_queries_memory", ac.SlowQueriesMemory)
+	countRows("insert_patterns", ac.InsertPatterns)
+	countRows("active_merges", ac.ActiveMerges)
+	countRows("parts_health", ac.PartsHealth)
+	countRows("error_patterns", ac.ErrorPatterns)
+
+	// ── Trim prompt ───────────────────────────────────────────────────────────
+	const maxPromptBytes = 1 << 20 // 1 MB
+	truncated := false
+	if len(prompt) > maxPromptBytes {
+		prompt = prompt[:maxPromptBytes] + "\n\n[...context truncated to fit ARG_MAX...]"
+		truncated = true
+	}
+
+	// ── Write full prompt to debug file (always, for now) ────────────────────
+	debugFile := fmt.Sprintf("/var/lib/ch-analyzer/debug-prompt-%s.txt", time.Now().UTC().Format("20060102-150405"))
+	if werr := os.WriteFile(debugFile, []byte(prompt), 0600); werr != nil {
+		slog.Warn("analyze: could not write debug prompt file", "err", werr)
+	} else {
+		slog.Info("analyze: prompt written to file", "file", debugFile)
+	}
+
+	// ── Structured log ───────────────────────────────────────────────────────
+	slog.Info("analyze: prompt ready",
 		"instance", instance,
 		"mode", req.Mode,
 		"time_window_mins", req.TimeWindowMins,
 		"prompt_bytes", len(prompt),
 		"prompt_kb", len(prompt)/1024,
-		"collection_errors", len(ac.CollectionErrors),
+		"truncated", truncated,
+		"collection_errors", ac.CollectionErrors,
+		"row_counts", rowCounts,
+		"auth_envs_present", authEnvs,
+		"config_home", claudeCfgHome,
+		"config_keys", cfgKeys,
 	)
-	if len(ac.CollectionErrors) > 0 {
-		for _, e := range ac.CollectionErrors {
-			slog.Warn("analyze: collection error", "err", e)
-		}
+
+	// ── Send debug snapshot to browser console ────────────────────────────────
+	debugPayload := map[string]interface{}{
+		"prompt_bytes":        len(prompt),
+		"prompt_kb":           len(prompt) / 1024,
+		"truncated":           truncated,
+		"prompt_head":         prompt[:min(800, len(prompt))],
+		"prompt_tail":         prompt[max(0, len(prompt)-400):],
+		"collection_errors":   ac.CollectionErrors,
+		"row_counts":          rowCounts,
+		"auth_envs_present":   authEnvs,
+		"config_home":         claudeCfgHome,
+		"config_keys":         cfgKeys,
+		"mode":                req.Mode,
+		"instance":            instance,
+	}
+	if dbgB, _ := json.Marshal(debugPayload); dbgB != nil {
+		sendEvent("debug", string(dbgB))
 	}
 
 	// ── Spawn claude CLI ──────────────────────────────────────────────────────
@@ -208,75 +282,33 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		sendEvent("error", jsonStr(err.Error()))
 		return
 	}
-	slog.Info("analyze: claude binary found", "path", claudeBin)
+	slog.Info("analyze: claude binary", "path", claudeBin)
 
 	claudeCtx, claudeCancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer claudeCancel()
 
-	// Trim prompt to stay well under Linux ARG_MAX (2 MB total).
-	// Typical prompts are 50–150 KB; truncate at 1 MB to be safe.
-	const maxPromptBytes = 1 << 20 // 1 MB
-	truncated := false
-	if len(prompt) > maxPromptBytes {
-		prompt = prompt[:maxPromptBytes] + "\n\n[...context truncated to fit ARG_MAX...]"
-		truncated = true
-	}
-	slog.Info("analyze: final prompt",
-		"bytes", len(prompt),
-		"kb", len(prompt)/1024,
-		"truncated", truncated,
-	)
-
 	claudeArgs := []string{"-p", prompt}
 	if m := os.Getenv("CLAUDE_MODEL"); m != "" {
 		claudeArgs = append(claudeArgs, "--model", m)
-		slog.Info("analyze: using model override", "model", m)
+	}
+	if os.Getenv("CLAUDE_DEBUG") != "" {
+		claudeArgs = append(claudeArgs, "--verbose")
 	}
 	cmd := exec.CommandContext(claudeCtx, claudeBin, claudeArgs...)
 
-	// Inherit the full environment (picks up ANTHROPIC_AUTH_TOKEN,
-	// ANTHROPIC_BASE_URL, etc. from the systemd EnvironmentFile) and augment
-	// PATH so claude's own node resolution works regardless of the service user.
+	// Inherit full env + augment PATH.
 	claudeEnv := os.Environ()
 	claudeEnv = setEnv(claudeEnv,
 		"PATH",
 		"/home/ec2-user/.local/bin:/root/.local/bin:/usr/local/bin:/usr/bin:/bin:"+os.Getenv("PATH"),
 	)
 
-	// Log which auth env vars are present (values redacted)
-	for _, key := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_OAUTH_TOKEN", "CLAUDE_MODEL", "ANTHROPIC_BASE_URL"} {
-		if v := os.Getenv(key); v != "" {
-			slog.Info("analyze: env var present", "key", key, "len", len(v))
-		}
-	}
-
-	// Claude needs a ~/.claude.json to skip the interactive onboarding wizard
-	// (which hangs on a headless server with no TTY).
-	// Strategy:
-	//   1. Check well-known locations for an existing claude config (covers the
-	//      case where the service user ran `claude login` with a custom HOME).
-	//   2. Otherwise create a temp HOME with a minimal config so claude starts
-	//      cleanly. CLAUDE_OAUTH_TOKEN / ANTHROPIC_API_KEY still work via env.
-	claudeCfgHome := findClaudeHome()
 	if claudeCfgHome != "" {
 		claudeEnv = setEnv(claudeEnv, "HOME", claudeCfgHome)
-		slog.Info("analyze: using existing claude config", "home", claudeCfgHome)
-		// Log keys present in the config (no values)
-		if cfgBytes, readErr := os.ReadFile(filepath.Join(claudeCfgHome, ".claude.json")); readErr == nil {
-			var cfgMap map[string]interface{}
-			if jsonErr := json.Unmarshal(cfgBytes, &cfgMap); jsonErr == nil {
-				keys := make([]string, 0, len(cfgMap))
-				for k := range cfgMap {
-					keys = append(keys, k)
-				}
-				slog.Info("analyze: .claude.json keys", "keys", keys)
-			}
-		}
 	} else if tmpHome, err2 := os.MkdirTemp("", "claude-home-*"); err2 == nil {
 		claudeEnv = setEnv(claudeEnv, "HOME", tmpHome)
 		cfgPath := filepath.Join(tmpHome, ".claude.json")
-		cfgData := buildClaudeCfg()
-		if err3 := os.WriteFile(cfgPath, []byte(cfgData), 0600); err3 != nil {
+		if err3 := os.WriteFile(cfgPath, []byte(buildClaudeCfg()), 0600); err3 != nil {
 			slog.Warn("analyze: could not write claude temp config", "err", err3)
 		}
 		defer os.RemoveAll(tmpHome)
