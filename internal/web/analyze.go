@@ -206,7 +206,11 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		prompt = prompt[:maxPromptBytes] + "\n\n[...context truncated to fit ARG_MAX...]"
 	}
 
-	cmd := exec.CommandContext(claudeCtx, claudeBin, "-p", prompt)
+	claudeArgs := []string{"-p", prompt}
+	if m := os.Getenv("CLAUDE_MODEL"); m != "" {
+		claudeArgs = append(claudeArgs, "--model", m)
+	}
+	cmd := exec.CommandContext(claudeCtx, claudeBin, claudeArgs...)
 
 	// Inherit the full environment (picks up ANTHROPIC_AUTH_TOKEN,
 	// ANTHROPIC_BASE_URL, etc. from the systemd EnvironmentFile) and augment
@@ -217,20 +221,26 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		"/home/ec2-user/.local/bin:/root/.local/bin:/usr/local/bin:/usr/bin:/bin:"+os.Getenv("PATH"),
 	)
 
-	// Claude checks for ~/.claude.json on startup. If the file is absent it
-	// tries to open an interactive setup wizard, detects no TTY, and exits
-	// with no output. Work around this by giving claude a private writable
-	// HOME that contains a minimal config marking onboarding as complete.
-	// /tmp is a private tmpfs under systemd PrivateTmp=true — always writable.
-	if tmpHome, err2 := os.MkdirTemp("", "claude-home-*"); err2 == nil {
+	// Claude needs a ~/.claude.json to skip the interactive onboarding wizard
+	// (which hangs on a headless server with no TTY).
+	// Strategy:
+	//   1. If the real user already has a ~/.claude.json (i.e. ran `claude login`
+	//      on this machine), use the real HOME — credentials are already there.
+	//   2. Otherwise, create a temp HOME with a minimal config so claude starts
+	//      cleanly. CLAUDE_OAUTH_TOKEN / ANTHROPIC_API_KEY still work via env.
+	realCfg := filepath.Join(os.Getenv("HOME"), ".claude.json")
+	if _, statErr := os.Stat(realCfg); statErr == nil {
+		// Real config exists — use it as-is, no temp HOME needed.
+		slog.Info("using real ~/.claude.json for claude", "path", realCfg)
+	} else if tmpHome, err2 := os.MkdirTemp("", "claude-home-*"); err2 == nil {
 		claudeEnv = setEnv(claudeEnv, "HOME", tmpHome)
 		cfgPath := filepath.Join(tmpHome, ".claude.json")
-		cfgData := `{"hasCompletedProjectOnboarding":true,"installedExtensions":[]}`
+		cfgData := buildClaudeCfg()
 		if err3 := os.WriteFile(cfgPath, []byte(cfgData), 0600); err3 != nil {
 			slog.Warn("could not write claude temp config", "err", err3)
 		}
 		defer os.RemoveAll(tmpHome)
-		slog.Info("claude temp HOME", "path", tmpHome)
+		slog.Info("claude temp HOME (no real config found)", "path", tmpHome)
 	} else {
 		slog.Warn("could not create claude temp HOME", "err", err2)
 	}
@@ -628,6 +638,21 @@ If no issues, say so. Do not invent findings.
 	}
 
 	return sb.String()
+}
+
+// buildClaudeCfg returns the ~/.claude.json content for the temp HOME.
+// Injects CLAUDE_OAUTH_TOKEN if set, so subscription-based auth works on
+// headless servers where `claude login` can't open a browser.
+func buildClaudeCfg() string {
+	base := map[string]interface{}{
+		"hasCompletedProjectOnboarding": true,
+		"installedExtensions":           []interface{}{},
+	}
+	if tok := os.Getenv("CLAUDE_OAUTH_TOKEN"); tok != "" {
+		base["oauthToken"] = tok
+	}
+	b, _ := json.Marshal(base)
+	return string(b)
 }
 
 // jsonStr encodes s as a JSON string for SSE data fields.
