@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo, useCallback } from 'react'
-import { Brain, ChevronDown, ChevronRight, Clock, Table2, Trash2 } from 'lucide-react'
+import { Brain, ChevronDown, ChevronRight, Clock, Sparkles, Table2, Trash2 } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
+import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
 import { fmtTime, cn } from '../lib/utils'
 import { Card } from '../components/Card'
@@ -165,7 +166,7 @@ function AlertMessageRenderer({ message, instance }: { message: string; instance
 /* ------------------------------------------------------------------ */
 /*  AlertRow (expandable)                                             */
 /* ------------------------------------------------------------------ */
-function AlertRow({ alert, showMeta, staleHours }: { alert: Alert; showMeta?: boolean; staleHours: number }) {
+function AlertRow({ alert, showMeta, staleHours, onAnalyze }: { alert: Alert; showMeta?: boolean; staleHours: number; onAnalyze?: (alert: Alert) => void }) {
   const [expanded, setExpanded] = useState(false)
   const [suggestions, setSuggestions] = useState<Suggestion | null>(null)
   const [loadingSugg, setLoadingSugg] = useState(false)
@@ -270,6 +271,16 @@ function AlertRow({ alert, showMeta, staleHours }: { alert: Alert; showMeta?: bo
               {invSql.map((sql, i) => <SqlBlock key={i} sql={sql} instance={alert.instance} />)}
             </div>
           </div>
+
+          {onAnalyze && (
+            <button
+              onClick={() => onAnalyze(alert)}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-purple-400 hover:bg-purple-500/15 border border-purple-500/20 transition-colors"
+            >
+              <Sparkles size={11} />
+              Analyze this alert with AI
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -398,7 +409,14 @@ function StatCard({ label, value, color, sub }: { label: string; value: string |
 type ViewMode = 'grouped' | 'flat' | 'timeline'
 
 export default function Alerts() {
-  const { instances: cachedInstances, customFrom, customTo, setView } = useStore()
+  const { instances: cachedInstances, customFrom, customTo, setView, selectedInstance } = useStore()
+  const { analyze } = useAIAnalysis(selectedInstance)
+  const handleAnalyzeAlert = useCallback((alert: Alert) => {
+    analyze(`Alert: ${alert.title}`, { alert }, { contextType: 'row', tab: 'alerts', elementId: String(alert.id) })
+  }, [analyze])
+  const handleAnalyzeAll = useCallback((alerts: Alert[]) => {
+    analyze('Active Alerts', { alerts }, { contextType: 'tab', tab: 'alerts' })
+  }, [analyze])
   const [activeAlerts, setActiveAlerts] = useState<Alert[]>([])
   const [historyAlerts, setHistoryAlerts] = useState<Alert[]>([])
   const [loading, setLoading] = useState(true)
@@ -562,6 +580,14 @@ export default function Alerts() {
             <Brain size={14} />
             Analyze with AI
           </button>
+          <button
+            onClick={() => handleAnalyzeAll(filtered)}
+            disabled={filtered.length === 0}
+            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-purple-400 hover:bg-purple-500/15 border border-purple-500/20 transition-colors disabled:opacity-30"
+          >
+            <Sparkles size={14} />
+            Analyze filtered
+          </button>
           {totalStaleUnfiltered > 0 && (
             <button
               onClick={handleResolveStale}
@@ -633,7 +659,7 @@ export default function Alerts() {
         <TimelineView alerts={filtered} staleHours={staleHours} />
       ) : viewMode === 'flat' ? (
         <Card className="!p-0">
-          {filtered.map((alert) => <AlertRow key={alert.id} alert={alert} showMeta staleHours={staleHours} />)}
+          {filtered.map((alert) => <AlertRow key={alert.id} alert={alert} showMeta staleHours={staleHours} onAnalyze={handleAnalyzeAlert} />)}
         </Card>
       ) : (
         <div className="space-y-3">
@@ -667,7 +693,7 @@ export default function Alerts() {
                 </button>
                 {!isCollapsed && (
                   <div className="border-t border-[var(--border)]">
-                    {groupAlerts.map((alert) => <AlertRow key={alert.id} alert={alert} staleHours={staleHours} />)}
+                    {groupAlerts.map((alert) => <AlertRow key={alert.id} alert={alert} staleHours={staleHours} onAnalyze={handleAnalyzeAlert} />)}
                   </div>
                 )}
               </Card>

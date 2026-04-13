@@ -1,5 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
+import { Sparkles } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
+import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
 import { fmtNum, fmtTime, scoreColor } from '../lib/utils'
 import { Card } from '../components/Card'
@@ -51,6 +53,10 @@ function Skeleton() {
 /* ------------------------------------------------------------------ */
 export default function Overview() {
   const { setView, setInstance, setInstances } = useStore()
+  const { analyze } = useAIAnalysis('')
+  const handleAnalyze = useCallback((data: Record<string, any>) => {
+    analyze('Overview', data, { contextType: 'tab', tab: 'overview' })
+  }, [analyze])
   const [instances, setLocalInstances] = useState<Instance[]>([])
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [loading, setLoading] = useState(true)
@@ -133,9 +139,18 @@ export default function Overview() {
   return (
     <div className="space-y-6">
       {/* ---- Current state notice ---- */}
-      <div className="text-xs text-[var(--dim)] bg-[var(--hover)] rounded-lg px-3 py-2 border border-[var(--border)]">
-        Overview always shows <strong>current state</strong> — health scores, alerts, and metrics reflect right now.
-        Use <strong>Detail</strong> or <strong>Explore</strong> to view historical data with the time range selector.
+      <div className="flex items-center gap-3">
+        <div className="flex-1 text-xs text-[var(--dim)] bg-[var(--hover)] rounded-lg px-3 py-2 border border-[var(--border)]">
+          Overview always shows <strong>current state</strong> — health scores, alerts, and metrics reflect right now.
+          Use <strong>Detail</strong> or <strong>Explore</strong> to view historical data with the time range selector.
+        </div>
+        <button
+          onClick={() => handleAnalyze({ instances, alerts, avgHealth, firingAlerts, staleCount, runningQueries, activeMerges })}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-purple-400 hover:bg-purple-500/15 border border-purple-500/20 transition-colors shrink-0"
+        >
+          <Sparkles size={11} />
+          Analyze
+        </button>
       </div>
 
       {/* ---- Stat cards ---- */}

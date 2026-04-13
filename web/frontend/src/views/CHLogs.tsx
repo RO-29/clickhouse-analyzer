@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo, type ReactNode } from 'react'
-import { RefreshCw } from 'lucide-react'
+import { RefreshCw, Sparkles } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
+import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
 import { cn } from '../lib/utils'
 import type { CHLogEntry } from '../types/api'
@@ -37,6 +38,7 @@ function highlightSearch(text: string, search: string): ReactNode {
 
 export default function CHLogs() {
   const { instances, selectedInstance, setSelectedInstance } = useStore()
+  const { analyze } = useAIAnalysis(selectedInstance)
 
   const [inst, setInst] = useState(() => selectedInstance || instances[0] || '')
   const [level, setLevel] = useState<string>('All')
@@ -155,6 +157,14 @@ export default function CHLogs() {
         >
           <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
           Refresh
+        </button>
+        <button
+          onClick={() => analyze('CH Logs', { logs, instance: inst, level, search, timeWindow_minutes: minutes, stats }, { contextType: 'tab', tab: 'chlogs' })}
+          disabled={logs.length === 0}
+          className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium text-purple-400 hover:bg-purple-500/15 border border-purple-500/20 transition-colors disabled:opacity-30"
+        >
+          <Sparkles size={13} />
+          Analyze
         </button>
       </div>
 

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { RefreshCw, ChevronDown, ChevronRight } from 'lucide-react'
+import { RefreshCw, ChevronDown, ChevronRight, Sparkles } from 'lucide-react'
+import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
 import { cn } from '../lib/utils'
 import type { LogEntry } from '../types/api'
@@ -22,6 +23,7 @@ const LEVEL_BG: Record<string, string> = {
 }
 
 export default function AppLogs() {
+  const { analyze } = useAIAnalysis('')
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -112,6 +114,14 @@ export default function AppLogs() {
         >
           <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
           Refresh
+        </button>
+        <button
+          onClick={() => analyze('App Logs', { logs, level, search, stats }, { contextType: 'tab', tab: 'applogs' })}
+          disabled={logs.length === 0}
+          className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium text-purple-400 hover:bg-purple-500/15 border border-purple-500/20 transition-colors disabled:opacity-30"
+        >
+          <Sparkles size={13} />
+          Analyze
         </button>
       </div>
 

@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react'
-import { ChevronDown, ChevronRight, Play, AlertTriangle, Zap, Search } from 'lucide-react'
+import { ChevronDown, ChevronRight, Play, AlertTriangle, Zap, Search, Sparkles } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
+import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
 import { fmtBytes, fmtNum, fmtDuration, cn } from '../lib/utils'
 import { Card } from '../components/Card'
@@ -32,6 +33,7 @@ function Section({
   children,
   loading,
   error,
+  onAnalyze,
 }: {
   title: string
   count: number | null
@@ -40,38 +42,51 @@ function Section({
   children: React.ReactNode
   loading: boolean
   error: string | null
+  onAnalyze?: () => void
 }) {
   return (
     <Card className="!p-0">
-      <button
-        onClick={onToggle}
-        className="w-full flex items-center gap-3 px-5 py-4 text-left hover:bg-[var(--hover)] transition-colors"
-      >
-        {collapsed ? (
-          <ChevronRight size={16} className="shrink-0 text-[var(--dim)]" />
-        ) : (
-          <ChevronDown size={16} className="shrink-0 text-[var(--dim)]" />
+      <div className="flex items-center">
+        <button
+          onClick={onToggle}
+          className="flex-1 flex items-center gap-3 px-5 py-4 text-left hover:bg-[var(--hover)] transition-colors"
+        >
+          {collapsed ? (
+            <ChevronRight size={16} className="shrink-0 text-[var(--dim)]" />
+          ) : (
+            <ChevronDown size={16} className="shrink-0 text-[var(--dim)]" />
+          )}
+          <span className="font-semibold text-sm flex-1">{title}</span>
+          {loading && (
+            <span className="text-xs text-[var(--dim)]">Loading...</span>
+          )}
+          {count !== null && !loading && (
+            <Badge className={cn(
+              'border',
+              count === 0
+                ? 'bg-green-500/10 text-green-400 border-green-500/20'
+                : count <= 3
+                  ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20'
+                  : 'bg-red-500/10 text-red-400 border-red-500/20',
+            )}>
+              {count} {count === 1 ? 'issue' : 'issues'}
+            </Badge>
+          )}
+          {error && (
+            <Badge className="bg-red-500/10 text-red-400 border-red-500/20">error</Badge>
+          )}
+        </button>
+        {onAnalyze && count !== null && count > 0 && !loading && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onAnalyze() }}
+            className="flex items-center gap-1 px-3 py-1 mr-3 rounded text-xs font-medium text-purple-400 hover:bg-purple-500/15 border border-transparent hover:border-purple-500/20 transition-colors shrink-0"
+            title={`Analyze ${title} with AI`}
+          >
+            <Sparkles size={11} />
+            Analyze
+          </button>
         )}
-        <span className="font-semibold text-sm flex-1">{title}</span>
-        {loading && (
-          <span className="text-xs text-[var(--dim)]">Loading...</span>
-        )}
-        {count !== null && !loading && (
-          <Badge className={cn(
-            'border',
-            count === 0
-              ? 'bg-green-500/10 text-green-400 border-green-500/20'
-              : count <= 3
-                ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20'
-                : 'bg-red-500/10 text-red-400 border-red-500/20',
-          )}>
-            {count} {count === 1 ? 'issue' : 'issues'}
-          </Badge>
-        )}
-        {error && (
-          <Badge className="bg-red-500/10 text-red-400 border-red-500/20">error</Badge>
-        )}
-      </button>
+      </div>
       {!collapsed && (
         <div className="border-t border-[var(--border)] px-5 py-4">
           {error ? (
@@ -112,7 +127,8 @@ function FixButton({ sql, instance }: { sql: string; instance: string }) {
 /*  Advisor view                                                      */
 /* ------------------------------------------------------------------ */
 export default function Advisor() {
-  const { instances, navToTerminal, openTableDetail } = useStore()
+  const { instances, navToTerminal, openTableDetail, selectedInstance } = useStore()
+  const { analyze } = useAIAnalysis(selectedInstance)
   const [instance, setInstance] = useState('')
   const [hasRun, setHasRun] = useState(false)
 
@@ -281,6 +297,7 @@ export default function Advisor() {
           onToggle={() => toggle('compression')}
           loading={compression.loading}
           error={compression.error}
+          onAnalyze={() => analyze('Compression Analysis', { issues: compression.data, instance: inst }, { contextType: 'tab', tab: 'advisor', elementId: 'compression' })}
         >
           {compression.data && compression.data.length === 0 && (
             <div className="text-sm text-[var(--dim)]">All tables have good compression ratios.</div>
@@ -334,6 +351,7 @@ export default function Advisor() {
           onToggle={() => toggle('indexMemory')}
           loading={indexMemory.loading}
           error={indexMemory.error}
+          onAnalyze={() => analyze('Index Memory', { issues: indexMemoryIssues, instance: inst }, { contextType: 'tab', tab: 'advisor', elementId: 'indexMemory' })}
         >
           {indexMemory.data && (() => {
             const allData = Array.isArray(indexMemory.data) ? indexMemory.data : []
@@ -404,6 +422,7 @@ export default function Advisor() {
           onToggle={() => toggle('queryRegression')}
           loading={queryRegression.loading}
           error={queryRegression.error}
+          onAnalyze={() => analyze('Query Regression', { issues: queryRegression.data, instance: inst }, { contextType: 'tab', tab: 'advisor', elementId: 'queryRegression' })}
         >
           <div className="text-xs text-[var(--dim)] mb-3">
             Queries whose avg duration this hour is &gt;2× their 24h average or yesterday's same hour.
@@ -461,6 +480,7 @@ export default function Advisor() {
           onToggle={() => toggle('newPatterns')}
           loading={newPatterns.loading}
           error={newPatterns.error}
+          onAnalyze={() => analyze('New Query Patterns', { issues: newPatterns.data, instance: inst }, { contextType: 'tab', tab: 'advisor', elementId: 'newPatterns' })}
         >
           {newPatterns.data && newPatterns.data.length === 0 && (
             <div className="text-sm text-[var(--dim)]">No new query patterns detected.</div>
@@ -507,6 +527,7 @@ export default function Advisor() {
           onToggle={() => toggle('unusedTables')}
           loading={unusedTables.loading}
           error={unusedTables.error}
+          onAnalyze={() => analyze('Unused Tables', { issues: unusedTables.data, instance: inst }, { contextType: 'tab', tab: 'advisor', elementId: 'unusedTables' })}
         >
           {unusedTables.data && unusedTables.data.length === 0 && (
             <div className="text-sm text-[var(--dim)]">No unused tables detected.</div>
@@ -561,6 +582,7 @@ export default function Advisor() {
           onToggle={() => toggle('schema')}
           loading={schema.loading}
           error={schema.error}
+          onAnalyze={() => analyze('Schema Recommendations', { issues: schema.data, instance: inst }, { contextType: 'tab', tab: 'advisor', elementId: 'schema' })}
         >
           {schema.data && schema.data.length === 0 && (
             <div className="text-sm text-[var(--dim)]">No schema issues detected.</div>
@@ -617,6 +639,7 @@ export default function Advisor() {
           onToggle={() => toggle('cardinality')}
           loading={cardinality.loading}
           error={cardinality.error}
+          onAnalyze={() => analyze('Column Cardinality', { issues: cardinality.data, instance: inst }, { contextType: 'tab', tab: 'advisor', elementId: 'cardinality' })}
         >
           {!cardinalityRun && (
             <div className="flex items-center gap-3">
@@ -680,6 +703,7 @@ export default function Advisor() {
           onToggle={() => toggle('storagePolicy')}
           loading={storagePolicy.loading}
           error={storagePolicy.error}
+          onAnalyze={() => analyze('Storage Policy Review', { issues: storagePolicy.data, instance: inst }, { contextType: 'tab', tab: 'advisor', elementId: 'storagePolicy' })}
         >
           {storagePolicy.data && storagePolicy.data.length === 0 && (
             <div className="text-sm text-[var(--dim)]">No storage policy issues detected.</div>

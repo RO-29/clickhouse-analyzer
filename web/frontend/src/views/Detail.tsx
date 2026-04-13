@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { ArrowLeft } from 'lucide-react'
+import { useEffect, useState, useCallback } from 'react'
+import { ArrowLeft, Sparkles } from 'lucide-react'
 import { Bar } from 'react-chartjs-2'
 import {
   Chart as ChartJS,
@@ -9,6 +9,7 @@ import {
   Tooltip as ChartTooltip,
 } from 'chart.js'
 import { useStore } from '../hooks/useStore'
+import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
 import { fmtBytes, fmtNum, fmtTime, fmtDuration } from '../lib/utils'
 import { Card } from '../components/Card'
@@ -25,6 +26,10 @@ ChartJS.register(CategoryScale, LinearScale, BarElement, ChartTooltip)
 /* ------------------------------------------------------------------ */
 export default function Detail() {
   const { instance, setView, setInstance } = useStore()
+  const { analyze } = useAIAnalysis(instance ?? '')
+  const handleAnalyze = useCallback((data: Record<string, any>) => {
+    analyze('Instance Detail', data, { contextType: 'tab', tab: 'detail' })
+  }, [analyze])
 
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [queries, setQueries] = useState<Record<string, any>[]>([])
@@ -242,7 +247,14 @@ export default function Detail() {
         >
           <ArrowLeft size={20} />
         </button>
-        <h1 className="text-xl font-bold">{instance}</h1>
+        <h1 className="text-xl font-bold flex-1">{instance}</h1>
+        <button
+          onClick={() => handleAnalyze({ instance, alerts, queries, tables, disks, s3Stats, cacheStats, tableMemory })}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-purple-400 hover:bg-purple-500/15 border border-purple-500/20 transition-colors"
+        >
+          <Sparkles size={11} />
+          Analyze
+        </button>
       </div>
 
       {/* ---- Health checklist ---- */}

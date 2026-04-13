@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useCallback } from 'react'
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -7,8 +7,9 @@ import {
   Tooltip as ChartTooltip,
 } from 'chart.js'
 import { Bar } from 'react-chartjs-2'
-import { Check, AlertTriangle, XCircle, ChevronDown, ChevronRight } from 'lucide-react'
+import { Check, AlertTriangle, XCircle, ChevronDown, ChevronRight, Sparkles } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
+import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
 import { fmtBytes, fmtNum, cn } from '../lib/utils'
 import { Card } from '../components/Card'
@@ -703,7 +704,11 @@ function TabButton({ active, label, onClick }: { active: boolean; label: string;
 /*  Main Compare                                                      */
 /* ------------------------------------------------------------------ */
 export default function Compare() {
-  const { instances: storeInstances } = useStore()
+  const { instances: storeInstances, selectedInstance } = useStore()
+  const { analyze } = useAIAnalysis(selectedInstance)
+  const handleAnalyze = useCallback((data: Record<string, any>) => {
+    analyze('Instance Comparison', data, { contextType: 'tab', tab: 'compare' })
+  }, [analyze])
 
   const [tablesData, setTablesData] = useState<TablesData | null>(null)
   const [settingsData, setSettingsData] = useState<SettingsData | null>(null)
@@ -782,12 +787,21 @@ export default function Compare() {
         </div>
       </div>
 
-      {/* ---- Tab bar ---- */}
+      {/* ---- Tab bar + analyze ---- */}
+      <div className="flex items-center gap-3">
       <div className="flex gap-1 bg-[var(--surface)] border border-[var(--border)] rounded-lg p-1 w-fit">
         <TabButton active={tab === 'tables'} label="Tables" onClick={() => setTab('tables')} />
         <TabButton active={tab === 'settings'} label="Settings" onClick={() => setTab('settings')} />
         <TabButton active={tab === 'metrics'} label="Metrics" onClick={() => setTab('metrics')} />
         <TabButton active={tab === 'memory'} label="Memory" onClick={() => setTab('memory')} />
+      </div>
+      <button
+        onClick={() => handleAnalyze({ baseline: effectiveBaseline, instances, tab, tablesData, settingsData })}
+        className="ml-auto flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-purple-400 hover:bg-purple-500/15 border border-purple-500/20 transition-colors"
+      >
+        <Sparkles size={11} />
+        Analyze
+      </button>
       </div>
 
       {/* ---- Tab content ---- */}
