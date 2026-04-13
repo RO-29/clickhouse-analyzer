@@ -82,7 +82,7 @@ function Layout() {
         instance={selectedInstance}
         entries={aiEntries}
         isOpen={aiOpen}
-        onToggle={() => setAiOpen(o => !o)}
+        onToggle={() => setAiOpen(!aiOpen)}
         onAnalyze={aiAnalyze}
         onClear={clearAiEntries}
       />
