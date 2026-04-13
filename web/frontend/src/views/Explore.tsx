@@ -1,11 +1,13 @@
 import { useState, useEffect, useMemo, useCallback, type ChangeEvent } from 'react'
 import { Sparkles } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
+import { useAIAnalysis, PANEL_EXPANDED_HEIGHT, PANEL_COLLAPSED_HEIGHT } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
 import { fmtBytes, fmtNum, fmtDuration, cn } from '../lib/utils'
 import { Card } from '../components/Card'
 import { HistoryChart } from '../components/HistoryChart'
 import { DataTable } from '../components/DataTable'
+import { AIAnalysisPanel } from '../components/AIAnalysisPanel'
 import type {
   QueryPattern,
   HistoryFailure,
@@ -15,6 +17,7 @@ import type {
   HistoryAsyncMetric,
   S3Stats,
 } from '../types/api'
+import type { AnalyzeOptions } from '../hooks/useAIAnalysis'
 
 type Tab =
   | 'patterns'
@@ -48,11 +51,50 @@ const C = {
   pink: '#ec4899',
 }
 
+/* ── shared props every tab receives ─────────────────────────────────────── */
+
+interface TabProps {
+  instance: string
+  from: number
+  to: number
+  onAnalyze: (label: string, data: Record<string, any>, options: AnalyzeOptions) => void
+}
+
+/* ── small helper: "Analyze Tab" button ─────────────────────────────────── */
+
+function AnalyzeTabBtn({
+  label,
+  data,
+  tab,
+  onAnalyze,
+  disabled,
+}: {
+  label: string
+  data: Record<string, any>
+  tab: Tab
+  onAnalyze: TabProps['onAnalyze']
+  disabled?: boolean
+}) {
+  return (
+    <button
+      onClick={() =>
+        onAnalyze(label, data, { contextType: 'tab', tab })
+      }
+      disabled={disabled}
+      className="flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium text-purple-400 hover:bg-purple-500/15 border border-transparent hover:border-purple-500/20 transition-colors disabled:opacity-30"
+      title={`Analyze ${label} with AI`}
+    >
+      <Sparkles size={11} />
+      Analyze tab
+    </button>
+  )
+}
+
 /* ------------------------------------------------------------------ */
 /*  Query Patterns Tab                                                 */
 /* ------------------------------------------------------------------ */
 
-function QueryPatternsTab({ instance, from, to }: { instance: string; from: number; to: number }) {
+function QueryPatternsTab({ instance, from, to, onAnalyze }: TabProps) {
   const [patterns, setPatterns] = useState<QueryPattern[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -66,8 +108,8 @@ function QueryPatternsTab({ instance, from, to }: { instance: string; from: numb
     setError(null)
     setSelectedHash(null)
     api.history.queryPatterns(instance, from, to)
-      .then((d) => { if (!c) setPatterns(d) })
-      .catch((e) => { if (!c) setError(e.message) })
+      .then(d => { if (!c) setPatterns(d) })
+      .catch(e => { if (!c) setError(e.message) })
       .finally(() => { if (!c) setLoading(false) })
     return () => { c = true }
   }, [instance, from, to])
@@ -77,7 +119,7 @@ function QueryPatternsTab({ instance, from, to }: { instance: string; from: numb
     let c = false
     setTlLoading(true)
     api.history.queryPatternTimeline(instance, selectedHash, from, to)
-      .then((d) => { if (!c) setTimeline(Array.isArray(d) ? d : []) })
+      .then(d => { if (!c) setTimeline(Array.isArray(d) ? d : []) })
       .catch(() => { if (!c) setTimeline([]) })
       .finally(() => { if (!c) setTlLoading(false) })
     return () => { c = true }
@@ -109,19 +151,38 @@ function QueryPatternsTab({ instance, from, to }: { instance: string; from: numb
   return (
     <div className="space-y-4">
       <Card>
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-xs text-[var(--dim)] uppercase tracking-wider font-medium">
+            {patterns.length} patterns
+          </span>
+          <AnalyzeTabBtn
+            label="Query Patterns"
+            data={{ patterns }}
+            tab="patterns"
+            onAnalyze={onAnalyze}
+            disabled={patterns.length === 0}
+          />
+        </div>
         <DataTable
           columns={columns}
           data={patterns}
-          onRowClick={(r) => setSelectedHash(String(r.normalized_query_hash))}
+          onRowClick={r => setSelectedHash(String(r.normalized_query_hash))}
+          onRowAnalyze={row =>
+            onAnalyze(
+              `Query: ${String(row.normalized_query_hash).slice(0, 12)}`,
+              { row, allPatterns: patterns },
+              { contextType: 'row', tab: 'patterns', elementId: String(row.normalized_query_hash) },
+            )
+          }
           emptyText="No query patterns found"
         />
       </Card>
       {selectedHash && (
         <div className="mt-4">
           {tlLoading
-            ? <div className="text-sm text-[var(--dim)] p-4">Loading timeline for {selectedHash.slice(0, 12)}...</div>
+            ? <div className="text-sm text-[var(--dim)] p-4">Loading timeline for {selectedHash.slice(0, 12)}…</div>
             : timeline.length === 0
-              ? <div className="text-sm text-[var(--dim)] p-4 bg-[var(--surface)] border border-[var(--border)] rounded-xl">No timeline data for hash {selectedHash.slice(0, 12)} in selected time range. Try expanding the time range.</div>
+              ? <div className="text-sm text-[var(--dim)] p-4 bg-[var(--surface)] border border-[var(--border)] rounded-xl">No timeline data for hash {selectedHash.slice(0, 12)} in selected time range.</div>
               : <HistoryChart
                   title={`Timeline: ${selectedHash.slice(0, 12)}`}
                   data={timeline}
@@ -129,6 +190,9 @@ function QueryPatternsTab({ instance, from, to }: { instance: string; from: numb
                     { key: 'cnt', label: 'Count', color: C.blue },
                     { key: 'avg_ms', label: 'Avg ms', color: C.yellow },
                   ]}
+                  onAnalyze={(data, series, title) =>
+                    onAnalyze(title, { data, series }, { contextType: 'chart', tab: 'patterns' })
+                  }
                 />
           }
         </div>
@@ -141,7 +205,7 @@ function QueryPatternsTab({ instance, from, to }: { instance: string; from: numb
 /*  Failures Tab                                                       */
 /* ------------------------------------------------------------------ */
 
-function FailuresTab({ instance, from, to }: { instance: string; from: number; to: number }) {
+function FailuresTab({ instance, from, to, onAnalyze }: TabProps) {
   const [data, setData] = useState<HistoryFailure[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -151,35 +215,25 @@ function FailuresTab({ instance, from, to }: { instance: string; from: number; t
     setLoading(true)
     setError(null)
     api.history.failures(instance, from, to)
-      .then((d) => { if (!c) setData(d) })
-      .catch((e) => { if (!c) setError(e.message) })
+      .then(d => { if (!c) setData(d) })
+      .catch(e => { if (!c) setError(e.message) })
       .finally(() => { if (!c) setLoading(false) })
     return () => { c = true }
   }, [instance, from, to])
 
   const byTs = useMemo(() => {
     const map = new Map<string, number>()
-    for (const r of data) {
-      map.set(r.ts, (map.get(r.ts) ?? 0) + r.cnt)
-    }
-    return [...map.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([ts, cnt]) => ({ ts, cnt }))
+    for (const r of data) map.set(r.ts, (map.get(r.ts) ?? 0) + r.cnt)
+    return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([ts, cnt]) => ({ ts, cnt }))
   }, [data])
 
   const byCode = useMemo(() => {
     const map = new Map<number, { count: number; sample: string }>()
     for (const r of data) {
       const prev = map.get(r.exception_code)
-      if (prev) {
-        prev.count += r.cnt
-      } else {
-        map.set(r.exception_code, { count: r.cnt, sample: r.sample })
-      }
+      if (prev) { prev.count += r.cnt } else { map.set(r.exception_code, { count: r.cnt, sample: r.sample }) }
     }
-    return [...map.entries()]
-      .map(([code, v]) => ({ exception_code: code, count: v.count, sample: v.sample }))
-      .sort((a, b) => b.count - a.count)
+    return [...map.entries()].map(([code, v]) => ({ exception_code: code, count: v.count, sample: v.sample })).sort((a, b) => b.count - a.count)
   }, [data])
 
   if (loading) return <LoadingSkeleton />
@@ -191,10 +245,20 @@ function FailuresTab({ instance, from, to }: { instance: string; from: number; t
         title="Failures Over Time"
         data={byTs}
         series={[{ key: 'cnt', label: 'Count', color: C.red }]}
+        onAnalyze={(d, s, title) =>
+          onAnalyze(title, { data: d, series: s }, { contextType: 'chart', tab: 'failures' })
+        }
       />
       <Card>
-        <div className="text-xs font-medium text-[var(--dim)] uppercase tracking-wider mb-2">
-          By Exception Code
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-xs font-medium text-[var(--dim)] uppercase tracking-wider">By Exception Code</div>
+          <AnalyzeTabBtn
+            label="Failures"
+            data={{ byCode, byTs }}
+            tab="failures"
+            onAnalyze={onAnalyze}
+            disabled={byCode.length === 0}
+          />
         </div>
         <DataTable
           columns={[
@@ -205,12 +269,19 @@ function FailuresTab({ instance, from, to }: { instance: string; from: number; t
               label: 'Sample',
               format: (v: any) => (
                 <span className="text-[var(--dim)]">
-                  {String(v ?? '').length > 120 ? String(v).slice(0, 120) + '...' : String(v ?? '')}
+                  {String(v ?? '').length > 120 ? String(v).slice(0, 120) + '…' : String(v ?? '')}
                 </span>
               ),
             },
           ]}
           data={byCode}
+          onRowAnalyze={row =>
+            onAnalyze(
+              `Error code ${row.exception_code}`,
+              { row, allErrors: byCode },
+              { contextType: 'row', tab: 'failures', elementId: String(row.exception_code) },
+            )
+          }
           emptyText="No failures"
         />
       </Card>
@@ -222,7 +293,7 @@ function FailuresTab({ instance, from, to }: { instance: string; from: number; t
 /*  Merges & Parts Tab                                                 */
 /* ------------------------------------------------------------------ */
 
-function MergesTab({ instance, from, to }: { instance: string; from: number; to: number }) {
+function MergesTab({ instance, from, to, onAnalyze }: TabProps) {
   const [data, setData] = useState<HistoryMerge[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -232,8 +303,8 @@ function MergesTab({ instance, from, to }: { instance: string; from: number; to:
     setLoading(true)
     setError(null)
     api.history.merges(instance, from, to)
-      .then((d) => { if (!c) setData(d) })
-      .catch((e) => { if (!c) setError(e.message) })
+      .then(d => { if (!c) setData(d) })
+      .catch(e => { if (!c) setError(e.message) })
       .finally(() => { if (!c) setLoading(false) })
     return () => { c = true }
   }, [instance, from, to])
@@ -243,6 +314,15 @@ function MergesTab({ instance, from, to }: { instance: string; from: number; to:
 
   return (
     <div className="space-y-4">
+      <div className="flex justify-end">
+        <AnalyzeTabBtn
+          label="Merges & Parts"
+          data={{ data }}
+          tab="merges"
+          onAnalyze={onAnalyze}
+          disabled={data.length === 0}
+        />
+      </div>
       <HistoryChart
         title="Merges & Parts"
         data={data}
@@ -251,12 +331,18 @@ function MergesTab({ instance, from, to }: { instance: string; from: number; to:
           { key: 'new_part_count', label: 'New Parts', color: C.green },
           { key: 'remove_count', label: 'Removed', color: C.red },
         ]}
+        onAnalyze={(d, s, title) =>
+          onAnalyze(title, { data: d, series: s }, { contextType: 'chart', tab: 'merges' })
+        }
       />
       <HistoryChart
         title="Average Merge Duration"
         data={data}
         series={[{ key: 'avg_merge_ms', label: 'Avg Merge ms', color: C.orange }]}
         yFormat="ms"
+        onAnalyze={(d, s, title) =>
+          onAnalyze(title, { data: d, series: s }, { contextType: 'chart', tab: 'merges' })
+        }
       />
     </div>
   )
@@ -266,7 +352,7 @@ function MergesTab({ instance, from, to }: { instance: string; from: number; to:
 /*  MV Performance Tab                                                 */
 /* ------------------------------------------------------------------ */
 
-function MVTab({ instance, from, to }: { instance: string; from: number; to: number }) {
+function MVTab({ instance, from, to, onAnalyze }: TabProps) {
   const [data, setData] = useState<Record<string, any>[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -278,8 +364,8 @@ function MVTab({ instance, from, to }: { instance: string; from: number; to: num
     setError(null)
     setSelectedView(null)
     api.history.mvs(instance, from, to)
-      .then((d) => { if (!c) setData(d) })
-      .catch((e) => { if (!c) setError(e.message) })
+      .then(d => { if (!c) setData(d) })
+      .catch(e => { if (!c) setError(e.message) })
       .finally(() => { if (!c) setLoading(false) })
     return () => { c = true }
   }, [instance, from, to])
@@ -297,19 +383,13 @@ function MVTab({ instance, from, to }: { instance: string; from: number; to: num
       map.set(name, prev)
     }
     return [...map.entries()].map(([name, v]) => ({
-      view_name: name,
-      cnt: v.cnt,
-      avg_ms: v.n > 0 ? v.sumAvg / v.n : 0,
-      max_ms: v.maxMax,
-      failures: v.failures,
+      view_name: name, cnt: v.cnt, avg_ms: v.n > 0 ? v.sumAvg / v.n : 0, max_ms: v.maxMax, failures: v.failures,
     })).sort((a, b) => b.cnt - a.cnt)
   }, [data])
 
   const selectedData = useMemo(() => {
     if (!selectedView) return []
-    return data
-      .filter((r) => (r.view_name ?? r.target_name) === selectedView)
-      .sort((a, b) => String(a.ts).localeCompare(String(b.ts)))
+    return data.filter(r => (r.view_name ?? r.target_name) === selectedView).sort((a, b) => String(a.ts).localeCompare(String(b.ts)))
   }, [data, selectedView])
 
   if (loading) return <LoadingSkeleton />
@@ -318,6 +398,18 @@ function MVTab({ instance, from, to }: { instance: string; from: number; to: num
   return (
     <div className="space-y-4">
       <Card>
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-xs text-[var(--dim)] uppercase tracking-wider font-medium">
+            {aggregated.length} views
+          </span>
+          <AnalyzeTabBtn
+            label="MV Performance"
+            data={{ views: aggregated }}
+            tab="mvs"
+            onAnalyze={onAnalyze}
+            disabled={aggregated.length === 0}
+          />
+        </div>
         <DataTable
           columns={[
             { key: 'view_name', label: 'View Name' },
@@ -327,7 +419,14 @@ function MVTab({ instance, from, to }: { instance: string; from: number; to: num
             { key: 'failures', label: 'Failures', format: (v: any) => fmtNum(v) },
           ]}
           data={aggregated}
-          onRowClick={(r) => setSelectedView(r.view_name)}
+          onRowClick={r => setSelectedView(r.view_name)}
+          onRowAnalyze={row =>
+            onAnalyze(
+              `MV: ${row.view_name}`,
+              { row, allViews: aggregated },
+              { contextType: 'row', tab: 'mvs', elementId: String(row.view_name) },
+            )
+          }
           emptyText="No materialized view data"
         />
       </Card>
@@ -337,6 +436,9 @@ function MVTab({ instance, from, to }: { instance: string; from: number; to: num
           data={selectedData}
           series={[{ key: 'avg_ms', label: 'Avg ms', color: C.purple }]}
           yFormat="ms"
+          onAnalyze={(d, s, title) =>
+            onAnalyze(title, { data: d, series: s }, { contextType: 'chart', tab: 'mvs' })
+          }
         />
       )}
     </div>
@@ -347,7 +449,7 @@ function MVTab({ instance, from, to }: { instance: string; from: number; to: num
 /*  S3 Latency Tab                                                     */
 /* ------------------------------------------------------------------ */
 
-function S3Tab({ instance, from, to }: { instance: string; from: number; to: number }) {
+function S3Tab({ instance, from, to, onAnalyze }: TabProps) {
   const [history, setHistory] = useState<HistoryS3[]>([])
   const [stats, setStats] = useState<S3Stats | null>(null)
   const [loading, setLoading] = useState(true)
@@ -357,12 +459,9 @@ function S3Tab({ instance, from, to }: { instance: string; from: number; to: num
     let c = false
     setLoading(true)
     setError(null)
-    Promise.all([
-      api.history.s3(instance, from, to),
-      api.s3Stats(instance),
-    ])
+    Promise.all([api.history.s3(instance, from, to), api.s3Stats(instance)])
       .then(([h, s]) => { if (!c) { setHistory(h); setStats(s) } })
-      .catch((e) => { if (!c) setError(e.message) })
+      .catch(e => { if (!c) setError(e.message) })
       .finally(() => { if (!c) setLoading(false) })
     return () => { c = true }
   }, [instance, from, to])
@@ -372,6 +471,15 @@ function S3Tab({ instance, from, to }: { instance: string; from: number; to: num
 
   return (
     <div className="space-y-4">
+      <div className="flex justify-end">
+        <AnalyzeTabBtn
+          label="S3 Latency"
+          data={{ history, latencyByQuery: stats?.latency_by_query, latencyByTable: stats?.latency_by_table }}
+          tab="s3"
+          onAnalyze={onAnalyze}
+          disabled={history.length === 0}
+        />
+      </div>
       <HistoryChart
         title="S3 Latency & Requests"
         data={history}
@@ -379,42 +487,39 @@ function S3Tab({ instance, from, to }: { instance: string; from: number; to: num
           { key: 'avg_latency_ms', label: 'Avg Latency ms', color: C.blue },
           { key: 'total_s3_requests', label: 'Total Requests', color: C.green },
         ]}
+        onAnalyze={(d, s, title) =>
+          onAnalyze(title, { data: d, series: s }, { contextType: 'chart', tab: 's3' })
+        }
       />
       {stats?.latency_by_query && stats.latency_by_query.length > 0 && (
         <Card>
-          <div className="text-xs font-medium text-[var(--dim)] uppercase tracking-wider mb-2">
-            S3 Latency by Query
-          </div>
+          <div className="text-xs font-medium text-[var(--dim)] uppercase tracking-wider mb-2">S3 Latency by Query</div>
           <DataTable
             columns={[
-              {
-                key: 'normalized_query_hash',
-                label: 'Hash',
-                format: (v: any) => String(v ?? '').slice(0, 12),
-              },
+              { key: 'normalized_query_hash', label: 'Hash', format: (v: any) => String(v ?? '').slice(0, 12) },
               { key: 'cnt', label: 'Count', format: (v: any) => fmtNum(v) },
               { key: 'avg_latency_ms', label: 'Avg ms', format: (v: any) => fmtDuration(Number(v ?? 0)) },
               { key: 'max_latency_ms', label: 'Max ms', format: (v: any) => fmtDuration(Number(v ?? 0)) },
               {
-                key: 'sample_query',
-                label: 'Sample',
-                format: (v: any) => (
-                  <span className="text-[var(--dim)]" title={String(v ?? '')}>
-                    {String(v ?? '').slice(0, 100)}
-                  </span>
-                ),
+                key: 'sample_query', label: 'Sample',
+                format: (v: any) => <span className="text-[var(--dim)]" title={String(v ?? '')}>{String(v ?? '').slice(0, 100)}</span>,
               },
             ]}
             data={stats.latency_by_query}
+            onRowAnalyze={row =>
+              onAnalyze(
+                `S3 query ${String(row.normalized_query_hash).slice(0, 12)}`,
+                { row, allQueries: stats.latency_by_query },
+                { contextType: 'row', tab: 's3', elementId: String(row.normalized_query_hash) },
+              )
+            }
             emptyText="No query data"
           />
         </Card>
       )}
       {stats?.latency_by_table && stats.latency_by_table.length > 0 && (
         <Card>
-          <div className="text-xs font-medium text-[var(--dim)] uppercase tracking-wider mb-2">
-            S3 Latency by Table
-          </div>
+          <div className="text-xs font-medium text-[var(--dim)] uppercase tracking-wider mb-2">S3 Latency by Table</div>
           <DataTable
             columns={[
               { key: 'table_name', label: 'Table' },
@@ -432,10 +537,10 @@ function S3Tab({ instance, from, to }: { instance: string; from: number; to: num
 }
 
 /* ------------------------------------------------------------------ */
-/*  Insert Throughput Tab                                               */
+/*  Insert Throughput Tab                                              */
 /* ------------------------------------------------------------------ */
 
-function InsertsTab({ instance, from, to }: { instance: string; from: number; to: number }) {
+function InsertsTab({ instance, from, to, onAnalyze }: TabProps) {
   const [data, setData] = useState<HistoryInsert[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -445,20 +550,16 @@ function InsertsTab({ instance, from, to }: { instance: string; from: number; to
     setLoading(true)
     setError(null)
     api.history.inserts(instance, from, to)
-      .then((d) => { if (!c) setData(d) })
-      .catch((e) => { if (!c) setError(e.message) })
+      .then(d => { if (!c) setData(d) })
+      .catch(e => { if (!c) setError(e.message) })
       .finally(() => { if (!c) setLoading(false) })
     return () => { c = true }
   }, [instance, from, to])
 
   const byTs = useMemo(() => {
     const map = new Map<string, number>()
-    for (const r of data) {
-      map.set(r.ts, (map.get(r.ts) ?? 0) + r.total_rows)
-    }
-    return [...map.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([ts, total_rows]) => ({ ts, total_rows }))
+    for (const r of data) map.set(r.ts, (map.get(r.ts) ?? 0) + r.total_rows)
+    return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([ts, total_rows]) => ({ ts, total_rows }))
   }, [data])
 
   const byTable = useMemo(() => {
@@ -472,9 +573,7 @@ function InsertsTab({ instance, from, to }: { instance: string; from: number; to
       prev.small_insert_count += r.small_insert_count
       map.set(key, prev)
     }
-    return [...map.entries()]
-      .map(([table, v]) => ({ table, ...v }))
-      .sort((a, b) => b.total_rows - a.total_rows)
+    return [...map.entries()].map(([table, v]) => ({ table, ...v })).sort((a, b) => b.total_rows - a.total_rows)
   }, [data])
 
   if (loading) return <LoadingSkeleton />
@@ -486,10 +585,20 @@ function InsertsTab({ instance, from, to }: { instance: string; from: number; to
         title="Insert Throughput (Rows)"
         data={byTs}
         series={[{ key: 'total_rows', label: 'Total Rows', color: C.blue }]}
+        onAnalyze={(d, s, title) =>
+          onAnalyze(title, { data: d, series: s }, { contextType: 'chart', tab: 'inserts' })
+        }
       />
       <Card>
-        <div className="text-xs font-medium text-[var(--dim)] uppercase tracking-wider mb-2">
-          By Table
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-xs font-medium text-[var(--dim)] uppercase tracking-wider">By Table</div>
+          <AnalyzeTabBtn
+            label="Insert Throughput"
+            data={{ byTable, byTs }}
+            tab="inserts"
+            onAnalyze={onAnalyze}
+            disabled={byTable.length === 0}
+          />
         </div>
         <DataTable
           columns={[
@@ -500,6 +609,13 @@ function InsertsTab({ instance, from, to }: { instance: string; from: number; to
             { key: 'small_insert_count', label: 'Small Inserts', format: (v: any) => fmtNum(v) },
           ]}
           data={byTable}
+          onRowAnalyze={row =>
+            onAnalyze(
+              `Inserts: ${row.table}`,
+              { row, allTables: byTable },
+              { contextType: 'row', tab: 'inserts', elementId: String(row.table) },
+            )
+          }
           emptyText="No insert data"
         />
       </Card>
@@ -511,7 +627,7 @@ function InsertsTab({ instance, from, to }: { instance: string; from: number; to
 /*  System Metrics Tab                                                 */
 /* ------------------------------------------------------------------ */
 
-function SystemMetricsTab({ instance, from, to }: { instance: string; from: number; to: number }) {
+function SystemMetricsTab({ instance, from, to, onAnalyze }: TabProps) {
   const [data, setData] = useState<HistoryAsyncMetric[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -520,44 +636,32 @@ function SystemMetricsTab({ instance, from, to }: { instance: string; from: numb
     let c = false
     setLoading(true)
     setError(null)
-    api.history.asyncMetrics(
-      instance, from, to,
-      'MemoryResident,CGroupMemoryUsed,LoadAverage1,LoadAverage5,LoadAverage15',
-    )
-      .then((d) => { if (!c) setData(d) })
-      .catch((e) => { if (!c) setError(e.message) })
+    api.history.asyncMetrics(instance, from, to, 'MemoryResident,CGroupMemoryUsed,LoadAverage1,LoadAverage5,LoadAverage15')
+      .then(d => { if (!c) setData(d) })
+      .catch(e => { if (!c) setError(e.message) })
       .finally(() => { if (!c) setLoading(false) })
     return () => { c = true }
   }, [instance, from, to])
 
-  // Pivot: for each unique ts, create a row with each metric as a column
   const { memoryData, loadData } = useMemo(() => {
-    const allTs = [...new Set(data.map((r) => r.ts))].sort()
+    const allTs = [...new Set(data.map(r => r.ts))].sort()
     const grouped = new Map<string, Map<string, number>>()
     for (const r of data) {
       if (!grouped.has(r.metric)) grouped.set(r.metric, new Map())
       grouped.get(r.metric)!.set(r.ts, r.avg_value)
     }
-
     const memoryMetrics = ['MemoryResident', 'CGroupMemoryUsed']
     const loadMetrics = ['LoadAverage1', 'LoadAverage5', 'LoadAverage15']
-
-    const memoryData = allTs.map((ts) => {
+    const memoryData = allTs.map(ts => {
       const row: Record<string, any> = { ts }
-      for (const m of memoryMetrics) {
-        row[m] = grouped.get(m)?.get(ts) ?? 0
-      }
+      for (const m of memoryMetrics) row[m] = grouped.get(m)?.get(ts) ?? 0
       return row
     })
-
-    const loadData = allTs.map((ts) => {
+    const loadData = allTs.map(ts => {
       const row: Record<string, any> = { ts }
-      for (const m of loadMetrics) {
-        row[m] = grouped.get(m)?.get(ts) ?? 0
-      }
+      for (const m of loadMetrics) row[m] = grouped.get(m)?.get(ts) ?? 0
       return row
     })
-
     return { memoryData, loadData }
   }, [data])
 
@@ -566,6 +670,15 @@ function SystemMetricsTab({ instance, from, to }: { instance: string; from: numb
 
   return (
     <div className="space-y-4">
+      <div className="flex justify-end">
+        <AnalyzeTabBtn
+          label="System Metrics"
+          data={{ memoryData, loadData }}
+          tab="metrics"
+          onAnalyze={onAnalyze}
+          disabled={data.length === 0}
+        />
+      </div>
       <HistoryChart
         title="Memory"
         data={memoryData}
@@ -574,6 +687,9 @@ function SystemMetricsTab({ instance, from, to }: { instance: string; from: numb
           { key: 'CGroupMemoryUsed', label: 'CGroupMemoryUsed', color: C.green },
         ]}
         yFormat="bytes"
+        onAnalyze={(d, s, title) =>
+          onAnalyze(title, { data: d, series: s }, { contextType: 'chart', tab: 'metrics' })
+        }
       />
       <HistoryChart
         title="Load Average"
@@ -583,6 +699,9 @@ function SystemMetricsTab({ instance, from, to }: { instance: string; from: numb
           { key: 'LoadAverage5', label: 'LoadAverage5', color: C.yellow },
           { key: 'LoadAverage15', label: 'LoadAverage15', color: C.red },
         ]}
+        onAnalyze={(d, s, title) =>
+          onAnalyze(title, { data: d, series: s }, { contextType: 'chart', tab: 'metrics' })
+        }
       />
     </div>
   )
@@ -592,7 +711,7 @@ function SystemMetricsTab({ instance, from, to }: { instance: string; from: numb
 /*  Disk I/O Tab                                                       */
 /* ------------------------------------------------------------------ */
 
-function DiskIOTab({ instance, from, to }: { instance: string; from: number; to: number }) {
+function DiskIOTab({ instance, from, to, onAnalyze }: TabProps) {
   const [data, setData] = useState<HistoryAsyncMetric[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -602,15 +721,14 @@ function DiskIOTab({ instance, from, to }: { instance: string; from: number; to:
     setLoading(true)
     setError(null)
     api.history.diskIO(instance, from, to)
-      .then((d) => { if (!c) setData(d) })
-      .catch((e) => { if (!c) setError(e.message) })
+      .then(d => { if (!c) setData(d) })
+      .catch(e => { if (!c) setError(e.message) })
       .finally(() => { if (!c) setLoading(false) })
     return () => { c = true }
   }, [instance, from, to])
 
-  // Pivot into rows with ts, read_bytes, write_bytes
   const pivoted = useMemo(() => {
-    const allTs = [...new Set(data.map((r) => r.ts))].sort()
+    const allTs = [...new Set(data.map(r => r.ts))].sort()
     const readMap = new Map<string, number>()
     const writeMap = new Map<string, number>()
     for (const r of data) {
@@ -618,26 +736,36 @@ function DiskIOTab({ instance, from, to }: { instance: string; from: number; to:
       const target = m.includes('ReadBytes') || m.includes('Read') ? readMap : writeMap
       target.set(r.ts, (target.get(r.ts) ?? 0) + r.avg_value)
     }
-    return allTs.map((ts) => ({
-      ts,
-      read_bytes: readMap.get(ts) ?? 0,
-      write_bytes: writeMap.get(ts) ?? 0,
-    }))
+    return allTs.map(ts => ({ ts, read_bytes: readMap.get(ts) ?? 0, write_bytes: writeMap.get(ts) ?? 0 }))
   }, [data])
 
   if (loading) return <LoadingSkeleton />
   if (error) return <ErrorBox message={error} />
 
   return (
-    <HistoryChart
-      title="Disk I/O"
-      data={pivoted}
-      series={[
-        { key: 'read_bytes', label: 'Read Bytes', color: C.blue },
-        { key: 'write_bytes', label: 'Write Bytes', color: C.orange },
-      ]}
-      yFormat="bytes"
-    />
+    <div className="space-y-4">
+      <div className="flex justify-end">
+        <AnalyzeTabBtn
+          label="Disk I/O"
+          data={{ data: pivoted }}
+          tab="diskio"
+          onAnalyze={onAnalyze}
+          disabled={pivoted.length === 0}
+        />
+      </div>
+      <HistoryChart
+        title="Disk I/O"
+        data={pivoted}
+        series={[
+          { key: 'read_bytes', label: 'Read Bytes', color: C.blue },
+          { key: 'write_bytes', label: 'Write Bytes', color: C.orange },
+        ]}
+        yFormat="bytes"
+        onAnalyze={(d, s, title) =>
+          onAnalyze(title, { data: d, series: s }, { contextType: 'chart', tab: 'diskio' })
+        }
+      />
+    </div>
   )
 }
 
@@ -648,8 +776,8 @@ function DiskIOTab({ instance, from, to }: { instance: string; from: number; to:
 function LoadingSkeleton() {
   return (
     <Card className="animate-pulse">
-      <div className="h-4 bg-[var(--hover)] rounded w-1/4 mb-3" />
-      <div className="h-48 bg-[var(--hover)] rounded" />
+      <div className="h-4 bg-[var(--border)] rounded w-1/4 mb-3" />
+      <div className="h-48 bg-[var(--border)] rounded" />
     </Card>
   )
 }
@@ -671,22 +799,34 @@ export default function Explore() {
   const [tab, setTab] = useState<Tab>('patterns')
   const inst = selectedInstance || instances[0] || ''
 
+  const { entries, isOpen, setIsOpen, analyze, clearEntries } = useAIAnalysis(inst)
+
   const handleInstChange = useCallback(
     (e: ChangeEvent<HTMLSelectElement>) => setSelectedInstance(e.target.value),
     [setSelectedInstance],
   )
 
+  const handleAnalyze = useCallback(
+    (label: string, data: Record<string, any>, options: AnalyzeOptions) => {
+      analyze(label, data, options)
+    },
+    [analyze],
+  )
+
+  // Bottom spacer height keeps content from hiding behind the fixed panel
+  const spacerHeight = isOpen ? PANEL_EXPANDED_HEIGHT : PANEL_COLLAPSED_HEIGHT
+
   return (
     <div className="space-y-4">
-      {/* Instance selector + AI button */}
+      {/* Instance selector + global AI button */}
       <div className="flex items-center gap-3">
         <label className="text-sm text-[var(--dim)]">Instance</label>
         <select
           value={inst}
           onChange={handleInstChange}
-          className="rounded-md border border-[var(--border)] bg-[var(--card)] px-3 py-1.5 text-sm text-[var(--fg)] focus:outline-none focus:border-[var(--accent)]"
+          className="rounded-md border border-[var(--border)] bg-[var(--card)] px-3 py-1.5 text-sm text-[var(--text)] focus:outline-none focus:border-[var(--accent)]"
         >
-          {instances.map((i) => (
+          {instances.map(i => (
             <option key={i} value={i}>{i}</option>
           ))}
         </select>
@@ -695,13 +835,13 @@ export default function Explore() {
           className="ml-auto inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium bg-purple-500/15 text-purple-400 hover:bg-purple-500/25 transition-colors border border-purple-500/20"
         >
           <Sparkles size={14} />
-          Analyze with AI
+          Full Analysis
         </button>
       </div>
 
       {/* Tabs */}
       <div className="flex gap-1 overflow-x-auto border-b border-[var(--border)] pb-px">
-        {TABS.map((t) => (
+        {TABS.map(t => (
           <button
             key={t.key}
             onClick={() => setTab(t.key)}
@@ -709,7 +849,7 @@ export default function Explore() {
               'px-3 py-2 text-sm whitespace-nowrap rounded-t-md transition-colors',
               tab === t.key
                 ? 'text-[var(--accent)] border-b-2 border-[var(--accent)] font-medium'
-                : 'text-[var(--dim)] hover:text-[var(--fg)]',
+                : 'text-[var(--dim)] hover:text-[var(--text)]',
             )}
           >
             {t.label}
@@ -724,16 +864,29 @@ export default function Explore() {
         </div>
       ) : (
         <>
-          {tab === 'patterns' && <QueryPatternsTab instance={inst} from={from} to={to} />}
-          {tab === 'failures' && <FailuresTab instance={inst} from={from} to={to} />}
-          {tab === 'merges' && <MergesTab instance={inst} from={from} to={to} />}
-          {tab === 'mvs' && <MVTab instance={inst} from={from} to={to} />}
-          {tab === 's3' && <S3Tab instance={inst} from={from} to={to} />}
-          {tab === 'inserts' && <InsertsTab instance={inst} from={from} to={to} />}
-          {tab === 'metrics' && <SystemMetricsTab instance={inst} from={from} to={to} />}
-          {tab === 'diskio' && <DiskIOTab instance={inst} from={from} to={to} />}
+          {tab === 'patterns' && <QueryPatternsTab instance={inst} from={from} to={to} onAnalyze={handleAnalyze} />}
+          {tab === 'failures' && <FailuresTab instance={inst} from={from} to={to} onAnalyze={handleAnalyze} />}
+          {tab === 'merges' && <MergesTab instance={inst} from={from} to={to} onAnalyze={handleAnalyze} />}
+          {tab === 'mvs' && <MVTab instance={inst} from={from} to={to} onAnalyze={handleAnalyze} />}
+          {tab === 's3' && <S3Tab instance={inst} from={from} to={to} onAnalyze={handleAnalyze} />}
+          {tab === 'inserts' && <InsertsTab instance={inst} from={from} to={to} onAnalyze={handleAnalyze} />}
+          {tab === 'metrics' && <SystemMetricsTab instance={inst} from={from} to={to} onAnalyze={handleAnalyze} />}
+          {tab === 'diskio' && <DiskIOTab instance={inst} from={from} to={to} onAnalyze={handleAnalyze} />}
         </>
       )}
+
+      {/* Spacer so content doesn't hide behind the fixed panel */}
+      <div style={{ height: spacerHeight }} aria-hidden />
+
+      {/* AI Analysis panel — fixed to bottom of viewport */}
+      <AIAnalysisPanel
+        instance={inst}
+        entries={entries}
+        isOpen={isOpen}
+        onToggle={() => setIsOpen(o => !o)}
+        onAnalyze={handleAnalyze}
+        onClear={clearEntries}
+      />
     </div>
   )
 }

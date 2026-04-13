@@ -721,6 +721,537 @@ If no issues, say so. Do not invent findings.
 	return sb.String()
 }
 
+// ---------------------------------------------------------------------------
+// escapeSQLString escapes a value to be embedded in a SQL string literal.
+func escapeSQLString(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "'", "\\'")
+	return s
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/instances/{name}/analyze-element — element-level AI analysis
+// ---------------------------------------------------------------------------
+
+type analyzeElementRequest struct {
+	ContextType  string                 `json:"context_type"`  // tab | row | chart
+	ContextLabel string                 `json:"context_label"` // human label
+	Tab          string                 `json:"tab"`           // tab key
+	VisibleData  map[string]interface{} `json:"visible_data"`  // frontend data
+	Mode         string                 `json:"mode"`          // quick | deep
+	DeepQueries  []string               `json:"deep_queries"`  // only for mode=deep, pre-approved by user
+}
+
+func (s *Server) handleAnalyzeElement(w http.ResponseWriter, r *http.Request) {
+	instance := r.PathValue("name")
+	client := s.manager.Get(instance)
+	if client == nil {
+		writeErr(w, http.StatusNotFound, "instance not found: "+instance)
+		return
+	}
+
+	var req analyzeElementRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if req.Mode == "" {
+		req.Mode = "quick"
+	}
+
+	// ── Server-side read-only validation for deep mode ────────────────────────
+	if req.Mode == "deep" {
+		for _, q := range req.DeepQueries {
+			if !isReadOnlyQuery(q) {
+				writeErr(w, http.StatusBadRequest, "blocked: non-read-only query rejected: "+q[:min(200, len(q))])
+				return
+			}
+		}
+	}
+
+	// ── Set up SSE ────────────────────────────────────────────────────────────
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeErr(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+
+	sendEvent := func(event, data string) {
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
+		flusher.Flush()
+	}
+
+	// ── For deep mode: run approved read-only queries ─────────────────────────
+	var deepResults []map[string]interface{}
+	if req.Mode == "deep" && len(req.DeepQueries) > 0 {
+		sendEvent("status", `{"phase":"collecting"}`)
+		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+		defer cancel()
+
+		type qResult struct {
+			idx  int
+			rows []map[string]interface{}
+			err  error
+		}
+		ch := make(chan qResult, len(req.DeepQueries))
+		var wg sync.WaitGroup
+		for i, q := range req.DeepQueries {
+			i, q := i, q
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				rows, err := client.Query(ctx, q)
+				ch <- qResult{idx: i, rows: rows, err: err}
+			}()
+		}
+		wg.Wait()
+		close(ch)
+
+		deepResults = make([]map[string]interface{}, len(req.DeepQueries))
+		for res := range ch {
+			if res.err != nil {
+				slog.Warn("analyze-element: deep query error", "idx", res.idx, "err", res.err)
+				continue
+			}
+			// Merge rows into a single summary map per query slot
+			if len(res.rows) > 0 {
+				deepResults[res.idx] = res.rows[0]
+				if len(res.rows) > 1 {
+					// Store full array as "rows" key
+					deepResults[res.idx] = map[string]interface{}{"rows": res.rows}
+				}
+			}
+		}
+	}
+
+	sendEvent("status", `{"phase":"sending"}`)
+
+	// ── Build prompt ──────────────────────────────────────────────────────────
+	prompt := buildElementPrompt(req, instance, deepResults)
+
+	const maxPromptBytes = 1 << 20
+	if len(prompt) > maxPromptBytes {
+		prompt = prompt[:maxPromptBytes] + "\n\n[...truncated...]"
+	}
+
+	// ── Spawn claude CLI ──────────────────────────────────────────────────────
+	claudeBin, err := claudeBinary()
+	if err != nil {
+		sendEvent("error", jsonStr(err.Error()))
+		return
+	}
+
+	claudeCtx, claudeCancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer claudeCancel()
+
+	claudeArgs := []string{"-p", prompt}
+	if m := os.Getenv("CLAUDE_MODEL"); m != "" {
+		claudeArgs = append(claudeArgs, "--model", m)
+	}
+	cmd := exec.CommandContext(claudeCtx, claudeBin, claudeArgs...)
+
+	claudeEnv := os.Environ()
+	claudeEnv = setEnv(claudeEnv, "PATH",
+		"/home/ec2-user/.local/bin:/root/.local/bin:/usr/local/bin:/usr/bin:/bin:"+os.Getenv("PATH"))
+
+	claudeCfgHome := findClaudeHome()
+	if claudeCfgHome != "" {
+		claudeEnv = setEnv(claudeEnv, "HOME", claudeCfgHome)
+	} else if tmpHome, err2 := os.MkdirTemp("", "claude-home-*"); err2 == nil {
+		claudeEnv = setEnv(claudeEnv, "HOME", tmpHome)
+		cfgPath := filepath.Join(tmpHome, ".claude.json")
+		_ = os.WriteFile(cfgPath, []byte(buildClaudeCfg()), 0600)
+		defer os.RemoveAll(tmpHome)
+	}
+	cmd.Env = claudeEnv
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		sendEvent("error", jsonStr(err.Error()))
+		return
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		sendEvent("error", jsonStr(err.Error()))
+		return
+	}
+	if err := cmd.Start(); err != nil {
+		sendEvent("error", jsonStr("Claude CLI failed to start: "+err.Error()))
+		return
+	}
+
+	sendEvent("status", `{"phase":"streaming"}`)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		scanner := bufio.NewScanner(stdout)
+		scanner.Buffer(make([]byte, 128*1024), 128*1024)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.Contains(line, "API Error: 429") || strings.Contains(line, `"code":"1302"`) {
+				sendEvent("error", jsonStr("Rate limited (429) — wait ~60 seconds and retry."))
+				claudeCancel()
+				return
+			}
+			sendEvent("chunk", jsonStr(line+"\n"))
+		}
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		scanner := bufio.NewScanner(stderrPipe)
+		var lines []string
+		for scanner.Scan() {
+			lines = append(lines, scanner.Text())
+		}
+		if len(lines) > 0 {
+			sendEvent("stderr", jsonStr(strings.Join(lines, "\n")))
+		}
+	}()
+	wg.Wait()
+	_ = cmd.Wait()
+	sendEvent("status", `{"phase":"done"}`)
+}
+
+// buildElementPrompt constructs a focused prompt for element-level analysis.
+func buildElementPrompt(req analyzeElementRequest, instance string, deepResults []map[string]interface{}) string {
+	fmtJSON := func(v interface{}) string {
+		if v == nil {
+			return "null"
+		}
+		b, _ := json.MarshalIndent(v, "", "  ")
+		return string(b)
+	}
+
+	tabLabels := map[string]string{
+		"patterns": "Query Patterns", "failures": "Failures",
+		"merges": "Merges & Parts", "mvs": "MV Performance",
+		"s3": "S3 Latency", "inserts": "Insert Throughput",
+		"metrics": "System Metrics", "diskio": "Disk I/O",
+	}
+	tabLabel := tabLabels[req.Tab]
+	if tabLabel == "" {
+		tabLabel = req.Tab
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("# ClickHouse Explorer — %s\n\n", req.ContextLabel))
+	sb.WriteString(fmt.Sprintf("Instance: %s\nTab: %s\nAnalyzed at: %s\n\n", instance, tabLabel, time.Now().UTC().Format(time.RFC3339)))
+
+	switch req.ContextType {
+	case "tab":
+		sb.WriteString("## Visible Tab Data\n```json\n" + fmtJSON(req.VisibleData) + "\n```\n\n")
+		sb.WriteString(fmt.Sprintf(`## Instructions
+Analyze the %s data above. Provide:
+1. Key observations and notable patterns
+2. Anomalies, warning signs, or concerning values
+3. Specific, actionable recommendations
+
+Use severity markers: 🔴 CRITICAL, 🟠 WARNING, 🟡 INFO
+Be concise and focus on what matters most.
+`, tabLabel))
+
+	case "row":
+		if req.Mode == "deep" && len(deepResults) > 0 {
+			sb.WriteString("## Deep Diagnostic Data (from ClickHouse)\n")
+			for i, r := range deepResults {
+				if r != nil {
+					sb.WriteString(fmt.Sprintf("### Query %d Result\n```json\n%s\n```\n\n", i+1, fmtJSON(r)))
+				}
+			}
+			sb.WriteString(fmt.Sprintf(`## Instructions
+Perform a deep analysis of this %s entry. Cover:
+1. Root cause analysis based on the diagnostic data
+2. Performance characteristics and what they indicate
+3. Specific fixes with ready-to-run SQL if applicable
+4. What to monitor going forward
+
+Use severity markers: 🔴 CRITICAL, 🟠 WARNING, 🟡 INFO
+Be specific and reference actual values from the data.
+`, tabLabel))
+		} else {
+			sb.WriteString("## This Entry\n```json\n" + fmtJSON(req.VisibleData["row"]) + "\n```\n\n")
+			if ctx, ok := req.VisibleData["allPatterns"]; ok {
+				sb.WriteString("## All Patterns (Context)\n```json\n" + fmtJSON(ctx) + "\n```\n\n")
+			} else if ctx, ok := req.VisibleData["allErrors"]; ok {
+				sb.WriteString("## All Errors (Context)\n```json\n" + fmtJSON(ctx) + "\n```\n\n")
+			} else if ctx, ok := req.VisibleData["allViews"]; ok {
+				sb.WriteString("## All Views (Context)\n```json\n" + fmtJSON(ctx) + "\n```\n\n")
+			} else if ctx, ok := req.VisibleData["allTables"]; ok {
+				sb.WriteString("## All Tables (Context)\n```json\n" + fmtJSON(ctx) + "\n```\n\n")
+			} else if ctx, ok := req.VisibleData["allQueries"]; ok {
+				sb.WriteString("## Related Entries (Context)\n```json\n" + fmtJSON(ctx) + "\n```\n\n")
+			}
+			sb.WriteString(fmt.Sprintf(`## Instructions
+Explain this specific %s entry compared to the others shown. Cover:
+1. What this entry represents and why its values are notable
+2. How it compares to other entries in the same view
+3. What to investigate or action next
+
+Be concise. Use 🔴 CRITICAL, 🟠 WARNING, 🟡 INFO for severity.
+`, tabLabel))
+		}
+
+	case "chart":
+		if chartData, ok := req.VisibleData["data"]; ok {
+			sb.WriteString("## Time-Series Data\n```json\n" + fmtJSON(chartData) + "\n```\n\n")
+		}
+		if series, ok := req.VisibleData["series"]; ok {
+			sb.WriteString("## Series\n```json\n" + fmtJSON(series) + "\n```\n\n")
+		}
+		sb.WriteString(`## Instructions
+Analyze this time-series chart. Cover:
+1. **Trend**: overall direction (increasing, decreasing, stable, cyclical)
+2. **Anomalies**: identify spikes, drops, gaps, or unusual patterns with approximate timestamps
+3. **Meaning**: what these patterns indicate about the ClickHouse cluster health
+4. **Action**: recommend specific steps if concerning patterns exist
+
+Use 🔴 CRITICAL, 🟠 WARNING, 🟡 INFO for severity.
+If the chart looks normal, say so clearly — do not invent issues.
+`)
+	}
+
+	return sb.String()
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/instances/{name}/analyze-element/queries — preview deep queries
+// ---------------------------------------------------------------------------
+
+type deepQueryItem struct {
+	SQL         string `json:"sql"`
+	Description string `json:"description"`
+}
+
+type analyzeElementQueriesResponse struct {
+	Queries     []deepQueryItem `json:"queries"`
+	Description string          `json:"description"`
+}
+
+func (s *Server) handleAnalyzeElementQueries(w http.ResponseWriter, r *http.Request) {
+	instance := r.PathValue("name")
+	if s.manager.Get(instance) == nil {
+		writeErr(w, http.StatusNotFound, "instance not found: "+instance)
+		return
+	}
+
+	tab := r.URL.Query().Get("tab")
+	elementID := r.URL.Query().Get("element_id")
+
+	queries := deepQueriesForTab(tab, elementID)
+	if len(queries) == 0 {
+		writeErr(w, http.StatusBadRequest, "no deep queries available for tab: "+tab)
+		return
+	}
+
+	n := len(queries)
+	noun := "query"
+	if n != 1 {
+		noun = "queries"
+	}
+	desc := fmt.Sprintf("This will run %d read-only %s against %s to fetch detailed diagnostics.", n, noun, instance)
+
+	writeJSON(w, http.StatusOK, analyzeElementQueriesResponse{
+		Queries:     queries,
+		Description: desc,
+	})
+}
+
+// deepQueriesForTab returns the set of read-only diagnostic queries for a tab.
+// elementID is validated-safe data from the frontend (originally from CH),
+// still escaped before embedding in SQL strings.
+func deepQueriesForTab(tab, elementID string) []deepQueryItem {
+	safe := escapeSQLString(elementID)
+
+	switch tab {
+	case "patterns":
+		if elementID == "" {
+			return nil
+		}
+		return []deepQueryItem{
+			{
+				SQL: fmt.Sprintf(`SELECT
+  query,
+  query_duration_ms,
+  formatReadableSize(memory_usage) AS memory,
+  read_rows,
+  formatReadableSize(read_bytes) AS read_bytes,
+  written_rows,
+  result_rows,
+  user,
+  exception_code,
+  event_time
+FROM system.query_log
+WHERE normalized_query_hash = '%s'
+  AND event_time >= now() - INTERVAL 24 HOUR
+ORDER BY event_time DESC
+LIMIT 20`, safe),
+				Description: "Recent executions of this query pattern (last 24h)",
+			},
+			{
+				SQL: fmt.Sprintf(`SELECT
+  count() AS executions,
+  round(avg(query_duration_ms)) AS avg_ms,
+  round(max(query_duration_ms)) AS max_ms,
+  formatReadableSize(round(avg(memory_usage))) AS avg_memory,
+  countIf(exception_code != 0) AS failures
+FROM system.query_log
+WHERE normalized_query_hash = '%s'
+  AND event_time >= now() - INTERVAL 7 DAY
+  AND type IN ('QueryFinish', 'ExceptionWhileProcessing')`, safe),
+				Description: "7-day aggregate stats for this query pattern",
+			},
+		}
+
+	case "failures":
+		if elementID == "" {
+			return nil
+		}
+		return []deepQueryItem{
+			{
+				SQL: fmt.Sprintf(`SELECT
+  exception_code,
+  exception,
+  query,
+  user,
+  event_time,
+  query_duration_ms
+FROM system.query_log
+WHERE exception_code = %s
+  AND event_time >= now() - INTERVAL 24 HOUR
+ORDER BY event_time DESC
+LIMIT 20`, safe),
+				Description: "Recent errors with this exception code (last 24h)",
+			},
+		}
+
+	case "merges":
+		return []deepQueryItem{
+			{
+				SQL: `SELECT database, table, elapsed,
+  round(progress*100, 1) AS pct,
+  num_parts,
+  is_mutation,
+  formatReadableSize(total_size_bytes_compressed) AS size
+FROM system.merges
+ORDER BY elapsed DESC`,
+				Description: "Currently active merges",
+			},
+			{
+				SQL: `SELECT database, table,
+  count() AS parts,
+  formatReadableSize(sum(bytes_on_disk)) AS size,
+  max(modification_time) AS newest_part
+FROM system.parts
+WHERE active = 1
+GROUP BY database, table
+HAVING parts > 50
+ORDER BY parts DESC
+LIMIT 20`,
+				Description: "Tables with elevated part counts (>50)",
+			},
+		}
+
+	case "mvs":
+		if elementID == "" {
+			return nil
+		}
+		return []deepQueryItem{
+			{
+				SQL: fmt.Sprintf(`SELECT
+  view_name,
+  count() AS cnt,
+  round(avg(view_duration_ms)) AS avg_ms,
+  round(max(view_duration_ms)) AS max_ms,
+  countIf(exception_code != 0) AS failures,
+  any(exception) AS sample_error
+FROM system.query_views_log
+WHERE view_name = '%s'
+  AND event_time >= now() - INTERVAL 24 HOUR
+GROUP BY view_name`, safe),
+				Description: "Execution stats for this materialized view (last 24h)",
+			},
+		}
+
+	case "s3":
+		return []deepQueryItem{
+			{
+				SQL: `SELECT
+  user,
+  count() AS queries,
+  formatReadableSize(sum(ProfileEvents['S3ReadBytes'])) AS total_read,
+  formatReadableSize(sum(ProfileEvents['S3WriteBytes'])) AS total_write,
+  round(avg(ProfileEvents['S3ReadMicroseconds']) / 1000) AS avg_read_ms
+FROM system.query_log
+WHERE (ProfileEvents['S3ReadBytes'] > 0 OR ProfileEvents['S3WriteBytes'] > 0)
+  AND event_time >= now() - INTERVAL 24 HOUR
+  AND type = 'QueryFinish'
+GROUP BY user
+ORDER BY sum(ProfileEvents['S3ReadBytes']) DESC
+LIMIT 20`,
+				Description: "S3 usage breakdown by user (last 24h)",
+			},
+		}
+
+	case "inserts":
+		if elementID == "" {
+			return nil
+		}
+		return []deepQueryItem{
+			{
+				SQL: fmt.Sprintf(`SELECT
+  tables[1] AS tbl,
+  count() AS inserts,
+  round(avg(written_rows)) AS avg_rows,
+  round(max(written_rows)) AS max_rows,
+  countIf(written_rows < 100) AS small_inserts,
+  round(avg(query_duration_ms)) AS avg_ms,
+  round(max(query_duration_ms)) AS max_ms
+FROM system.query_log
+WHERE query_kind = 'Insert'
+  AND has(tables, '%s')
+  AND event_time >= now() - INTERVAL 24 HOUR
+  AND type = 'QueryFinish'
+GROUP BY tables[1]`, safe),
+				Description: "Insert patterns for this table (last 24h)",
+			},
+		}
+
+	case "metrics":
+		return []deepQueryItem{
+			{
+				SQL: `SELECT metric, value, description
+FROM system.metrics
+ORDER BY metric
+LIMIT 100`,
+				Description: "Current system metrics snapshot",
+			},
+		}
+
+	case "diskio":
+		return []deepQueryItem{
+			{
+				SQL: `SELECT name, path,
+  formatReadableSize(free_space) AS free,
+  formatReadableSize(total_space) AS total,
+  round(100*(1 - free_space/total_space), 1) AS used_pct
+FROM system.disks`,
+				Description: "Disk usage details",
+			},
+		}
+	}
+	return nil
+}
+
 // findClaudeHome returns the HOME directory that contains a valid .claude.json,
 // checking well-known locations so the service user doesn't need HOME set.
 // Returns "" if none found (caller falls back to temp HOME).

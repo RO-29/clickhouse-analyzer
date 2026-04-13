@@ -113,4 +113,11 @@ export const api = {
     storagePolicy: (inst: string) => get<any[]>(`/api/instances/${inst}/advisor/storage-policy`),
   },
   tableDetail: (inst: string, db: string, table: string) => get<any>(`/api/instances/${inst}/table-detail/${db}/${table}`),
+  analyzeElementQueries: (inst: string, tab: string, elementId?: string) => {
+    const params = new URLSearchParams({ tab })
+    if (elementId) params.set('element_id', elementId)
+    return get<{ queries: Array<{ sql: string; description: string }>; description: string }>(
+      `/api/instances/${inst}/analyze-element/queries?${params}`,
+    )
+  },
 }

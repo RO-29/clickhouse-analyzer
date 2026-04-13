@@ -133,6 +133,8 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// AI Analyzer endpoints (from analyze.go).
 	mux.HandleFunc("POST /api/instances/{name}/analyze", s.handleAnalyze)
 	mux.HandleFunc("GET /api/instances/{name}/analyze/context", s.handleAnalyzeContext)
+	mux.HandleFunc("POST /api/instances/{name}/analyze-element", s.handleAnalyzeElement)
+	mux.HandleFunc("GET /api/instances/{name}/analyze-element/queries", s.handleAnalyzeElementQueries)
 
 	// Advisor endpoints (from advisor.go).
 	mux.HandleFunc("GET /api/instances/{name}/advisor/compression", s.handleAdvisorCompression)

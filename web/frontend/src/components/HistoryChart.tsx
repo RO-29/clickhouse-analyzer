@@ -10,6 +10,7 @@ import {
   Filler,
   type ChartOptions,
 } from 'chart.js'
+import { Sparkles } from 'lucide-react'
 import { fmtBytes, fmtDuration, fmtNum } from '../lib/utils'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend, Filler)
@@ -26,9 +27,17 @@ interface HistoryChartProps {
   title: string
   height?: number
   yFormat?: 'bytes' | 'ms' | 'number'
+  onAnalyze?: (data: Record<string, any>[], series: SeriesDef[], title: string) => void
 }
 
-export function HistoryChart({ data: rawData, series, title, height = 160, yFormat = 'number' }: HistoryChartProps) {
+export function HistoryChart({
+  data: rawData,
+  series,
+  title,
+  height = 160,
+  yFormat = 'number',
+  onAnalyze,
+}: HistoryChartProps) {
   const data = Array.isArray(rawData) ? rawData : []
   const formatValue = (v: number) => {
     if (yFormat === 'bytes') return fmtBytes(v)
@@ -36,7 +45,6 @@ export function HistoryChart({ data: rawData, series, title, height = 160, yForm
     return fmtNum(v)
   }
 
-  // Build labels from ts field
   const labels = data.map(row => {
     const ts = row.ts
     if (!ts) return ''
@@ -94,8 +102,20 @@ export function HistoryChart({ data: rawData, series, title, height = 160, yForm
 
   return (
     <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl overflow-hidden">
-      <div className="px-5 pt-4 pb-2 text-xs font-semibold uppercase tracking-wider text-[var(--dim)]">
-        {title}
+      <div className="px-5 pt-4 pb-2 flex items-center gap-2">
+        <span className="text-xs font-semibold uppercase tracking-wider text-[var(--dim)] flex-1">
+          {title}
+        </span>
+        {onAnalyze && !empty && (
+          <button
+            onClick={() => onAnalyze(data, series, title)}
+            className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-purple-400 hover:bg-purple-500/15 border border-transparent hover:border-purple-500/20 transition-colors"
+            title="Analyze this chart with AI"
+          >
+            <Sparkles size={11} />
+            Analyze
+          </button>
+        )}
       </div>
       <div className="px-5 pb-4">
         {empty ? (
