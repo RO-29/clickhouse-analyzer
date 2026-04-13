@@ -18,12 +18,15 @@ const statusRing: Record<string, string> = {
 export function NodeCard({
   instance,
   onClick,
+  staleAlerts = 0,
 }: {
   instance: Instance
   onClick: () => void
+  staleAlerts?: number
 }) {
   const areas = instance.area_status ?? []
   const topAlerts = instance.top_alerts ?? []
+  const freshAlerts = Math.max(0, instance.active_alerts - staleAlerts)
 
   return (
     <Card onClick={onClick} className="cursor-pointer hover:border-[var(--accent)]/40 transition-colors">
@@ -31,9 +34,14 @@ export function NodeCard({
       <div className="flex items-center justify-between mb-3">
         <div className="font-medium truncate">{instance.name}</div>
         <div className="flex items-center gap-2">
-          {instance.active_alerts > 0 && (
+          {freshAlerts > 0 && (
             <Badge className="bg-red-500/10 text-red-400 border border-red-500/20 text-xs">
-              {instance.active_alerts}
+              {freshAlerts}
+            </Badge>
+          )}
+          {staleAlerts > 0 && freshAlerts === 0 && (
+            <Badge className="bg-gray-500/10 text-gray-400 border border-gray-500/20 text-xs">
+              {staleAlerts} stale
             </Badge>
           )}
           <span

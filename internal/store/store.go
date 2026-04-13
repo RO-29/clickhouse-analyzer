@@ -38,6 +38,7 @@ type Alert struct {
 	Resolved   bool
 	ResolvedAt *time.Time
 	CreatedAt  time.Time
+	UpdatedAt  time.Time
 	DedupKey   string
 }
 
@@ -66,8 +67,28 @@ func New(manager *chclient.Manager, database string) (*Store, error) {
 		database: database,
 	}
 
+	// Migrate: add updated_at column to existing alerts tables (no-op on new installs).
+	s.migrateAlertUpdatedAt()
+
 	slog.Info("store initialized", "backend", "clickhouse-distributed", "database", database, "instances", manager.Len())
 	return s, nil
+}
+
+// migrateAlertUpdatedAt adds the updated_at column to existing alerts tables.
+// Safe to call on new installs — ADD COLUMN IF NOT EXISTS is idempotent.
+func (s *Store) migrateAlertUpdatedAt() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sql := fmt.Sprintf(
+		"ALTER TABLE %s.alerts ADD COLUMN IF NOT EXISTS updated_at DateTime DEFAULT created_at",
+		s.database,
+	)
+	s.manager.ForEach(func(name string, client *chclient.Client) error {
+		if _, err := client.QuerySingleValue(ctx, sql); err != nil {
+			slog.Warn("alert migration: add updated_at failed", "instance", name, "err", err)
+		}
+		return nil
+	})
 }
 
 // Close is a no-op for ClickHouse.
@@ -276,11 +297,11 @@ func (s *Store) InsertAlert(alert Alert) (int64, error) {
 	}
 
 	sql := fmt.Sprintf(`INSERT INTO %s.alerts
-		(id, instance, severity, category, title, message, resolved, resolved_at, created_at, dedup_key, version)
-		VALUES (%d, '%s', '%s', '%s', '%s', '%s', 0, NULL, '%s', '%s', 1)`,
+		(id, instance, severity, category, title, message, resolved, resolved_at, created_at, dedup_key, version, updated_at)
+		VALUES (%d, '%s', '%s', '%s', '%s', '%s', 0, NULL, '%s', '%s', 1, '%s')`,
 		s.database, id,
 		escape(alert.Instance), escape(alert.Severity), escape(alert.Category),
-		escape(alert.Title), msg, ts, escape(alert.DedupKey))
+		escape(alert.Title), msg, ts, escape(alert.DedupKey), ts)
 
 	if _, err := client.QuerySingleValue(ctx, sql); err != nil {
 		return 0, fmt.Errorf("store: insert alert: %w", err)
@@ -376,7 +397,7 @@ func (s *Store) GetActiveAlerts(instance string) ([]Alert, error) {
 	defer cancel()
 
 	sql := fmt.Sprintf(`SELECT id, instance, severity, category, title, message,
-			resolved, resolved_at, created_at, dedup_key
+			resolved, resolved_at, created_at, dedup_key, updated_at
 		FROM %s.alerts FINAL
 		WHERE instance = '%s' AND resolved = 0
 		ORDER BY created_at DESC`,
@@ -403,7 +424,7 @@ func (s *Store) GetAlertHistory(instance string, from, to time.Time, limit int) 
 	defer cancel()
 
 	sql := fmt.Sprintf(`SELECT id, instance, severity, category, title, message,
-			resolved, resolved_at, created_at, dedup_key
+			resolved, resolved_at, created_at, dedup_key, updated_at
 		FROM %s.alerts FINAL
 		WHERE instance = '%s'
 		AND created_at >= '%s' AND created_at <= '%s'
@@ -530,6 +551,15 @@ func parseAlertRows(rows []map[string]interface{}) []Alert {
 		}
 		a.Resolved = getFloat(row, "resolved") > 0
 		a.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", getString(row, "created_at"))
+		updatedStr := getString(row, "updated_at")
+		if updatedStr != "" && updatedStr != "\\N" && updatedStr != "1970-01-01 00:00:00" {
+			if t, err := time.Parse("2006-01-02 15:04:05", updatedStr); err == nil {
+				a.UpdatedAt = t
+			}
+		}
+		if a.UpdatedAt.IsZero() {
+			a.UpdatedAt = a.CreatedAt
+		}
 		resolvedStr := getString(row, "resolved_at")
 		if resolvedStr != "" && resolvedStr != "\\N" && resolvedStr != "1970-01-01 00:00:00" {
 			if t, err := time.Parse("2006-01-02 15:04:05", resolvedStr); err == nil {
@@ -539,6 +569,70 @@ func parseAlertRows(rows []map[string]interface{}) []Alert {
 		alerts = append(alerts, a)
 	}
 	return alerts
+}
+
+// BulkTouchAlerts updates updated_at = now() for all active alerts with the given dedup keys.
+// Called after each poll cycle to keep staleness timestamps fresh.
+func (s *Store) BulkTouchAlerts(dedupKeys []string) error {
+	if len(dedupKeys) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// Build IN clause.
+	quoted := make([]string, len(dedupKeys))
+	for i, k := range dedupKeys {
+		quoted[i] = "'" + escape(k) + "'"
+	}
+	inClause := strings.Join(quoted, ", ")
+
+	sql := fmt.Sprintf(`INSERT INTO %s.alerts
+		(id, instance, severity, category, title, message, resolved, resolved_at, created_at, dedup_key, version, updated_at)
+		SELECT id, instance, severity, category, title, message, resolved, resolved_at, created_at, dedup_key, version+1, now()
+		FROM %s.alerts FINAL
+		WHERE resolved = 0 AND dedup_key IN (%s)`,
+		s.database, s.database, inClause)
+
+	s.manager.ForEach(func(_ string, client *chclient.Client) error {
+		if _, err := client.QuerySingleValue(ctx, sql); err != nil {
+			slog.Debug("bulk touch alerts failed", "err", err)
+		}
+		return nil
+	})
+	return nil
+}
+
+// BulkResolveStale marks all unresolved alerts whose updated_at is older than
+// the given number of hours as resolved. Returns the number of alerts resolved.
+func (s *Store) BulkResolveStale(hours int) (int64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var total int64
+	s.manager.ForEach(func(_ string, client *chclient.Client) error {
+		// Count first.
+		countSQL := fmt.Sprintf(
+			`SELECT count() as cnt FROM %s.alerts FINAL WHERE resolved = 0 AND updated_at < now() - INTERVAL %d HOUR`,
+			s.database, hours)
+		if val, err := client.QuerySingleValue(ctx, countSQL); err == nil {
+			var n int64
+			fmt.Sscanf(val, "%d", &n)
+			total += n
+		}
+
+		resolveSQL := fmt.Sprintf(`INSERT INTO %s.alerts
+			(id, instance, severity, category, title, message, resolved, resolved_at, created_at, dedup_key, version, updated_at)
+			SELECT id, instance, severity, category, title, message, 1, now(), created_at, dedup_key, version+1, updated_at
+			FROM %s.alerts FINAL
+			WHERE resolved = 0 AND updated_at < now() - INTERVAL %d HOUR`,
+			s.database, s.database, hours)
+		if _, err := client.QuerySingleValue(ctx, resolveSQL); err != nil {
+			slog.Warn("bulk resolve stale failed", "err", err)
+		}
+		return nil
+	})
+	return total, nil
 }
 
 func escape(s string) string {

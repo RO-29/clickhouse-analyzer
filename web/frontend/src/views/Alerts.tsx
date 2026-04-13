@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useCallback } from 'react'
-import { ChevronDown, ChevronRight, Table2 } from 'lucide-react'
+import { Brain, ChevronDown, ChevronRight, Clock, Table2, Trash2 } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { api } from '../lib/api'
 import { fmtTime, cn } from '../lib/utils'
@@ -9,22 +9,41 @@ import { SqlBlock } from '../components/SqlBlock'
 import type { Alert, Suggestion } from '../types/api'
 
 /* ------------------------------------------------------------------ */
+/*  Staleness helpers                                                  */
+/* ------------------------------------------------------------------ */
+
+const STALE_LS_KEY = 'ch-stale-hours'
+const STALE_OPTIONS = [
+  { label: '1 hour', value: 1 },
+  { label: '6 hours', value: 6 },
+  { label: '24 hours', value: 24 },
+  { label: '48 hours', value: 48 },
+  { label: '7 days', value: 168 },
+]
+
+function loadStaleHours(): number {
+  try { return parseInt(localStorage.getItem(STALE_LS_KEY) ?? '24', 10) || 24 } catch { return 24 }
+}
+
+function isStale(a: Alert, staleHours: number): boolean {
+  if (a.resolved) return false
+  const updatedAt = a.updated_at ?? a.created_at
+  return (Date.now() / 1000 - updatedAt) > staleHours * 3600
+}
+
+/* ------------------------------------------------------------------ */
 /*  Parse table info from alert dedup_key or message                  */
 /* ------------------------------------------------------------------ */
 function parseTableFromAlert(alert: Alert): { database: string; table: string } | null {
-  // Try dedup_key format: instance:tables:parts:database.table
   const dedupMatch = alert.dedup_key?.match(/^[^:]+:tables:[^:]+:([^.]+)\.(.+)$/)
   if (dedupMatch) return { database: dedupMatch[1], table: dedupMatch[2] }
-
-  // Try message format: database.table or `database`.`table`
   const msgMatch = alert.message?.match(/`?(\w+)`?\.`?(\w+)`?/)
   if (msgMatch) return { database: msgMatch[1], table: msgMatch[2] }
-
   return null
 }
 
 /* ------------------------------------------------------------------ */
-/*  Investigation SQL generators by category                          */
+/*  Investigation SQL generators                                       */
 /* ------------------------------------------------------------------ */
 function investigationSql(alert: Alert): string[] {
   const ts = alert.created_at
@@ -34,9 +53,7 @@ function investigationSql(alert: Alert): string[] {
   const cat = (alert.category || '').toLowerCase()
   const title = (alert.title || '').toLowerCase()
 
-  // ── Sustained / drop alerts — keyed by metric name in title ──────────────
   if (cat === 'sustained' || cat === 'drop') {
-    // Extract metric name: "Sustained elevated: some.metric.name" → "some.metric.name"
     const metricMatch = alert.title.match(/(?:sustained elevated|sustained drop|drop):\s*(.+)/i)
     const metric = metricMatch?.[1]?.trim() ?? ''
     const metricLower = metric.toLowerCase()
@@ -50,150 +67,75 @@ function investigationSql(alert: Alert): string[] {
     if (metricLower.includes('cpu') || metricLower.includes('oscp')) {
       return [
         `SELECT event_time, metric, value\nFROM system.asynchronous_metric_log\nWHERE event_time BETWEEN '${from}' AND '${to}'\n  AND metric IN ('OSCPUVirtualTimeMicroseconds', 'OSCPUWaitMicroseconds', 'CPUFrequencyMHz_0')\nORDER BY event_time DESC\nLIMIT 50`,
-        `SELECT query_id, query_duration_ms, read_rows,\n  substring(query, 1, 200) as q\nFROM system.query_log\nWHERE event_time BETWEEN '${from}' AND '${to}'\n  AND type = 'QueryFinish'\nORDER BY query_duration_ms DESC\nLIMIT 20`,
       ]
     }
     if (metricLower.includes('part')) {
       return [
         `SELECT database, table, count() as part_count,\n  sum(rows) as total_rows,\n  formatReadableSize(sum(bytes_on_disk)) as size\nFROM system.parts\nWHERE active\nGROUP BY database, table\nORDER BY part_count DESC\nLIMIT 20`,
-        `SELECT event_time, database, table, event_type, rows_read, size_compressed\nFROM system.part_log\nWHERE event_time BETWEEN '${from}' AND '${to}'\nORDER BY event_time DESC\nLIMIT 50`,
       ]
     }
     if (metricLower.includes('merge')) {
       return [
-        `SELECT database, table, elapsed, progress, num_parts,\n  result_part_name, is_mutation\nFROM system.merges\nORDER BY elapsed DESC`,
-        `SELECT event_time, database, table, event_type, rows_read,\n  formatReadableSize(size_compressed) as size\nFROM system.part_log\nWHERE event_time BETWEEN '${from}' AND '${to}'\nORDER BY event_time DESC\nLIMIT 50`,
+        `SELECT database, table, elapsed, progress, num_parts, result_part_name, is_mutation\nFROM system.merges\nORDER BY elapsed DESC`,
       ]
     }
-    if (metricLower.includes('insert') || metricLower.includes('rolling_avg.rows')) {
-      return [
-        `SELECT databases[1] as db, tables[1] as tbl,\n  count() as insert_count, sum(written_rows) as total_rows,\n  avg(written_rows) as avg_rows_per_insert\nFROM system.query_log\nWHERE type = 'QueryFinish'\n  AND query_kind = 'Insert'\n  AND event_time BETWEEN '${from}' AND '${to}'\nGROUP BY db, tbl\nORDER BY insert_count DESC\nLIMIT 20`,
-        `SELECT event_time, database, table, count() as new_parts\nFROM system.part_log\nWHERE event_type = 'NewPart'\n  AND event_time BETWEEN '${from}' AND '${to}'\nGROUP BY event_time, database, table\nORDER BY event_time DESC\nLIMIT 50`,
-      ]
-    }
-    if (metricLower.includes('disk') || metricLower.includes('storage') || metricLower.includes('distribution.rows')) {
-      return [
-        `SELECT name, path,\n  formatReadableSize(free_space) as free,\n  formatReadableSize(total_space) as total,\n  round(100 - (free_space / total_space * 100), 1) as used_pct\nFROM system.disks\nORDER BY used_pct DESC`,
-        `SELECT database, table,\n  formatReadableSize(sum(bytes_on_disk)) as size,\n  count() as parts, sum(rows) as rows\nFROM system.parts\nWHERE active\nGROUP BY database, table\nORDER BY sum(bytes_on_disk) DESC\nLIMIT 20`,
-      ]
-    }
-    if (metricLower.includes('uptime')) {
-      return [
-        `SELECT uptime() as uptime_seconds, version()`,
-        `SELECT event_time, metric, value\nFROM system.asynchronous_metric_log\nWHERE event_time BETWEEN '${from}' AND '${to}'\n  AND metric = 'Uptime'\nORDER BY event_time DESC\nLIMIT 50`,
-      ]
-    }
-    if (metricLower.includes('s3')) {
-      return [
-        `SELECT event_time, metric, value\nFROM system.asynchronous_metric_log\nWHERE event_time BETWEEN '${from}' AND '${to}'\n  AND metric LIKE '%S3%'\nORDER BY event_time DESC\nLIMIT 50`,
-      ]
-    }
-    if (metricLower.includes('replica') || metricLower.includes('queue')) {
-      return [
-        `SELECT database, table, is_leader, total_replicas, active_replicas,\n  queue_size, inserts_in_queue, merges_in_queue\nFROM system.replicas\nORDER BY queue_size DESC\nLIMIT 20`,
-      ]
-    }
-    // Generic sustained — show the metric trend from async_metric_log
     if (metric) {
       return [
         `SELECT event_time, metric, value\nFROM system.asynchronous_metric_log\nWHERE event_time BETWEEN '${from}' AND '${to}'\n  AND metric = '${metric}'\nORDER BY event_time\nLIMIT 100`,
-        `SELECT toStartOfMinute(event_time) as minute, avg(value) as avg_val, max(value) as max_val\nFROM system.asynchronous_metric_log\nWHERE event_time BETWEEN '${from}' AND '${to}'\n  AND metric = '${metric}'\nGROUP BY minute\nORDER BY minute`,
       ]
     }
   }
-
-  // ── Standard categories ───────────────────────────────────────────────────
 
   if (cat.includes('memory') || title.includes('memory')) {
     return [
       `SELECT event_time, metric, value\nFROM system.asynchronous_metric_log\nWHERE event_time BETWEEN '${from}' AND '${to}'\n  AND metric LIKE '%Memory%'\nORDER BY event_time DESC\nLIMIT 100`,
-      `SELECT query_id, memory_usage, peak_memory_usage,\n  substring(query, 1, 200) as q\nFROM system.query_log\nWHERE event_time BETWEEN '${from}' AND '${to}'\n  AND memory_usage > 1e9\nORDER BY memory_usage DESC\nLIMIT 20`,
     ]
   }
-
   if (cat.includes('cpu') || title.includes('cpu')) {
     return [
       `SELECT event_time, metric, value\nFROM system.asynchronous_metric_log\nWHERE event_time BETWEEN '${from}' AND '${to}'\n  AND metric IN ('OSCPUVirtualTimeMicroseconds', 'OSCPUWaitMicroseconds')\nORDER BY event_time DESC\nLIMIT 100`,
-      `SELECT query_id, query_duration_ms, read_rows,\n  substring(query, 1, 200) as q\nFROM system.query_log\nWHERE event_time BETWEEN '${from}' AND '${to}'\nORDER BY query_duration_ms DESC\nLIMIT 20`,
     ]
   }
-
   if (cat.includes('part') || cat.includes('merge') || title.includes('part') || title.includes('merge')) {
     return [
       `SELECT event_time, database, table, event_type, rows_read, size_compressed\nFROM system.part_log\nWHERE event_time BETWEEN '${from}' AND '${to}'\nORDER BY event_time DESC\nLIMIT 50`,
-      `SELECT database, table, count() as part_count,\n  sum(rows) as total_rows, formatReadableSize(sum(bytes_on_disk)) as size\nFROM system.parts\nWHERE active\nGROUP BY database, table\nORDER BY part_count DESC\nLIMIT 20`,
     ]
   }
-
   if (cat.includes('quer') || title.includes('quer') || title.includes('failure') || title.includes('failed')) {
     return [
-      `SELECT exception_code, count() as cnt, any(exception) as sample_msg,\n  any(user) as sample_user\nFROM system.query_log\nWHERE type = 'ExceptionWhileProcessing'\n  AND event_time BETWEEN '${from}' AND '${to}'\nGROUP BY exception_code\nORDER BY cnt DESC`,
-      `SELECT query_id, type, query_duration_ms, read_rows, memory_usage,\n  substring(query, 1, 200) as q\nFROM system.query_log\nWHERE event_time BETWEEN '${from}' AND '${to}'\n  AND type = 'QueryFinish'\nORDER BY query_duration_ms DESC\nLIMIT 30`,
+      `SELECT exception_code, count() as cnt, any(exception) as sample_msg\nFROM system.query_log\nWHERE type = 'ExceptionWhileProcessing'\n  AND event_time BETWEEN '${from}' AND '${to}'\nGROUP BY exception_code\nORDER BY cnt DESC`,
     ]
   }
-
-  if (cat.includes('s3') || cat.includes('storage') || title.includes('s3') || title.includes('storage')) {
-    return [
-      `SELECT event_time, metric, value\nFROM system.asynchronous_metric_log\nWHERE event_time BETWEEN '${from}' AND '${to}'\n  AND metric LIKE '%S3%'\nORDER BY event_time DESC\nLIMIT 100`,
-    ]
-  }
-
-  if (cat.includes('replica') || cat.includes('zoo') || title.includes('replica')) {
-    return [
-      `SELECT database, table, is_leader, total_replicas, active_replicas,\n  queue_size, inserts_in_queue, merges_in_queue, log_pointer, last_queue_update\nFROM system.replicas\nWHERE queue_size > 0 OR active_replicas < total_replicas\nORDER BY queue_size DESC`,
-    ]
-  }
-
   if (cat.includes('disk') || title.includes('disk')) {
     return [
       `SELECT name, path, formatReadableSize(free_space) as free,\n  formatReadableSize(total_space) as total,\n  round(100 - (free_space / total_space * 100), 1) as used_pct\nFROM system.disks`,
     ]
   }
-
-  if (cat.includes('insert') || title.includes('insert')) {
-    return [
-      `SELECT databases[1] as db, tables[1] as tbl, count() as inserts,\n  avg(written_rows) as avg_rows, sum(written_rows) as total_rows\nFROM system.query_log\nWHERE type = 'QueryFinish' AND query_kind = 'Insert'\n  AND event_time BETWEEN '${from}' AND '${to}'\nGROUP BY db, tbl\nORDER BY inserts DESC\nLIMIT 20`,
-    ]
-  }
-
-  // Generic fallback
   return [
     `SELECT event_time, type, query_duration_ms, read_rows, memory_usage,\n  substring(query, 1, 200) as q\nFROM system.query_log\nWHERE event_time BETWEEN '${from}' AND '${to}'\nORDER BY event_time DESC\nLIMIT 50`,
   ]
 }
 
 /* ------------------------------------------------------------------ */
-/*  Tip detector: does a string look like SQL?                        */
+/*  Alert message renderer                                             */
 /* ------------------------------------------------------------------ */
 function looksLikeSql(s: string): boolean {
   const u = s.toUpperCase()
   return (u.includes('SELECT') && u.includes('FROM')) || u.includes('SHOW ') || u.includes('SYSTEM ') || u.includes('OPTIMIZE ') || u.includes('KILL ')
 }
 
-/* ------------------------------------------------------------------ */
-/*  Alert message renderer — parses markdown-style messages           */
-/* ------------------------------------------------------------------ */
-interface MessageSegment {
-  type: 'text' | 'sql'
-  content: string
-}
+interface MessageSegment { type: 'text' | 'sql'; content: string }
 
 function parseAlertMessage(message: string): MessageSegment[] {
   const segments: MessageSegment[] = []
-  // Split on triple-backtick code blocks
   const parts = message.split(/```(?:\w+)?\n?([\s\S]*?)```/g)
-  // split result: [before, capture1, after, capture2, ...]
   for (let i = 0; i < parts.length; i++) {
     if (i % 2 === 0) {
-      // Text segment — strip leading/trailing whitespace
       const text = parts[i].trim()
       if (text) segments.push({ type: 'text', content: text })
     } else {
-      // Code block — treat as SQL if it looks like SQL, otherwise text
       const code = parts[i].trim()
-      if (code) {
-        segments.push({ type: looksLikeSql(code) ? 'sql' : 'text', content: code })
-      }
+      if (code) segments.push({ type: looksLikeSql(code) ? 'sql' : 'text', content: code })
     }
   }
   return segments
@@ -204,19 +146,13 @@ function AlertMessageRenderer({ message, instance }: { message: string; instance
   return (
     <div className="space-y-2">
       {segments.map((seg, i) => {
-        if (seg.type === 'sql') {
-          return <SqlBlock key={i} sql={seg.content} instance={instance} />
-        }
-        // Render text: convert *bold* → <strong>, strip leading dashes/bullets
+        if (seg.type === 'sql') return <SqlBlock key={i} sql={seg.content} instance={instance} />
         const lines = seg.content.split('\n')
         return (
           <div key={i} className="text-sm bg-[var(--hover)] rounded-md p-3 border border-[var(--border)] space-y-0.5">
             {lines.map((line, j) => {
-              // Apply inline bold: *text* → <strong>
               const parts = line.split(/\*([^*]+)\*/g)
-              const rendered = parts.map((p, k) =>
-                k % 2 === 1 ? <strong key={k}>{p}</strong> : <span key={k}>{p}</span>
-              )
+              const rendered = parts.map((p, k) => k % 2 === 1 ? <strong key={k}>{p}</strong> : <span key={k}>{p}</span>)
               return <div key={j}>{rendered}</div>
             })}
           </div>
@@ -229,21 +165,19 @@ function AlertMessageRenderer({ message, instance }: { message: string; instance
 /* ------------------------------------------------------------------ */
 /*  AlertRow (expandable)                                             */
 /* ------------------------------------------------------------------ */
-function AlertRow({ alert, showMeta }: { alert: Alert; showMeta?: boolean }) {
+function AlertRow({ alert, showMeta, staleHours }: { alert: Alert; showMeta?: boolean; staleHours: number }) {
   const [expanded, setExpanded] = useState(false)
   const [suggestions, setSuggestions] = useState<Suggestion | null>(null)
   const [loadingSugg, setLoadingSugg] = useState(false)
   const { openTableDetail } = useStore()
+  const stale = isStale(alert, staleHours)
 
   const handleExpand = useCallback(() => {
     const next = !expanded
     setExpanded(next)
     if (next && !suggestions && !loadingSugg) {
       setLoadingSugg(true)
-      api.suggestions(alert.category)
-        .then(setSuggestions)
-        .catch(() => {})
-        .finally(() => setLoadingSugg(false))
+      api.suggestions(alert.category).then(setSuggestions).catch(() => {}).finally(() => setLoadingSugg(false))
     }
   }, [expanded, suggestions, loadingSugg, alert.category])
 
@@ -251,18 +185,16 @@ function AlertRow({ alert, showMeta }: { alert: Alert; showMeta?: boolean }) {
   const tableInfo = useMemo(() => parseTableFromAlert(alert), [alert])
 
   return (
-    <div className="border-b border-[var(--border)] last:border-0">
-      {/* Row header */}
+    <div className={cn('border-b border-[var(--border)] last:border-0', stale && 'opacity-60')}>
       <button
         onClick={handleExpand}
         className="w-full flex items-center gap-3 px-3 py-2.5 text-left text-sm hover:bg-[var(--hover)] transition-colors"
       >
-        {expanded ? (
-          <ChevronDown size={14} className="shrink-0 text-[var(--dim)]" />
-        ) : (
-          <ChevronRight size={14} className="shrink-0 text-[var(--dim)]" />
-        )}
-        <Badge severity={alert.severity} />
+        {expanded ? <ChevronDown size={14} className="shrink-0 text-[var(--dim)]" /> : <ChevronRight size={14} className="shrink-0 text-[var(--dim)]" />}
+        {stale
+          ? <Badge className="bg-gray-500/10 text-gray-400 border border-gray-500/20 text-xs shrink-0">stale</Badge>
+          : <Badge severity={alert.severity} />
+        }
         {showMeta && (
           <>
             <span className="text-xs text-[var(--dim)] shrink-0">{alert.instance}</span>
@@ -271,96 +203,57 @@ function AlertRow({ alert, showMeta }: { alert: Alert; showMeta?: boolean }) {
         )}
         <span className="font-medium truncate flex-1">{alert.title}</span>
         <span className="text-[var(--dim)] text-xs shrink-0">{fmtTime(alert.created_at)}</span>
-        {alert.resolved && (
-          <Badge className="bg-green-500/10 text-green-400 border-green-500/20">resolved</Badge>
-        )}
+        {alert.resolved && <Badge className="bg-green-500/10 text-green-400 border-green-500/20">resolved</Badge>}
       </button>
 
-      {/* Expanded detail */}
       {expanded && (
         <div className="px-3 pb-4 pl-10 space-y-4">
-          {/* Metadata grid */}
           <div className="grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-2 text-sm">
-            <div>
-              <span className="text-[var(--dim)]">Instance: </span>{alert.instance}
-            </div>
-            <div>
-              <span className="text-[var(--dim)]">Category: </span>{alert.category}
-            </div>
-            <div>
-              <span className="text-[var(--dim)]">Dedup Key: </span>
-              <span className="font-mono text-xs">{alert.dedup_key}</span>
-            </div>
-            <div>
-              <span className="text-[var(--dim)]">Created: </span>{fmtTime(alert.created_at)}
-            </div>
-            {alert.resolved_at && (
-              <div>
-                <span className="text-[var(--dim)]">Resolved: </span>{fmtTime(alert.resolved_at)}
-              </div>
+            <div><span className="text-[var(--dim)]">Instance: </span>{alert.instance}</div>
+            <div><span className="text-[var(--dim)]">Category: </span>{alert.category}</div>
+            <div><span className="text-[var(--dim)]">Dedup Key: </span><span className="font-mono text-xs">{alert.dedup_key}</span></div>
+            <div><span className="text-[var(--dim)]">Created: </span>{fmtTime(alert.created_at)}</div>
+            {stale && (
+              <div><span className="text-[var(--dim)]">Last seen: </span><span className="text-yellow-400">{fmtTime(alert.updated_at ?? alert.created_at)}</span></div>
             )}
+            {alert.resolved_at && <div><span className="text-[var(--dim)]">Resolved: </span>{fmtTime(alert.resolved_at)}</div>}
           </div>
 
-          {/* Full message */}
-          {alert.message && (
-            <AlertMessageRenderer message={alert.message} instance={alert.instance} />
-          )}
+          {alert.message && <AlertMessageRenderer message={alert.message} instance={alert.instance} />}
 
-          {/* Suggestions */}
-          {loadingSugg && (
-            <div className="text-sm text-[var(--dim)]">Loading suggestions...</div>
-          )}
+          {loadingSugg && <div className="text-sm text-[var(--dim)]">Loading suggestions...</div>}
           {suggestions && suggestions.suggestions.length > 0 && (
             <div>
-              <div className="text-xs font-medium uppercase tracking-wider text-[var(--dim)] mb-2">
-                Suggestions
-              </div>
+              <div className="text-xs font-medium uppercase tracking-wider text-[var(--dim)] mb-2">Suggestions</div>
               <div className="space-y-2">
                 {suggestions.suggestions.map((tip, i) => {
-                  // If the tip contains a backtick SQL block, extract it
                   const backtickMatch = tip.match(/^([\s\S]*?)```(?:\w+)?\n?([\s\S]+?)```([\s\S]*)$/s)
                   if (backtickMatch) {
-                    const before = backtickMatch[1].trim()
-                    const sql = backtickMatch[2].trim()
-                    const after = backtickMatch[3].trim()
+                    const before = backtickMatch[1].trim(), sql = backtickMatch[2].trim(), after = backtickMatch[3].trim()
                     return (
                       <div key={i} className="space-y-1">
                         {before && <div className="text-sm pl-2 border-l-2 border-[var(--border)]">{before}</div>}
-                        {looksLikeSql(sql) ? (
-                          <SqlBlock sql={sql} instance={alert.instance} />
-                        ) : (
-                          <pre className="text-sm bg-[var(--hover)] rounded p-2 border border-[var(--border)] font-mono">{sql}</pre>
-                        )}
+                        {looksLikeSql(sql) ? <SqlBlock sql={sql} instance={alert.instance} /> : <pre className="text-sm bg-[var(--hover)] rounded p-2 border border-[var(--border)] font-mono">{sql}</pre>}
                         {after && <div className="text-sm pl-2 border-l-2 border-[var(--border)]">{after}</div>}
                       </div>
                     )
                   }
-                  // Split "description: SQL" format into text + sql
                   const sqlMatch = tip.match(/^(.*?):\s*(SELECT\s|SHOW\s|SYSTEM\s|OPTIMIZE\s|KILL\s)(.*)/is)
                   if (sqlMatch) {
-                    const desc = sqlMatch[1].trim()
-                    const sql = (sqlMatch[2] + sqlMatch[3]).trim()
                     return (
                       <div key={i} className="space-y-1">
-                        <div className="text-sm pl-2 border-l-2 border-[var(--border)]">{desc}</div>
-                        <SqlBlock sql={sql} instance={alert.instance} />
+                        <div className="text-sm pl-2 border-l-2 border-[var(--border)]">{sqlMatch[1].trim()}</div>
+                        <SqlBlock sql={(sqlMatch[2] + sqlMatch[3]).trim()} instance={alert.instance} />
                       </div>
                     )
                   }
-                  if (looksLikeSql(tip)) {
-                    return <SqlBlock key={i} sql={tip} instance={alert.instance} />
-                  }
-                  return (
-                    <div key={i} className="text-sm pl-2 border-l-2 border-[var(--border)]">
-                      {tip}
-                    </div>
-                  )
+                  if (looksLikeSql(tip)) return <SqlBlock key={i} sql={tip} instance={alert.instance} />
+                  return <div key={i} className="text-sm pl-2 border-l-2 border-[var(--border)]">{tip}</div>
                 })}
               </div>
             </div>
           )}
 
-          {/* Explore Table button for table-related alerts */}
           {tableInfo && (
             <button
               onClick={() => openTableDetail(alert.instance, tableInfo.database, tableInfo.table)}
@@ -371,15 +264,10 @@ function AlertRow({ alert, showMeta }: { alert: Alert; showMeta?: boolean }) {
             </button>
           )}
 
-          {/* Investigation SQL */}
           <div>
-            <div className="text-xs font-medium uppercase tracking-wider text-[var(--dim)] mb-2">
-              Investigation Queries
-            </div>
+            <div className="text-xs font-medium uppercase tracking-wider text-[var(--dim)] mb-2">Investigation Queries</div>
             <div className="space-y-2">
-              {invSql.map((sql, i) => (
-                <SqlBlock key={i} sql={sql} instance={alert.instance} />
-              ))}
+              {invSql.map((sql, i) => <SqlBlock key={i} sql={sql} instance={alert.instance} />)}
             </div>
           </div>
         </div>
@@ -389,52 +277,157 @@ function AlertRow({ alert, showMeta }: { alert: Alert; showMeta?: boolean }) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Stat Card (local to alerts view)                                  */
+/*  Timeline view                                                      */
 /* ------------------------------------------------------------------ */
-function StatCard({ label, value, color }: { label: string; value: string | number; color?: string }) {
+function TimelineView({ alerts, staleHours }: { alerts: Alert[]; staleHours: number }) {
+  // Group by calendar day (local time), newest first
+  const byDay = useMemo(() => {
+    const map = new Map<string, Alert[]>()
+    for (const a of alerts) {
+      const d = new Date((a.created_at) * 1000)
+      const key = d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })
+      if (!map.has(key)) map.set(key, [])
+      map.get(key)!.push(a)
+    }
+    return Array.from(map.entries())
+  }, [alerts])
+
+  const { openTableDetail } = useStore()
+
+  if (byDay.length === 0) {
+    return <div className="text-sm text-[var(--dim)] text-center py-12">No alerts match the current filters</div>
+  }
+
+  return (
+    <div className="space-y-8">
+      {byDay.map(([day, dayAlerts]) => (
+        <div key={day}>
+          {/* Day header */}
+          <div className="flex items-center gap-3 mb-4">
+            <div className="text-xs font-semibold uppercase tracking-wider text-[var(--dim)] shrink-0">{day}</div>
+            <div className="flex-1 h-px bg-[var(--border)]" />
+            <div className="text-xs text-[var(--dim)] shrink-0">{dayAlerts.length} alert{dayAlerts.length !== 1 ? 's' : ''}</div>
+          </div>
+
+          {/* Alert cards */}
+          <div className="space-y-2 pl-2">
+            {dayAlerts.map((a) => {
+              const stale = isStale(a, staleHours)
+              const tableInfo = parseTableFromAlert(a)
+              const d = new Date(a.created_at * 1000)
+              const timeStr = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+
+              return (
+                <div key={a.id} className={cn(
+                  'flex gap-4 items-start',
+                  stale && 'opacity-50',
+                )}>
+                  {/* Time + spine */}
+                  <div className="flex flex-col items-center shrink-0 w-14">
+                    <div className="text-xs text-[var(--dim)] tabular-nums">{timeStr}</div>
+                    <div className="w-px flex-1 bg-[var(--border)] mt-1 min-h-4" />
+                  </div>
+
+                  {/* Card */}
+                  <div className={cn(
+                    'flex-1 rounded-lg border p-3 mb-2',
+                    stale
+                      ? 'border-[var(--border)] bg-[var(--hover)]'
+                      : a.resolved
+                        ? 'border-green-500/20 bg-green-500/5'
+                        : a.severity === 'critical'
+                          ? 'border-red-500/20 bg-red-500/5'
+                          : a.severity === 'warn'
+                            ? 'border-yellow-500/20 bg-yellow-500/5'
+                            : 'border-[var(--border)] bg-[var(--surface)]',
+                  )}>
+                    <div className="flex items-start gap-2">
+                      {stale
+                        ? <Badge className="bg-gray-500/10 text-gray-400 border border-gray-500/20 text-xs shrink-0">stale</Badge>
+                        : <Badge severity={a.severity} />
+                      }
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-medium">{a.title}</div>
+                        <div className="flex items-center gap-2 mt-1 text-xs text-[var(--dim)]">
+                          <span>{a.instance}</span>
+                          <span>·</span>
+                          <span>{a.category}</span>
+                          {a.resolved && <><span>·</span><span className="text-green-400">resolved</span></>}
+                        </div>
+                        {a.message && (
+                          <div className="text-xs text-[var(--dim)] mt-1 truncate">{a.message.slice(0, 120)}</div>
+                        )}
+                      </div>
+                      {tableInfo && (
+                        <button
+                          onClick={() => openTableDetail(a.instance, tableInfo.database, tableInfo.table)}
+                          className="shrink-0 p-1 rounded hover:bg-[var(--hover)] text-[var(--accent)] transition-colors"
+                          title={`Explore ${tableInfo.database}.${tableInfo.table}`}
+                        >
+                          <Table2 size={13} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/*  Stat Card                                                          */
+/* ------------------------------------------------------------------ */
+function StatCard({ label, value, color, sub }: { label: string; value: string | number; color?: string; sub?: string }) {
   return (
     <Card>
       <div className="text-3xl font-bold" style={{ color }}>{value}</div>
       <div className="text-xs text-[var(--dim)] mt-1 uppercase tracking-wider">{label}</div>
+      {sub && <div className="text-xs text-[var(--dim)] mt-0.5">{sub}</div>}
     </Card>
   )
 }
 
 /* ------------------------------------------------------------------ */
-/*  Alerts view                                                       */
+/*  Alerts view                                                        */
 /* ------------------------------------------------------------------ */
+type ViewMode = 'grouped' | 'flat' | 'timeline'
+
 export default function Alerts() {
-  const { instances: cachedInstances, customFrom, customTo } = useStore()
+  const { instances: cachedInstances, customFrom, customTo, setView } = useStore()
   const [activeAlerts, setActiveAlerts] = useState<Alert[]>([])
   const [historyAlerts, setHistoryAlerts] = useState<Alert[]>([])
   const [loading, setLoading] = useState(true)
+  const [resolving, setResolving] = useState(false)
 
-  /* View mode */
-  const [viewMode, setViewMode] = useState<'grouped' | 'flat'>('grouped')
+  const [viewMode, setViewMode] = useState<ViewMode>('grouped')
+  const [staleHours, setStaleHours] = useState<number>(loadStaleHours)
 
-  /* Filters */
   const [filterInstance, setFilterInstance] = useState('all')
   const [filterSeverity, setFilterSeverity] = useState('all')
   const [filterCategory, setFilterCategory] = useState('all')
   const [filterType, setFilterType] = useState('all')
   const [filterStatus, setFilterStatus] = useState('all')
 
-  /* Collapsed groups */
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set())
+
+  // Persist threshold to localStorage
+  const updateStaleHours = useCallback((v: number) => {
+    setStaleHours(v)
+    try { localStorage.setItem(STALE_LS_KEY, String(v)) } catch {}
+  }, [])
 
   useEffect(() => {
     let cancelled = false
     async function load() {
       setLoading(true)
       try {
-        const [active, history] = await Promise.all([
-          api.alerts.active(),
-          api.alerts.history(),
-        ])
-        if (!cancelled) {
-          setActiveAlerts(active)
-          setHistoryAlerts(history)
-        }
+        const [active, history] = await Promise.all([api.alerts.active(), api.alerts.history()])
+        if (!cancelled) { setActiveAlerts(active); setHistoryAlerts(history) }
       } catch {
         // keep empty
       } finally {
@@ -445,7 +438,6 @@ export default function Alerts() {
     return () => { cancelled = true }
   }, [customFrom, customTo])
 
-  /* ---- All alerts combined ---- */
   const allAlerts = useMemo(() => {
     const map = new Map<number, Alert>()
     activeAlerts.forEach((a) => map.set(a.id, a))
@@ -453,34 +445,23 @@ export default function Alerts() {
     return Array.from(map.values()).sort((a, b) => b.created_at - a.created_at)
   }, [activeAlerts, historyAlerts])
 
-  /* ---- Derived filter options ---- */
-  const categories = useMemo(
-    () => [...new Set(allAlerts.map((a) => a.category))].sort(),
-    [allAlerts],
-  )
-  const alertTypes = useMemo(
-    () => [...new Set(allAlerts.map((a) => a.title))].sort(),
-    [allAlerts],
-  )
-  const instanceNames = useMemo(
-    () => [...new Set([...cachedInstances, ...allAlerts.map((a) => a.instance)])].sort(),
-    [cachedInstances, allAlerts],
-  )
+  const categories = useMemo(() => [...new Set(allAlerts.map((a) => a.category))].sort(), [allAlerts])
+  const alertTypes = useMemo(() => [...new Set(allAlerts.map((a) => a.title))].sort(), [allAlerts])
+  const instanceNames = useMemo(() => [...new Set([...cachedInstances, ...allAlerts.map((a) => a.instance)])].sort(), [cachedInstances, allAlerts])
 
-  /* ---- Filtered alerts ---- */
   const filtered = useMemo(() => {
     return allAlerts.filter((a) => {
       if (filterInstance !== 'all' && a.instance !== filterInstance) return false
       if (filterSeverity !== 'all' && a.severity !== filterSeverity) return false
       if (filterCategory !== 'all' && a.category !== filterCategory) return false
       if (filterType !== 'all' && a.title !== filterType) return false
-      if (filterStatus === 'firing' && a.resolved) return false
+      if (filterStatus === 'firing' && (a.resolved || isStale(a, staleHours))) return false
+      if (filterStatus === 'stale' && !isStale(a, staleHours)) return false
       if (filterStatus === 'resolved' && !a.resolved) return false
       return true
     })
-  }, [allAlerts, filterInstance, filterSeverity, filterCategory, filterType, filterStatus])
+  }, [allAlerts, filterInstance, filterSeverity, filterCategory, filterType, filterStatus, staleHours])
 
-  /* ---- Grouped by instance+category ---- */
   const groups = useMemo(() => {
     const map = new Map<string, Alert[]>()
     filtered.forEach((a) => {
@@ -494,27 +475,41 @@ export default function Alerts() {
   const toggleGroup = (key: string) => {
     setCollapsedGroups((prev) => {
       const next = new Set(prev)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
+      if (next.has(key)) { next.delete(key) } else { next.add(key) }
       return next
     })
   }
 
-  /* ---- Stats ---- */
-  const firing = filtered.filter((a) => !a.resolved).length
+  const firing = filtered.filter((a) => !a.resolved && !isStale(a, staleHours)).length
+  const staleCount = filtered.filter((a) => isStale(a, staleHours)).length
   const resolved = filtered.filter((a) => a.resolved).length
 
-  /* ---- Dropdown helper ---- */
-  const Select = ({
-    value,
-    onChange,
-    options,
-    label,
-  }: {
-    value: string
-    onChange: (v: string) => void
-    options: { value: string; label: string }[]
-    label: string
+  // Total stale across ALL (unfiltered) for the dismiss button
+  const totalStaleUnfiltered = useMemo(
+    () => allAlerts.filter((a) => isStale(a, staleHours)).length,
+    [allAlerts, staleHours],
+  )
+
+  const handleResolveStale = useCallback(async () => {
+    if (!totalStaleUnfiltered) return
+    setResolving(true)
+    try {
+      const { resolved: n } = await api.alerts.resolveStale(staleHours)
+      // Refresh
+      const [active, history] = await Promise.all([api.alerts.active(), api.alerts.history()])
+      setActiveAlerts(active)
+      setHistoryAlerts(history)
+      console.info(`[CH-Analyzer] Resolved ${n} stale alerts`)
+    } catch (e: any) {
+      console.error('[CH-Analyzer] Resolve stale failed:', e.message)
+    } finally {
+      setResolving(false)
+    }
+  }, [staleHours, totalStaleUnfiltered])
+
+  const Select = ({ value, onChange, options, label }: {
+    value: string; onChange: (v: string) => void
+    options: { value: string; label: string }[]; label: string
   }) => (
     <div className="flex flex-col gap-1">
       <label className="text-xs text-[var(--dim)] uppercase tracking-wider">{label}</label>
@@ -523,14 +518,11 @@ export default function Alerts() {
         onChange={(e) => onChange(e.target.value)}
         className="bg-[var(--surface)] border border-[var(--border)] rounded-md px-2 py-1.5 text-sm focus:outline-none focus:border-[var(--accent)]"
       >
-        {options.map((o) => (
-          <option key={o.value} value={o.value}>{o.label}</option>
-        ))}
+        {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
     </div>
   )
 
-  /* ---- Loading ---- */
   if (loading) {
     return (
       <div className="space-y-6 animate-pulse">
@@ -548,139 +540,134 @@ export default function Alerts() {
 
   return (
     <div className="space-y-6">
-      {/* ---- Stat cards ---- */}
-      <div className="grid grid-cols-3 gap-4">
-        <StatCard label="Firing" value={firing} color={firing > 0 ? '#ef4444' : undefined} />
-        <StatCard label="Resolved" value={resolved} color="#22c55e" />
-        <StatCard label="Total" value={filtered.length} />
+      {/* ---- Stat cards + actions ---- */}
+      <div className="flex items-start gap-4">
+        <div className="grid grid-cols-3 gap-4 flex-1">
+          <StatCard label="Firing" value={firing} color={firing > 0 ? '#ef4444' : undefined} />
+          <StatCard
+            label="Stale"
+            value={staleCount}
+            color={staleCount > 0 ? '#9ca3af' : undefined}
+            sub={`>${staleHours}h without update`}
+          />
+          <StatCard label="Resolved" value={resolved} color="#22c55e" />
+        </div>
+
+        {/* Action buttons */}
+        <div className="flex flex-col gap-2 shrink-0 pt-1">
+          <button
+            onClick={() => setView('analyzer')}
+            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium bg-[var(--accent)]/15 text-[var(--accent)] hover:bg-[var(--accent)]/25 transition-colors"
+          >
+            <Brain size={14} />
+            Analyze with AI
+          </button>
+          {totalStaleUnfiltered > 0 && (
+            <button
+              onClick={handleResolveStale}
+              disabled={resolving}
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium bg-gray-500/10 text-gray-400 hover:bg-gray-500/20 transition-colors disabled:opacity-50"
+            >
+              <Trash2 size={14} />
+              {resolving ? 'Resolving...' : `Dismiss stale (${totalStaleUnfiltered})`}
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* ---- View mode toggle ---- */}
-      <div className="flex gap-1 bg-[var(--surface)] border border-[var(--border)] rounded-lg p-1 w-fit">
-        <button
-          onClick={() => setViewMode('grouped')}
-          className={cn(
-            'px-4 py-1.5 text-sm font-medium rounded-md transition-colors',
-            viewMode === 'grouped'
-              ? 'bg-[var(--accent)]/15 text-[var(--accent)]'
-              : 'text-[var(--dim)] hover:text-[var(--text)]',
-          )}
-        >
-          Grouped
-        </button>
-        <button
-          onClick={() => setViewMode('flat')}
-          className={cn(
-            'px-4 py-1.5 text-sm font-medium rounded-md transition-colors',
-            viewMode === 'flat'
-              ? 'bg-[var(--accent)]/15 text-[var(--accent)]'
-              : 'text-[var(--dim)] hover:text-[var(--text)]',
-          )}
-        >
-          Flat
-        </button>
+      {/* ---- View mode + staleness threshold ---- */}
+      <div className="flex items-center gap-4 flex-wrap">
+        <div className="flex gap-1 bg-[var(--surface)] border border-[var(--border)] rounded-lg p-1">
+          {(['grouped', 'flat', 'timeline'] as ViewMode[]).map((m) => (
+            <button
+              key={m}
+              onClick={() => setViewMode(m)}
+              className={cn(
+                'px-4 py-1.5 text-sm font-medium rounded-md transition-colors capitalize',
+                viewMode === m
+                  ? 'bg-[var(--accent)]/15 text-[var(--accent)]'
+                  : 'text-[var(--dim)] hover:text-[var(--text)]',
+              )}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex items-center gap-2 ml-auto">
+          <Clock size={13} className="text-[var(--dim)]" />
+          <label className="text-xs text-[var(--dim)]">Stale after</label>
+          <select
+            value={staleHours}
+            onChange={(e) => updateStaleHours(Number(e.target.value))}
+            className="bg-[var(--surface)] border border-[var(--border)] rounded-md px-2 py-1 text-sm focus:outline-none focus:border-[var(--accent)]"
+          >
+            {STALE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </div>
       </div>
 
       {/* ---- Filters ---- */}
-      <div className="grid grid-cols-4 gap-4">
-        <Select
-          label="Instance"
-          value={filterInstance}
-          onChange={setFilterInstance}
-          options={[{ value: 'all', label: 'All instances' }, ...instanceNames.map((n) => ({ value: n, label: n }))]}
-        />
-        <Select
-          label="Severity"
-          value={filterSeverity}
-          onChange={setFilterSeverity}
-          options={[
-            { value: 'all', label: 'All severities' },
-            { value: 'critical', label: 'Critical' },
-            { value: 'warn', label: 'Warning' },
-            { value: 'info', label: 'Info' },
-          ]}
-        />
-        <Select
-          label="Category"
-          value={filterCategory}
-          onChange={setFilterCategory}
-          options={[{ value: 'all', label: 'All categories' }, ...categories.map((c) => ({ value: c, label: c }))]}
-        />
-        <Select
-          label="Alert Type"
-          value={filterType}
-          onChange={setFilterType}
-          options={[{ value: 'all', label: 'All types' }, ...alertTypes.map((t) => ({ value: t, label: t }))]}
-        />
-        <Select
-          label="Status"
-          value={filterStatus}
-          onChange={setFilterStatus}
+      <div className="grid grid-cols-5 gap-4">
+        <Select label="Instance" value={filterInstance} onChange={setFilterInstance}
+          options={[{ value: 'all', label: 'All instances' }, ...instanceNames.map((n) => ({ value: n, label: n }))]} />
+        <Select label="Severity" value={filterSeverity} onChange={setFilterSeverity}
+          options={[{ value: 'all', label: 'All severities' }, { value: 'critical', label: 'Critical' }, { value: 'warn', label: 'Warning' }, { value: 'info', label: 'Info' }]} />
+        <Select label="Category" value={filterCategory} onChange={setFilterCategory}
+          options={[{ value: 'all', label: 'All categories' }, ...categories.map((c) => ({ value: c, label: c }))]} />
+        <Select label="Alert Type" value={filterType} onChange={setFilterType}
+          options={[{ value: 'all', label: 'All types' }, ...alertTypes.map((t) => ({ value: t, label: t }))]} />
+        <Select label="Status" value={filterStatus} onChange={setFilterStatus}
           options={[
             { value: 'all', label: 'All' },
-            { value: 'firing', label: 'Firing' },
+            { value: 'firing', label: 'Firing (fresh)' },
+            { value: 'stale', label: 'Stale' },
             { value: 'resolved', label: 'Resolved' },
-          ]}
-        />
+          ]} />
       </div>
 
-      {/* ---- Alerts list ---- */}
+      {/* ---- Alert list ---- */}
       {filtered.length === 0 ? (
-        <div className="text-sm text-[var(--dim)] text-center py-12">
-          No alerts match the current filters
-        </div>
+        <div className="text-sm text-[var(--dim)] text-center py-12">No alerts match the current filters</div>
+      ) : viewMode === 'timeline' ? (
+        <TimelineView alerts={filtered} staleHours={staleHours} />
       ) : viewMode === 'flat' ? (
-        /* ---- Flat mode ---- */
         <Card className="!p-0">
-          {filtered.map((alert) => (
-            <AlertRow key={alert.id} alert={alert} showMeta />
-          ))}
+          {filtered.map((alert) => <AlertRow key={alert.id} alert={alert} showMeta staleHours={staleHours} />)}
         </Card>
       ) : (
-        /* ---- Grouped mode ---- */
         <div className="space-y-3">
           {groups.map(([key, groupAlerts]) => {
             const [inst, cat] = key.split('::')
             const isCollapsed = collapsedGroups.has(key)
-            const groupFiring = groupAlerts.filter((a) => !a.resolved).length
+            const groupFiring = groupAlerts.filter((a) => !a.resolved && !isStale(a, staleHours)).length
+            const groupStale = groupAlerts.filter((a) => isStale(a, staleHours)).length
             const groupResolved = groupAlerts.filter((a) => a.resolved).length
-            const worstSev = groupAlerts.some((a) => a.severity === 'critical')
+            const worstSev = groupAlerts.some((a) => a.severity === 'critical' && !isStale(a, staleHours))
               ? 'critical'
-              : groupAlerts.some((a) => a.severity === 'warn')
+              : groupAlerts.some((a) => a.severity === 'warn' && !isStale(a, staleHours))
                 ? 'warn'
                 : 'info'
 
             return (
               <Card key={key} className="!p-0">
-                {/* Group header */}
                 <button
                   onClick={() => toggleGroup(key)}
                   className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-[var(--hover)] transition-colors"
                 >
-                  {isCollapsed ? (
-                    <ChevronRight size={16} className="shrink-0 text-[var(--dim)]" />
-                  ) : (
-                    <ChevronDown size={16} className="shrink-0 text-[var(--dim)]" />
-                  )}
+                  {isCollapsed ? <ChevronRight size={16} className="shrink-0 text-[var(--dim)]" /> : <ChevronDown size={16} className="shrink-0 text-[var(--dim)]" />}
                   <span className="font-medium">{inst}</span>
                   <span className="text-[var(--dim)]">/</span>
                   <span className="text-sm">{cat}</span>
                   <Badge severity={worstSev} />
                   <div className="flex-1" />
-                  {groupFiring > 0 && (
-                    <span className="text-xs text-red-400">{groupFiring} firing</span>
-                  )}
-                  {groupResolved > 0 && (
-                    <span className="text-xs text-green-400 ml-2">{groupResolved} resolved</span>
-                  )}
+                  {groupFiring > 0 && <span className="text-xs text-red-400">{groupFiring} firing</span>}
+                  {groupStale > 0 && <span className="text-xs text-gray-400 ml-2">{groupStale} stale</span>}
+                  {groupResolved > 0 && <span className="text-xs text-green-400 ml-2">{groupResolved} resolved</span>}
                 </button>
-
-                {/* Group rows */}
                 {!isCollapsed && (
                   <div className="border-t border-[var(--border)]">
-                    {groupAlerts.map((alert) => (
-                      <AlertRow key={alert.id} alert={alert} />
-                    ))}
+                    {groupAlerts.map((alert) => <AlertRow key={alert.id} alert={alert} staleHours={staleHours} />)}
                   </div>
                 )}
               </Card>

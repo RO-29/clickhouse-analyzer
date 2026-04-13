@@ -110,6 +110,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/overview", s.handleOverview)
 	mux.HandleFunc("GET /api/alerts/active", s.handleActiveAlerts)
 	mux.HandleFunc("GET /api/alerts/history", s.handleAlertHistory)
+	mux.HandleFunc("POST /api/alerts/resolve-stale", s.handleResolveStale)
 	mux.HandleFunc("GET /api/logs", s.handleLogs)
 	mux.HandleFunc("GET /api/instances/{name}/ch-logs", s.handleCHLogs)
 
@@ -527,11 +528,16 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		latest, err := s.store.QueryLatestMetrics(name)
 		if err == nil {
 			for _, m := range latest {
+				// Map collector metric names → dashboard display names.
 				switch m.Name {
-				case "memory_rss", "memory_tracked", "cpu_user", "cpu_system",
-					"running_queries", "total_parts", "active_merges",
-					"insert_rows_per_sec":
+				case "memory_rss", "memory_tracked", "cpu_user", "cpu_system", "insert_rows_per_sec":
 					keyMetrics[m.Name] = m.Value
+				case "queries.running_count":
+					keyMetrics["running_queries"] = m.Value
+				case "tables.merges.active_count":
+					keyMetrics["active_merges"] = m.Value
+				case "tables.parts.count":
+					keyMetrics["total_parts"] += m.Value
 				}
 				// Metric-based area escalation.
 				switch m.Name {
@@ -553,13 +559,13 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 					} else if m.Value > 80 {
 						areaWorst["storage"] = worstSev(areaWorst["storage"], "warn")
 					}
-				case "total_parts":
-					if m.Value > 500 {
-						areaWorst["storage"] = worstSev(areaWorst["storage"], "critical")
-					} else if m.Value > 300 {
-						areaWorst["storage"] = worstSev(areaWorst["storage"], "warn")
-					}
 				}
+			}
+			// Area escalation from summed total_parts.
+			if tp := keyMetrics["total_parts"]; tp > 500 {
+				areaWorst["storage"] = worstSev(areaWorst["storage"], "critical")
+			} else if tp := keyMetrics["total_parts"]; tp > 300 {
+				areaWorst["storage"] = worstSev(areaWorst["storage"], "warn")
 			}
 		}
 
@@ -864,12 +870,17 @@ type alertJSON struct {
 	Resolved   bool    `json:"resolved"`
 	ResolvedAt *int64  `json:"resolved_at,omitempty"`
 	CreatedAt  int64   `json:"created_at"`
+	UpdatedAt  int64   `json:"updated_at"`
 	DedupKey   string  `json:"dedup_key"`
 }
 
 func marshalAlerts(alerts []store.Alert) []alertJSON {
 	out := make([]alertJSON, len(alerts))
 	for i, a := range alerts {
+		updatedAt := a.UpdatedAt.Unix()
+		if a.UpdatedAt.IsZero() {
+			updatedAt = a.CreatedAt.Unix()
+		}
 		out[i] = alertJSON{
 			ID:        a.ID,
 			Instance:  a.Instance,
@@ -879,6 +890,7 @@ func marshalAlerts(alerts []store.Alert) []alertJSON {
 			Message:   a.Message,
 			Resolved:  a.Resolved,
 			CreatedAt: a.CreatedAt.Unix(),
+			UpdatedAt: updatedAt,
 			DedupKey:  a.DedupKey,
 		}
 		if a.ResolvedAt != nil {
@@ -887,5 +899,20 @@ func marshalAlerts(alerts []store.Alert) []alertJSON {
 		}
 	}
 	return out
+}
+
+// POST /api/alerts/resolve-stale?hours=24 — bulk-resolve stale alerts.
+func (s *Server) handleResolveStale(w http.ResponseWriter, r *http.Request) {
+	hours := parseIntParam(r, "hours", 24)
+	if hours < 1 {
+		hours = 1
+	}
+	resolved, err := s.store.BulkResolveStale(hours)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "resolve stale failed: "+err.Error())
+		return
+	}
+	slog.Info("bulk resolved stale alerts", "hours", hours, "count", resolved)
+	writeJSON(w, http.StatusOK, map[string]int64{"resolved": resolved})
 }
 

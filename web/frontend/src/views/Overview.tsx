@@ -82,7 +82,18 @@ export default function Overview() {
 
   /* ---- derived stats ---- */
   const totalInstances = instances.length
-  const firingAlerts = alerts.filter((a) => !a.resolved).length
+  const staleHours = (() => { try { return parseInt(localStorage.getItem('ch-stale-hours') ?? '24', 10) || 24 } catch { return 24 } })()
+  const now = Date.now() / 1000
+  const freshFiring = alerts.filter((a) => !a.resolved && (now - (a.updated_at ?? a.created_at)) <= staleHours * 3600).length
+  const staleCount = alerts.filter((a) => !a.resolved && (now - (a.updated_at ?? a.created_at)) > staleHours * 3600).length
+
+  const staleByInstance = new Map<string, number>()
+  for (const a of alerts) {
+    if (!a.resolved && (now - (a.updated_at ?? a.created_at)) > staleHours * 3600) {
+      staleByInstance.set(a.instance, (staleByInstance.get(a.instance) ?? 0) + 1)
+    }
+  }
+  const firingAlerts = freshFiring
   const avgHealth =
     totalInstances > 0
       ? Math.round(instances.reduce((s, i) => s + i.health_score, 0) / totalInstances)
@@ -132,8 +143,8 @@ export default function Overview() {
         <StatCard label="Instances" value={totalInstances} />
         <StatCard
           label="Firing Alerts"
-          value={firingAlerts}
-          color={firingAlerts > 0 ? '#ef4444' : undefined}
+          value={staleCount > 0 ? `${firingAlerts} + ${staleCount}` : firingAlerts}
+          color={firingAlerts > 0 ? '#ef4444' : staleCount > 0 ? '#9ca3af' : undefined}
         />
         <StatCard label="Avg Health" value={avgHealth} color={scoreColor(avgHealth)} />
         <StatCard label="Running Queries" value={fmtNum(runningQueries)} />
@@ -147,6 +158,7 @@ export default function Overview() {
             key={inst.name}
             instance={inst}
             onClick={() => goToInstance(inst.name)}
+            staleAlerts={staleByInstance.get(inst.name) ?? 0}
           />
         ))}
       </div>

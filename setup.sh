@@ -73,7 +73,8 @@ for HOST in "${CH_HOSTS[@]}"; do
         resolved_at Nullable(DateTime),
         created_at DateTime,
         dedup_key String,
-        version UInt64 DEFAULT 1
+        version UInt64 DEFAULT 1,
+        updated_at DateTime DEFAULT created_at
     ) ENGINE = ReplacingMergeTree(version)
     PARTITION BY toYYYYMM(created_at)
     ORDER BY (dedup_key, created_at)

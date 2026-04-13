@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, type ChangeEvent } from 'react'
+import { Sparkles } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { api } from '../lib/api'
 import { fmtBytes, fmtNum, fmtDuration, cn } from '../lib/utils'
@@ -666,7 +667,7 @@ function ErrorBox({ message }: { message: string }) {
 /* ------------------------------------------------------------------ */
 
 export default function Explore() {
-  const { instances, selectedInstance, setSelectedInstance, from, to } = useStore()
+  const { instances, selectedInstance, setSelectedInstance, setView, from, to } = useStore()
   const [tab, setTab] = useState<Tab>('patterns')
   const inst = selectedInstance || instances[0] || ''
 
@@ -677,7 +678,7 @@ export default function Explore() {
 
   return (
     <div className="space-y-4">
-      {/* Instance selector */}
+      {/* Instance selector + AI button */}
       <div className="flex items-center gap-3">
         <label className="text-sm text-[var(--dim)]">Instance</label>
         <select
@@ -689,6 +690,13 @@ export default function Explore() {
             <option key={i} value={i}>{i}</option>
           ))}
         </select>
+        <button
+          onClick={() => setView('analyzer')}
+          className="ml-auto inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium bg-purple-500/15 text-purple-400 hover:bg-purple-500/25 transition-colors border border-purple-500/20"
+        >
+          <Sparkles size={14} />
+          Analyze with AI
+        </button>
       </div>
 
       {/* Tabs */}

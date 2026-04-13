@@ -31,7 +31,11 @@ async function post<T>(path: string, body: any): Promise<T> {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   })
-  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`
+    try { const j = await r.json(); if (j?.error) msg = j.error } catch {}
+    throw new Error(msg)
+  }
   return r.json()
 }
 
@@ -46,6 +50,8 @@ export const api = {
     history: (limit = 500) => get<Alert[]>(`/api/alerts/history?limit=${limit}`),
     at: (inst: string, from: number, to: number) =>
       get<HealthCheck[]>(`/api/instances/${inst}/alerts-at?from=${from}&to=${to}`),
+    resolveStale: (hours: number) =>
+      post<{ resolved: number }>(`/api/alerts/resolve-stale?hours=${hours}`, {}),
   },
   queries: (inst: string) => get<Record<string, any>[]>(`/api/instances/${inst}/queries`),
   tables: (inst: string) => get<Record<string, any>[]>(`/api/instances/${inst}/tables`),

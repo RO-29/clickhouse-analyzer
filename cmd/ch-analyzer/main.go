@@ -455,6 +455,10 @@ func (a *alertStoreAdapter) IsAlertActive(dedupKey string) (bool, error) {
 	return a.store.IsAlertActive(dedupKey)
 }
 
+func (a *alertStoreAdapter) TouchAlerts(dedupKeys []string) error {
+	return a.store.BulkTouchAlerts(dedupKeys)
+}
+
 func equalsIgnoreCase(a, b string) bool {
 	if len(a) != len(b) {
 		return false

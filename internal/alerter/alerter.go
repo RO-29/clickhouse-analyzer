@@ -20,6 +20,9 @@ type StoreInterface interface {
 	// IsAlertActive reports whether an alert with the given dedupKey is
 	// currently in a firing (unresolved) state.
 	IsAlertActive(dedupKey string) (bool, error)
+	// TouchAlerts bumps updated_at = now() for the given dedup keys so
+	// staleness detection stays accurate across restarts.
+	TouchAlerts(dedupKeys []string) error
 }
 
 // ActiveAlert tracks the lifecycle of a currently-firing alert.
@@ -208,6 +211,17 @@ func (am *AlertManager) Process(alerts []collector.Alert) {
 		}
 	}
 	am.mu.Unlock()
+
+	// Touch all seen alerts in the store to keep updated_at fresh.
+	if am.store != nil && len(seen) > 0 {
+		keys := make([]string, 0, len(seen))
+		for k := range seen {
+			keys = append(keys, k)
+		}
+		if err := am.store.TouchAlerts(keys); err != nil {
+			am.logger.Debug("touch alerts failed", slog.String("err", err.Error()))
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------

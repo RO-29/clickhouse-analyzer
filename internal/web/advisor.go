@@ -612,9 +612,8 @@ func (s *Server) handleAdvisorCardinality(w http.ResponseWriter, r *http.Request
 			ColumnType: toString(row["type"]),
 		}
 
-		// Sample 100K rows to check distinct count.
-		// Use backtick-quoted identifiers for safety.
-		sql := fmt.Sprintf("SELECT uniq(`%s`) as card FROM `%s`.`%s` LIMIT 100000", col, db, tbl)
+		// Sample 100K rows to estimate distinct count (subquery limits scan, not output).
+		sql := fmt.Sprintf("SELECT uniq(`%s`) as card FROM (SELECT `%s` FROM `%s`.`%s` LIMIT 100000)", col, col, db, tbl)
 		cardRows, err := client.Query(ctx, sql)
 		if err != nil {
 			cr.Error = err.Error()

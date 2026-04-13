@@ -29,7 +29,7 @@ export interface MetricResponse {
 export interface Alert {
   id: number; instance: string; severity: string; category: string
   title: string; message: string; resolved: boolean
-  resolved_at?: number; created_at: number; dedup_key: string
+  resolved_at?: number; created_at: number; updated_at: number; dedup_key: string
 }
 
 export interface HealthCheck {

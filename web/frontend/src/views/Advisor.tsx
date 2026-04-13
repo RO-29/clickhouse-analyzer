@@ -296,7 +296,7 @@ export default function Advisor() {
                     <button
                       className="text-[var(--accent)] hover:underline text-left"
                       onClick={() => {
-                        const row = compression.data?.find((r: any) => r.table === v)
+                        const row = compression.data?.find((r: any) => r.table_name === v)
                         if (row) openTableDetail(inst, row.database, v)
                       }}
                     >
