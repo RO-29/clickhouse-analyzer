@@ -187,6 +187,20 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	// ── Build prompt ──────────────────────────────────────────────────────────
 	prompt := buildAnalysisPrompt(ac, req.Mode, req.Question)
 
+	slog.Info("analyze: prompt built",
+		"instance", instance,
+		"mode", req.Mode,
+		"time_window_mins", req.TimeWindowMins,
+		"prompt_bytes", len(prompt),
+		"prompt_kb", len(prompt)/1024,
+		"collection_errors", len(ac.CollectionErrors),
+	)
+	if len(ac.CollectionErrors) > 0 {
+		for _, e := range ac.CollectionErrors {
+			slog.Warn("analyze: collection error", "err", e)
+		}
+	}
+
 	// ── Spawn claude CLI ──────────────────────────────────────────────────────
 	claudeBin, err := claudeBinary()
 	if err != nil {
@@ -194,7 +208,7 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		sendEvent("error", jsonStr(err.Error()))
 		return
 	}
-	slog.Info("using claude binary", "path", claudeBin)
+	slog.Info("analyze: claude binary found", "path", claudeBin)
 
 	claudeCtx, claudeCancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer claudeCancel()
@@ -202,13 +216,21 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	// Trim prompt to stay well under Linux ARG_MAX (2 MB total).
 	// Typical prompts are 50–150 KB; truncate at 1 MB to be safe.
 	const maxPromptBytes = 1 << 20 // 1 MB
+	truncated := false
 	if len(prompt) > maxPromptBytes {
 		prompt = prompt[:maxPromptBytes] + "\n\n[...context truncated to fit ARG_MAX...]"
+		truncated = true
 	}
+	slog.Info("analyze: final prompt",
+		"bytes", len(prompt),
+		"kb", len(prompt)/1024,
+		"truncated", truncated,
+	)
 
 	claudeArgs := []string{"-p", prompt}
 	if m := os.Getenv("CLAUDE_MODEL"); m != "" {
 		claudeArgs = append(claudeArgs, "--model", m)
+		slog.Info("analyze: using model override", "model", m)
 	}
 	cmd := exec.CommandContext(claudeCtx, claudeBin, claudeArgs...)
 
@@ -221,6 +243,13 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		"/home/ec2-user/.local/bin:/root/.local/bin:/usr/local/bin:/usr/bin:/bin:"+os.Getenv("PATH"),
 	)
 
+	// Log which auth env vars are present (values redacted)
+	for _, key := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_OAUTH_TOKEN", "CLAUDE_MODEL", "ANTHROPIC_BASE_URL"} {
+		if v := os.Getenv(key); v != "" {
+			slog.Info("analyze: env var present", "key", key, "len", len(v))
+		}
+	}
+
 	// Claude needs a ~/.claude.json to skip the interactive onboarding wizard
 	// (which hangs on a headless server with no TTY).
 	// Strategy:
@@ -231,18 +260,29 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	claudeCfgHome := findClaudeHome()
 	if claudeCfgHome != "" {
 		claudeEnv = setEnv(claudeEnv, "HOME", claudeCfgHome)
-		slog.Info("using existing claude config", "home", claudeCfgHome)
+		slog.Info("analyze: using existing claude config", "home", claudeCfgHome)
+		// Log keys present in the config (no values)
+		if cfgBytes, readErr := os.ReadFile(filepath.Join(claudeCfgHome, ".claude.json")); readErr == nil {
+			var cfgMap map[string]interface{}
+			if jsonErr := json.Unmarshal(cfgBytes, &cfgMap); jsonErr == nil {
+				keys := make([]string, 0, len(cfgMap))
+				for k := range cfgMap {
+					keys = append(keys, k)
+				}
+				slog.Info("analyze: .claude.json keys", "keys", keys)
+			}
+		}
 	} else if tmpHome, err2 := os.MkdirTemp("", "claude-home-*"); err2 == nil {
 		claudeEnv = setEnv(claudeEnv, "HOME", tmpHome)
 		cfgPath := filepath.Join(tmpHome, ".claude.json")
 		cfgData := buildClaudeCfg()
 		if err3 := os.WriteFile(cfgPath, []byte(cfgData), 0600); err3 != nil {
-			slog.Warn("could not write claude temp config", "err", err3)
+			slog.Warn("analyze: could not write claude temp config", "err", err3)
 		}
 		defer os.RemoveAll(tmpHome)
-		slog.Info("claude temp HOME (no real config found)", "path", tmpHome)
+		slog.Info("analyze: using temp HOME (no real config found)", "path", tmpHome)
 	} else {
-		slog.Warn("could not create claude temp HOME", "err", err2)
+		slog.Warn("analyze: could not create claude temp HOME", "err", err2)
 	}
 
 	cmd.Env = claudeEnv
@@ -277,7 +317,16 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		scanner.Buffer(make([]byte, 128*1024), 128*1024)
 		for scanner.Scan() {
 			stdoutLines++
-			sendEvent("chunk", jsonStr(scanner.Text()+"\n"))
+			line := scanner.Text()
+			// Detect rate-limit errors immediately — claude CLI retries
+			// internally for ~3 minutes before printing this, so killing the
+			// process early saves the user a 3-minute wait.
+			if strings.Contains(line, "API Error: 429") || strings.Contains(line, `"code":"1302"`) {
+				sendEvent("error", jsonStr("Rate limited (429) — wait ~60 seconds and retry. Your subscription enforces a request cooldown for large prompts."))
+				claudeCancel()
+				return
+			}
+			sendEvent("chunk", jsonStr(line+"\n"))
 		}
 	}()
 
