@@ -329,7 +329,7 @@ func (s *Store) resolveAlertOnClient(client *chclient.Client, dedupKey string) e
 
 	now := time.Now().Format("2006-01-02 15:04:05")
 
-	sql := fmt.Sprintf(`SELECT id, instance, severity, category, title, message, created_at
+	sql := fmt.Sprintf(`SELECT id, instance, severity, category, title, message, created_at, version
 		FROM %s.alerts FINAL
 		WHERE dedup_key = '%s' AND resolved = 0
 		ORDER BY created_at DESC LIMIT 1`,
@@ -343,17 +343,18 @@ func (s *Store) resolveAlertOnClient(client *chclient.Client, dedupKey string) e
 	row := rows[0]
 	id := getFloat(row, "id")
 	createdAt := getString(row, "created_at")
+	nextVersion := int(getFloat(row, "version")) + 1
 
 	insertSQL := fmt.Sprintf(`INSERT INTO %s.alerts
 		(id, instance, severity, category, title, message, resolved, resolved_at, created_at, dedup_key, version)
-		VALUES (%d, '%s', '%s', '%s', '%s', '%s', 1, '%s', '%s', '%s', 2)`,
+		VALUES (%d, '%s', '%s', '%s', '%s', '%s', 1, '%s', '%s', '%s', %d)`,
 		s.database, int64(id),
 		escape(getString(row, "instance")),
 		escape(getString(row, "severity")),
 		escape(getString(row, "category")),
 		escape(getString(row, "title")),
 		escape(getString(row, "message")),
-		now, createdAt, escape(dedupKey))
+		now, createdAt, escape(dedupKey), nextVersion)
 
 	if _, err := client.QuerySingleValue(ctx, insertSQL); err != nil {
 		return fmt.Errorf("store: resolve alert: %w", err)
