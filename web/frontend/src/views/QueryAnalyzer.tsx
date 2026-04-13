@@ -1,10 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity, AlertCircle, CheckCircle2, ChevronDown,
   ClipboardCopy, Clock, Database, Loader2, RefreshCw, Send, Sparkles, X,
 } from 'lucide-react'
+import { marked } from 'marked'
 import { useStore } from '../hooks/useStore'
 import { cn } from '../lib/utils'
+
+/* ─── marked config ──────────────────────────────────────────────────────── */
+
+marked.use({ gfm: true, breaks: false })
 
 /* ─── Types ─────────────────────────────────────────────────────────────── */
 
@@ -98,22 +103,25 @@ function AnalysisOutput({ text, isStreaming }: { text: string; isStreaming: bool
 
   const hasSummary = text.toLowerCase().includes('## summary')
 
-  // Simple markdown renderer: bold, code blocks, headings
-  const rendered = text
-    .replace(/```sql\n([\s\S]*?)```/g, (_: string, code: string) =>
-      `<div class="sql-block">${code.trim()}</div>`
-    )
-    .replace(/```[\w]*\n?([\s\S]*?)```/g, (_: string, code: string) =>
-      `<pre class="code-block">${code.trim()}</pre>`
-    )
-    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
-    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
-    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/🔴 \*\*CRITICAL\*\*/g, '<span class="sev-critical">🔴 CRITICAL</span>')
-    .replace(/🟠 \*\*WARNING\*\*/g, '<span class="sev-warning">🟠 WARNING</span>')
-    .replace(/🟡 \*\*INFO\*\*/g, '<span class="sev-info">🟡 INFO</span>')
-    .replace(/\n/g, '<br>')
+  const html = useMemo(() => {
+    // Parse with marked (handles tables, lists, headings, HR, code blocks)
+    let out = marked.parse(text) as string
+
+    // Inject severity CSS classes — marked converts **CRITICAL** → <strong>CRITICAL</strong>
+    out = out
+      .replace(/🔴\s*<strong>CRITICAL<\/strong>/g, '<span class="sev-critical">🔴 CRITICAL</span>')
+      .replace(/🟠\s*<strong>WARNING<\/strong>/g, '<span class="sev-warning">🟠 WARNING</span>')
+      .replace(/🟡\s*<strong>INFO<\/strong>/g, '<span class="sev-info">🟡 INFO</span>')
+      // Also handle plain emoji+text (no bold) that Claude sometimes outputs
+      .replace(/🔴 CRITICAL(?!<)/g, '<span class="sev-critical">🔴 CRITICAL</span>')
+      .replace(/🟠 WARNING(?!<)/g, '<span class="sev-warning">🟠 WARNING</span>')
+      .replace(/🟡 INFO(?!<)/g, '<span class="sev-info">🟡 INFO</span>')
+
+    if (isStreaming) {
+      out += '<span class="streaming-cursor"></span>'
+    }
+    return out
+  }, [text, isStreaming])
 
   return (
     <div className="flex flex-col gap-3">
@@ -129,7 +137,7 @@ function AnalysisOutput({ text, isStreaming }: { text: string; isStreaming: bool
       )}
       <div
         className="analysis-output text-sm leading-relaxed"
-        dangerouslySetInnerHTML={{ __html: rendered + (isStreaming ? '<span class="streaming-cursor"></span>' : '') }}
+        dangerouslySetInnerHTML={{ __html: html }}
       />
     </div>
   )
@@ -159,7 +167,7 @@ function useElapsed(running: boolean) {
   return m > 0 ? `${m}m ${s}s` : `${s}s`
 }
 
-/* ─── Running info card ──────────────────────────────────────────────────── */
+/* ─── Running / Done info card ───────────────────────────────────────────── */
 
 interface RunningInfoCardProps {
   mode: Mode
@@ -171,27 +179,35 @@ interface RunningInfoCardProps {
 }
 
 function RunningInfoCard({ mode, instance, timeWindow, phase, steps, linesReceived }: RunningInfoCardProps) {
-  const elapsed = useElapsed(true)
+  // Timer stops when done — preserves the final elapsed value
+  const elapsed = useElapsed(phase !== 'done')
   const timeLabel = TIME_WINDOWS.find((t) => t.value === timeWindow)?.label ?? `${timeWindow}m`
 
   const doneSteps = steps.filter((s) => s.status === 'done').length
   const totalSteps = steps.length
   const pct = totalSteps > 0 ? Math.round((doneSteps / totalSteps) * 100) : (phase === 'streaming' ? 100 : 0)
 
-  const phaseLabel = {
+  const isDone = phase === 'done'
+
+  const phaseLabel = isDone ? 'Complete' : {
     collecting: 'Collecting cluster data…',
     sending:    'Building AI prompt…',
     streaming:  linesReceived > 0 ? `Receiving analysis (${linesReceived} lines)…` : 'Waiting for Claude…',
-    done:       'Done',
     idle:       '',
     error:      'Error',
+    done:       'Complete',
   }[phase] ?? ''
 
   return (
-    <div className="shrink-0 mx-4 mt-3 mb-1 rounded-xl border border-[var(--accent)]/25 bg-[var(--accent)]/5 px-4 py-3 flex flex-col gap-2.5">
+    <div className={cn(
+      'shrink-0 mx-4 mt-3 mb-1 rounded-xl border px-4 py-3 flex flex-col gap-2.5',
+      isDone
+        ? 'border-green-500/25 bg-green-500/5'
+        : 'border-[var(--accent)]/25 bg-[var(--accent)]/5',
+    )}>
       {/* Top row: badges */}
       <div className="flex items-center gap-2 flex-wrap">
-        <div className="flex items-center gap-1.5 text-xs font-semibold text-[var(--accent)]">
+        <div className={cn('flex items-center gap-1.5 text-xs font-semibold', isDone ? 'text-green-500' : 'text-[var(--accent)]')}>
           <Sparkles size={13} />
           {mode.label}
         </div>
@@ -210,17 +226,20 @@ function RunningInfoCard({ mode, instance, timeWindow, phase, steps, linesReceiv
           <Clock size={11} />
           {elapsed}
         </div>
-        <div className="ml-auto flex items-center gap-1.5 text-xs text-[var(--accent)]">
-          <Loader2 size={12} className="animate-spin" />
-          <span className="font-medium">{phaseLabel}</span>
+        <div className={cn('ml-auto flex items-center gap-1.5 text-xs font-medium', isDone ? 'text-green-500' : 'text-[var(--accent)]')}>
+          {isDone
+            ? <CheckCircle2 size={12} />
+            : <Loader2 size={12} className="animate-spin" />
+          }
+          <span>{phaseLabel}</span>
         </div>
       </div>
 
       {/* Progress bar */}
       <div className="w-full h-1 rounded-full bg-[var(--border)] overflow-hidden">
         <div
-          className="h-full rounded-full bg-[var(--accent)] transition-all duration-500"
-          style={{ width: phase === 'streaming' ? '100%' : `${pct}%` }}
+          className={cn('h-full rounded-full transition-all duration-500', isDone ? 'bg-green-500' : 'bg-[var(--accent)]')}
+          style={{ width: (phase === 'streaming' || isDone) ? '100%' : `${pct}%` }}
         />
       </div>
 
@@ -237,6 +256,18 @@ function RunningInfoCard({ mode, instance, timeWindow, phase, steps, linesReceiv
                 step.status === 'running' && 'text-[var(--text)]',
                 step.status === 'pending' && 'text-[var(--dim)] opacity-40',
               )}>{step.label}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Done: compact step summary */}
+      {isDone && totalSteps > 0 && (
+        <div className="flex flex-wrap gap-x-3 gap-y-1">
+          {steps.map((step) => (
+            <div key={step.label} className="flex items-center gap-1 text-[10px] text-[var(--dim)]">
+              <CheckCircle2 size={10} className="text-green-500 shrink-0" />
+              {step.label}
             </div>
           ))}
         </div>
@@ -394,15 +425,46 @@ export default function QueryAnalyzer() {
   return (
     <div className="flex h-full overflow-hidden">
       <style>{`
+        /* ── Headings ── */
         .analysis-output h1 { font-size: 1.1rem; font-weight: 700; margin: 1rem 0 0.5rem; }
         .analysis-output h2 { font-size: 1rem; font-weight: 600; margin: 0.875rem 0 0.4rem; border-bottom: 1px solid var(--border); padding-bottom: 0.25rem; }
         .analysis-output h3 { font-size: 0.875rem; font-weight: 600; margin: 0.75rem 0 0.3rem; }
+        .analysis-output h4 { font-size: 0.8125rem; font-weight: 600; margin: 0.5rem 0 0.25rem; }
+
+        /* ── Body text ── */
+        .analysis-output p { margin: 0.3rem 0; }
         .analysis-output strong { font-weight: 600; }
-        .analysis-output .sql-block { font-family: monospace; font-size: 0.75rem; background: var(--code-bg, var(--hover)); border: 1px solid var(--border); border-radius: 0.375rem; padding: 0.625rem; margin: 0.25rem 0; white-space: pre; overflow-x: auto; }
-        .analysis-output .code-block { font-family: monospace; font-size: 0.75rem; background: var(--hover); border-radius: 0.375rem; padding: 0.5rem; margin: 0.25rem 0; white-space: pre; overflow-x: auto; }
+        .analysis-output em { font-style: italic; }
+
+        /* ── Lists ── */
+        .analysis-output ul { padding-left: 1.25rem; margin: 0.3rem 0; list-style: disc; }
+        .analysis-output ol { padding-left: 1.25rem; margin: 0.3rem 0; list-style: decimal; }
+        .analysis-output li { margin: 0.15rem 0; }
+        .analysis-output li > p { margin: 0; }
+
+        /* ── Horizontal rule ── */
+        .analysis-output hr { border: none; border-top: 1px solid var(--border); margin: 0.75rem 0; }
+
+        /* ── Code ── */
+        .analysis-output pre { font-family: monospace; font-size: 0.75rem; background: var(--code-bg, var(--hover)); border: 1px solid var(--border); border-radius: 0.375rem; padding: 0.625rem; margin: 0.35rem 0; white-space: pre; overflow-x: auto; }
+        .analysis-output code { font-family: monospace; font-size: 0.75rem; background: var(--hover); border-radius: 0.2rem; padding: 0.1rem 0.25rem; }
+        .analysis-output pre code { background: none; padding: 0; border-radius: 0; }
+
+        /* ── Tables ── */
+        .analysis-output table { border-collapse: collapse; width: 100%; margin: 0.5rem 0; font-size: 0.75rem; }
+        .analysis-output th, .analysis-output td { border: 1px solid var(--border); padding: 0.3rem 0.6rem; text-align: left; }
+        .analysis-output th { background: var(--hover); font-weight: 600; }
+        .analysis-output tr:nth-child(even) td { background: var(--hover)/40; }
+
+        /* ── Blockquote ── */
+        .analysis-output blockquote { border-left: 3px solid var(--accent); padding-left: 0.75rem; margin: 0.4rem 0; color: var(--dim); }
+
+        /* ── Severity badges ── */
         .analysis-output .sev-critical { color: #ef4444; font-weight: 700; }
-        .analysis-output .sev-warning { color: #f97316; font-weight: 700; }
-        .analysis-output .sev-info { color: #eab308; font-weight: 700; }
+        .analysis-output .sev-warning  { color: #f97316; font-weight: 700; }
+        .analysis-output .sev-info     { color: #eab308; font-weight: 700; }
+
+        /* ── Streaming cursor ── */
         .streaming-cursor { display: inline-block; width: 8px; height: 14px; background: currentColor; opacity: 0.6; margin-left: 2px; vertical-align: middle; animation: blink 1s step-end infinite; }
         @keyframes blink { 50% { opacity: 0; } }
       `}</style>
@@ -592,8 +654,8 @@ export default function QueryAnalyzer() {
         {/* Analysis output */}
         {showOutput && (
           <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
-            {/* Running info card — shown while streaming */}
-            {phase === 'streaming' && (
+            {/* Info card — shown while streaming AND after completion */}
+            {(phase === 'streaming' || phase === 'done') && (
               <RunningInfoCard
                 mode={MODES.find((m) => m.id === mode)!}
                 instance={instance}
@@ -618,7 +680,7 @@ export default function QueryAnalyzer() {
                   <><span>·</span><span className="flex items-center gap-1 text-[var(--accent)]"><Loader2 size={11} className="animate-spin" />Analyzing…</span></>
                 )}
                 {phase === 'done' && (
-                  <><span>·</span><span className="text-green-500">Complete</span></>
+                  <><span>·</span><span className="flex items-center gap-1 text-green-500"><CheckCircle2 size={11} />Complete</span></>
                 )}
                 {phase === 'error' && output && (
                   <><span>·</span><span className="text-red-400">Partial</span></>
