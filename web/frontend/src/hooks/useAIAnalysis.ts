@@ -1,5 +1,9 @@
 import { useState, useCallback } from 'react'
 
+function generateId(): string {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 9)
+}
+
 export interface AnalysisEntry {
   id: string
   label: string
@@ -32,7 +36,7 @@ export function useAIAnalysis(instance: string) {
       visibleData: Record<string, any>,
       options: AnalyzeOptions,
     ) => {
-      const id = crypto.randomUUID()
+      const id = generateId()
       const newEntry: AnalysisEntry = {
         id,
         label,
