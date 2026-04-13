@@ -224,14 +224,14 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	// Claude needs a ~/.claude.json to skip the interactive onboarding wizard
 	// (which hangs on a headless server with no TTY).
 	// Strategy:
-	//   1. If the real user already has a ~/.claude.json (i.e. ran `claude login`
-	//      on this machine), use the real HOME — credentials are already there.
-	//   2. Otherwise, create a temp HOME with a minimal config so claude starts
+	//   1. Check well-known locations for an existing claude config (covers the
+	//      case where the service user ran `claude login` with a custom HOME).
+	//   2. Otherwise create a temp HOME with a minimal config so claude starts
 	//      cleanly. CLAUDE_OAUTH_TOKEN / ANTHROPIC_API_KEY still work via env.
-	realCfg := filepath.Join(os.Getenv("HOME"), ".claude.json")
-	if _, statErr := os.Stat(realCfg); statErr == nil {
-		// Real config exists — use it as-is, no temp HOME needed.
-		slog.Info("using real ~/.claude.json for claude", "path", realCfg)
+	claudeCfgHome := findClaudeHome()
+	if claudeCfgHome != "" {
+		claudeEnv = setEnv(claudeEnv, "HOME", claudeCfgHome)
+		slog.Info("using existing claude config", "home", claudeCfgHome)
 	} else if tmpHome, err2 := os.MkdirTemp("", "claude-home-*"); err2 == nil {
 		claudeEnv = setEnv(claudeEnv, "HOME", tmpHome)
 		cfgPath := filepath.Join(tmpHome, ".claude.json")
@@ -638,6 +638,24 @@ If no issues, say so. Do not invent findings.
 	}
 
 	return sb.String()
+}
+
+// findClaudeHome returns the HOME directory that contains a valid .claude.json,
+// checking well-known locations so the service user doesn't need HOME set.
+// Returns "" if none found (caller falls back to temp HOME).
+func findClaudeHome() string {
+	candidates := []string{
+		"/var/lib/ch-analyzer", // service StateDirectory after `claude login`
+	}
+	if h := os.Getenv("HOME"); h != "" {
+		candidates = append([]string{h}, candidates...) // prefer $HOME if set
+	}
+	for _, dir := range candidates {
+		if _, err := os.Stat(filepath.Join(dir, ".claude.json")); err == nil {
+			return dir
+		}
+	}
+	return ""
 }
 
 // buildClaudeCfg returns the ~/.claude.json content for the temp HOME.

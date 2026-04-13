@@ -26,6 +26,7 @@ StateDirectory=ch-analyzer
 
 # Environment
 Environment=GOMAXPROCS=4
+Environment=HOME=/var/lib/ch-analyzer
 
 # Logging
 StandardOutput=journal
