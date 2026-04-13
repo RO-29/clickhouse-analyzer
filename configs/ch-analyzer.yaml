@@ -1,0 +1,156 @@
+# ch-analyzer configuration
+# All duration values use Go duration syntax: "30s", "5m", "1h", "8760h"
+
+# ---------------------------------------------------------------------------
+# ClickHouse instances to monitor
+# ---------------------------------------------------------------------------
+instances:
+  - name: "node-a"
+    host: ""
+    port: 8443
+    username: "monitoring"
+    password: "CHANGE_ME"           # Rotate and use env var in production
+    secure: true
+    database: "chains"
+
+  - name: "node-b"
+    host: ""
+    port: 8443
+    username: "monitoring"
+    password: "CHANGE_ME"
+    secure: true
+    database: "chains"
+
+  - name: "node-c"
+    host: ""
+    port: 8443
+    username: "monitoring"
+    password: "CHANGE_ME"
+    secure: true
+    database: "chains"
+
+  - name: "node-d"
+    host: ""
+    port: 8443
+    username: "monitoring"
+    password: "CHANGE_ME"
+    secure: true
+    database: "chains"
+
+  - name: "node-e"
+    host: ""
+    port: 8443
+    username: "monitoring"
+    password: "CHANGE_ME"
+    secure: true
+    database: "chains"
+
+# ---------------------------------------------------------------------------
+# Polling
+# ---------------------------------------------------------------------------
+polling:
+  interval: "1m"                    # How often to collect metrics from each instance
+
+# ---------------------------------------------------------------------------
+# Thresholds — tune these per your cluster capacity
+# ---------------------------------------------------------------------------
+thresholds:
+  memory:
+    warn_percent: 80                # Alert at this % of max_memory_usage
+    critical_percent: 90
+    rss_warn_percent: 85            # Resident set size (OS-level)
+    rss_critical_percent: 95
+
+  cpu:
+    warn_percent: 80
+    critical_percent: 95
+
+  queries:
+    long_running_threshold: "1m"    # Flag queries running longer than this
+    max_concurrent: 100             # Hard limit — triggers critical alert
+    warn_concurrent: 50             # Warn when concurrent queries exceed this
+
+  parts:
+    warn_count: 1000                # Active parts per table — warn
+    critical_count: 3000            # Active parts per table — critical (your tables normally have 500-1800)
+    warn_per_partition: 300         # Parts within a single partition
+
+  merges:
+    max_active: 20                  # Critical if active merges exceed this
+    warn_active: 10
+
+  mutations:
+    stuck_threshold: "30m"          # Mutation running longer than this is "stuck"
+
+  inserts:
+    throughput_drop_percent: 50     # Alert if insert rate drops by this % vs baseline
+    small_insert_threshold: 100     # Inserts with fewer rows than this are "small"
+    small_insert_warn_count: 10     # Warn after this many small inserts per minute
+
+  disk:
+    warn_percent: 80                # Disk usage %
+    critical_percent: 90
+
+  s3:
+    latency_warn: "5s"              # S3 read latency p99
+    latency_critical: "15s"
+    max_concurrent_reads: 50        # Concurrent S3 read operations
+
+  replication:
+    lag_warn: "30s"                 # Replication queue delay
+    lag_critical: "300s"            # 5 minutes
+
+  dictionaries:
+    reload_fail_threshold: 3        # Consecutive reload failures before alerting
+
+  mv:
+    lag_warn: "5m"                  # Materialized view processing lag
+    bloat_ratio_warn: 10.0          # MV output-to-input row ratio (detects fan-out)
+
+# ---------------------------------------------------------------------------
+# Slack alerting
+# ---------------------------------------------------------------------------
+slack:
+  bot_token: "xoxb-CHANGE_ME"      # Slack Bot OAuth token
+  channel_id: "C0XXXXXXXXX"        # Target channel for alerts
+  dedup_window: "15m"              # Suppress duplicate alerts within this window
+  resolve_messages: true            # Post a follow-up when an alert resolves
+
+  digest:
+    enabled: true
+    daily_time: "09:00"             # 24h format, UTC — daily summary time
+    weekly_day: "monday"            # Day for the weekly rollup digest
+
+  severity_routing:
+    critical: "immediate"           # Send critical alerts immediately
+    warn: "batched_5m"              # Batch warnings into 5-minute windows
+    info: "digest_only"             # Info items only appear in the daily digest
+
+# ---------------------------------------------------------------------------
+# Web dashboard
+# ---------------------------------------------------------------------------
+web:
+  listen_addr: ":8080"
+  enabled: true
+  suggestions_path: ""              # Path to custom suggestions.yaml (empty = use built-in defaults)
+
+# ---------------------------------------------------------------------------
+# Metric storage (each CH node stores its own data — no single bottleneck)
+# ---------------------------------------------------------------------------
+storage:
+  database: "ch_analyzer"          # Database name (created automatically on every instance)
+  retention: "8760h"               # 1 year (enforced via CH TTL)
+
+# ---------------------------------------------------------------------------
+# Prometheus metrics endpoint (optional)
+# ---------------------------------------------------------------------------
+prometheus:
+  enabled: false
+  listen_addr: ":9090"
+
+# ---------------------------------------------------------------------------
+# Kubernetes integration (only if binary runs INSIDE K8s as a pod)
+# If running outside K8s, keep enabled: false — all monitoring works via HTTPS
+# ---------------------------------------------------------------------------
+k8s:
+  enabled: false

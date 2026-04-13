@@ -1,0 +1,5 @@
+# Build output
+bin/
+
+# Claude Code local state
+.claude/

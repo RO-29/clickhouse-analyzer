@@ -1,0 +1,36 @@
+[Unit]
+Description=ClickHouse Analyzer - monitoring and alerting
+Documentation=https://github.com/rohitjain/ch-analyzer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ch-analyzer
+Group=ch-analyzer
+ExecStart=/usr/local/bin/ch-analyzer -config /etc/ch-analyzer/config.yaml
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ch-analyzer
+PrivateTmp=true
+
+# Working directory for data storage
+WorkingDirectory=/var/lib/ch-analyzer
+StateDirectory=ch-analyzer
+
+# Environment
+Environment=GOMAXPROCS=4
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ch-analyzer
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,924 @@
+package web
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// ---------------------------------------------------------------------------
+// Time-range helpers
+// ---------------------------------------------------------------------------
+
+func parseFromTo(r *http.Request) (string, string) {
+	from := r.URL.Query().Get("from")
+	to := r.URL.Query().Get("to")
+	if from == "" {
+		from = fmt.Sprintf("%d", time.Now().Add(-1*time.Hour).Unix())
+	}
+	if to == "" {
+		to = fmt.Sprintf("%d", time.Now().Unix())
+	}
+	fromTime := time.Unix(parseInt64(from), 0).Format("2006-01-02 15:04:05")
+	toTime := time.Unix(parseInt64(to), 0).Format("2006-01-02 15:04:05")
+	return fromTime, toTime
+}
+
+func parseInt64(s string) int64 {
+	n, _ := strconv.ParseInt(s, 10, 64)
+	return n
+}
+
+// bucketSeconds computes a reasonable bucket width for the given request's
+// from/to range. It aims for ~120 data points with a minimum bucket of 60s.
+func bucketSeconds(r *http.Request) int64 {
+	from := r.URL.Query().Get("from")
+	to := r.URL.Query().Get("to")
+	var f, t int64
+	if from != "" {
+		f = parseInt64(from)
+	} else {
+		f = time.Now().Add(-1 * time.Hour).Unix()
+	}
+	if to != "" {
+		t = parseInt64(to)
+	} else {
+		t = time.Now().Unix()
+	}
+	bucket := (t - f) / 120
+	if bucket < 60 {
+		bucket = 60
+	}
+	return bucket
+}
+
+// ---------------------------------------------------------------------------
+// 1. Health Check
+// ---------------------------------------------------------------------------
+
+type healthCheckResult struct {
+	ID        string `json:"id"`
+	Category  string `json:"category"`
+	Name      string `json:"name"`
+	Status    string `json:"status"`
+	Value     string `json:"value"`
+	Threshold string `json:"threshold"`
+	Detail    string `json:"detail"`
+}
+
+func (s *Server) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
+	instance := r.PathValue("name")
+	client := s.manager.Get(instance)
+	if client == nil {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	var checks []healthCheckResult
+
+	// --- Memory ---
+	rows, err := client.Query(ctx, `SELECT metric, value FROM system.asynchronous_metrics WHERE metric IN ('OSMemoryTotal','OSMemoryAvailable','OSProcessRSSMemory','MemoryResident','CGroupMemoryTotal','CGroupMemoryUsed')`)
+	if err == nil {
+		metrics := make(map[string]float64)
+		for _, row := range rows {
+			if m, ok := row["metric"].(string); ok {
+				metrics[m] = toFloat64(row["value"])
+			}
+		}
+		total := metrics["OSMemoryTotal"]
+		avail := metrics["OSMemoryAvailable"]
+		rss := metrics["MemoryResident"]
+		if rss == 0 {
+			rss = metrics["OSProcessRSSMemory"]
+		}
+
+		if total > 0 {
+			usedPct := (total - avail) / total * 100
+			status := "ok"
+			if usedPct > 90 {
+				status = "critical"
+			} else if usedPct > 80 {
+				status = "warn"
+			}
+			checks = append(checks, healthCheckResult{
+				ID:        "memory_used",
+				Category:  "memory",
+				Name:      "OS Memory Usage",
+				Status:    status,
+				Value:     fmt.Sprintf("%.1f%%", usedPct),
+				Threshold: "80%/90%",
+				Detail:    fmt.Sprintf("Available: %s / Total: %s", formatBytes(avail), formatBytes(total)),
+			})
+
+			rssPct := rss / total * 100
+			rssStatus := "ok"
+			if rssPct > 95 {
+				rssStatus = "critical"
+			} else if rssPct > 85 {
+				rssStatus = "warn"
+			}
+			checks = append(checks, healthCheckResult{
+				ID:        "rss",
+				Category:  "memory",
+				Name:      "RSS Memory",
+				Status:    rssStatus,
+				Value:     fmt.Sprintf("%.1f%%", rssPct),
+				Threshold: "85%/95%",
+				Detail:    fmt.Sprintf("RSS: %s / Total: %s", formatBytes(rss), formatBytes(total)),
+			})
+		}
+	}
+
+	// --- CPU ---
+	rows, err = client.Query(ctx, `SELECT metric, value FROM system.asynchronous_metrics WHERE metric IN ('OSUserTimeCPU','OSSystemTimeCPU','OSIdleTimeCPU','CGroupMaxCPU','LoadAverage1','LoadAverage5','LoadAverage15')`)
+	if err == nil {
+		metrics := make(map[string]float64)
+		for _, row := range rows {
+			if m, ok := row["metric"].(string); ok {
+				metrics[m] = toFloat64(row["value"])
+			}
+		}
+		// Strategy 1: OSS CH
+		user := metrics["OSUserTimeCPU"]
+		system := metrics["OSSystemTimeCPU"]
+		idle := metrics["OSIdleTimeCPU"]
+		totalCPU := user + system + idle
+
+		var usedPct float64
+		var cpuDetail string
+		if totalCPU > 1.0 && idle > 0 {
+			usedPct = (user + system) / totalCPU * 100
+			cpuDetail = fmt.Sprintf("User: %.1f%%, System: %.1f%%, Idle: %.1f%%", user/totalCPU*100, system/totalCPU*100, idle/totalCPU*100)
+		} else {
+			// Strategy 2: Altinity — LoadAverage / CGroupMaxCPU
+			maxCPU := metrics["CGroupMaxCPU"]
+			load1 := metrics["LoadAverage1"]
+			if maxCPU > 0 {
+				usedPct = (load1 / maxCPU) * 100
+				if usedPct > 100 {
+					usedPct = 100
+				}
+				cpuDetail = fmt.Sprintf("Load1: %.1f, Load5: %.1f, Load15: %.1f, Cores: %.0f", load1, metrics["LoadAverage5"], metrics["LoadAverage15"], maxCPU)
+			}
+		}
+
+		if usedPct > 0 || totalCPU > 0 {
+			status := "ok"
+			if usedPct > 95 {
+				status = "critical"
+			} else if usedPct > 80 {
+				status = "warn"
+			}
+			checks = append(checks, healthCheckResult{
+				ID:        "cpu",
+				Category:  "cpu",
+				Name:      "CPU Usage",
+				Status:    status,
+				Value:     fmt.Sprintf("%.1f%%", usedPct),
+				Threshold: "80%/95%",
+				Detail:    cpuDetail,
+			})
+		}
+	}
+
+	// --- Load Average ---
+	rows, err = client.Query(ctx, `SELECT value FROM system.asynchronous_metrics WHERE metric = 'LoadAverage1'`)
+	if err == nil && len(rows) > 0 {
+		load := toFloat64(rows[0]["value"])
+		status := "ok"
+		if load > 16 {
+			status = "critical"
+		} else if load > 8 {
+			status = "warn"
+		}
+		checks = append(checks, healthCheckResult{
+			ID:        "load",
+			Category:  "cpu",
+			Name:      "Load Average (1m)",
+			Status:    status,
+			Value:     fmt.Sprintf("%.2f", load),
+			Threshold: "8/16",
+			Detail:    fmt.Sprintf("1-minute load average: %.2f", load),
+		})
+	}
+
+	// --- Running Queries ---
+	rows, err = client.Query(ctx, `SELECT count() as cnt FROM system.processes`)
+	if err == nil && len(rows) > 0 {
+		cnt := toFloat64(rows[0]["cnt"])
+		status := "ok"
+		if cnt > 100 {
+			status = "critical"
+		} else if cnt > 50 {
+			status = "warn"
+		}
+		checks = append(checks, healthCheckResult{
+			ID:        "running_queries",
+			Category:  "queries",
+			Name:      "Running Queries",
+			Status:    status,
+			Value:     fmt.Sprintf("%.0f", cnt),
+			Threshold: "50/100",
+			Detail:    fmt.Sprintf("Currently executing queries: %.0f", cnt),
+		})
+	}
+
+	// --- Long Running Queries ---
+	rows, err = client.Query(ctx, `SELECT count() as cnt FROM system.processes WHERE elapsed > 60`)
+	if err == nil && len(rows) > 0 {
+		cnt := toFloat64(rows[0]["cnt"])
+		status := "ok"
+		if cnt > 5 {
+			status = "critical"
+		} else if cnt > 2 {
+			status = "warn"
+		}
+		checks = append(checks, healthCheckResult{
+			ID:        "long_running",
+			Category:  "queries",
+			Name:      "Long Running Queries (>60s)",
+			Status:    status,
+			Value:     fmt.Sprintf("%.0f", cnt),
+			Threshold: "2/5",
+			Detail:    fmt.Sprintf("Queries running longer than 60 seconds: %.0f", cnt),
+		})
+	}
+
+	// --- Failed Queries (5m) ---
+	rows, err = client.Query(ctx, `SELECT count() as cnt FROM system.query_log WHERE type='ExceptionWhileProcessing' AND event_time >= now() - INTERVAL 5 MINUTE`)
+	if err == nil && len(rows) > 0 {
+		cnt := toFloat64(rows[0]["cnt"])
+		status := "ok"
+		if cnt > 50 {
+			status = "critical"
+		} else if cnt > 10 {
+			status = "warn"
+		}
+		checks = append(checks, healthCheckResult{
+			ID:        "failed_queries",
+			Category:  "queries",
+			Name:      "Failed Queries (5m)",
+			Status:    status,
+			Value:     fmt.Sprintf("%.0f", cnt),
+			Threshold: "10/50",
+			Detail:    fmt.Sprintf("Queries with exceptions in last 5 minutes: %.0f", cnt),
+		})
+	}
+
+	// --- Parts per Table ---
+	rows, err = client.Query(ctx, `SELECT database, table, count() as parts FROM system.parts WHERE active GROUP BY database, table HAVING parts > 1000 ORDER BY parts DESC`)
+	if err == nil {
+		status := "ok"
+		detail := "All tables under 1000 active parts"
+		if len(rows) > 0 {
+			maxParts := toFloat64(rows[0]["parts"])
+			db := fmt.Sprintf("%v", rows[0]["database"])
+			tbl := fmt.Sprintf("%v", rows[0]["table"])
+			if maxParts > 3000 {
+				status = "critical"
+			} else {
+				status = "warn"
+			}
+			detail = fmt.Sprintf("Worst: %s.%s with %.0f parts (%d tables over 1000)", db, tbl, maxParts, len(rows))
+		}
+		checks = append(checks, healthCheckResult{
+			ID:        "parts",
+			Category:  "storage",
+			Name:      "Parts per Table",
+			Status:    status,
+			Value:     fmt.Sprintf("%d tables >1000", len(rows)),
+			Threshold: "1000/3000",
+			Detail:    detail,
+		})
+	}
+
+	// --- Active Merges ---
+	rows, err = client.Query(ctx, `SELECT count() as cnt FROM system.merges WHERE NOT is_mutation`)
+	if err == nil && len(rows) > 0 {
+		cnt := toFloat64(rows[0]["cnt"])
+		status := "ok"
+		if cnt > 50 {
+			status = "critical"
+		} else if cnt > 20 {
+			status = "warn"
+		}
+		checks = append(checks, healthCheckResult{
+			ID:        "active_merges",
+			Category:  "storage",
+			Name:      "Active Merges",
+			Status:    status,
+			Value:     fmt.Sprintf("%.0f", cnt),
+			Threshold: "20/50",
+			Detail:    fmt.Sprintf("Background merge operations in progress: %.0f", cnt),
+		})
+	}
+
+	// --- Stuck Mutations ---
+	rows, err = client.Query(ctx, `SELECT count() as cnt FROM system.mutations WHERE NOT is_done AND create_time < now() - INTERVAL 30 MINUTE`)
+	if err == nil && len(rows) > 0 {
+		cnt := toFloat64(rows[0]["cnt"])
+		status := "ok"
+		if cnt > 3 {
+			status = "critical"
+		} else if cnt > 0 {
+			status = "warn"
+		}
+		checks = append(checks, healthCheckResult{
+			ID:        "stuck_mutations",
+			Category:  "storage",
+			Name:      "Stuck Mutations (>30m)",
+			Status:    status,
+			Value:     fmt.Sprintf("%.0f", cnt),
+			Threshold: "0/3",
+			Detail:    fmt.Sprintf("Mutations not completed after 30 minutes: %.0f", cnt),
+		})
+	}
+
+	// --- Disk Usage ---
+	rows, err = client.Query(ctx, `SELECT name, round((total_space-free_space)*100.0/total_space, 1) as used_pct FROM system.disks WHERE total_space > 0`)
+	if err == nil {
+		worstPct := 0.0
+		worstName := ""
+		for _, row := range rows {
+			pct := toFloat64(row["used_pct"])
+			if pct > worstPct {
+				worstPct = pct
+				worstName = fmt.Sprintf("%v", row["name"])
+			}
+		}
+		status := "ok"
+		if worstPct > 90 {
+			status = "critical"
+		} else if worstPct > 80 {
+			status = "warn"
+		}
+		checks = append(checks, healthCheckResult{
+			ID:        "disk_usage",
+			Category:  "storage",
+			Name:      "Disk Usage",
+			Status:    status,
+			Value:     fmt.Sprintf("%.1f%%", worstPct),
+			Threshold: "80%/90%",
+			Detail:    fmt.Sprintf("Highest usage disk '%s' at %.1f%% (%d disk(s) total)", worstName, worstPct, len(rows)),
+		})
+	}
+
+	// --- Dictionary Status ---
+	rows, err = client.Query(ctx, `SELECT name, status FROM system.dictionaries`)
+	if err == nil {
+		failedCount := 0
+		var failedNames []string
+		for _, row := range rows {
+			st := fmt.Sprintf("%v", row["status"])
+			if st != "LOADED" && st != "NOT_LOADED" {
+				failedCount++
+				failedNames = append(failedNames, fmt.Sprintf("%v", row["name"]))
+			}
+		}
+		status := "ok"
+		detail := fmt.Sprintf("All %d dictionaries healthy", len(rows))
+		if failedCount > 0 {
+			status = "warn"
+			detail = fmt.Sprintf("Failed dictionaries: %s", strings.Join(failedNames, ", "))
+		}
+		checks = append(checks, healthCheckResult{
+			ID:        "dictionaries",
+			Category:  "system",
+			Name:      "Dictionary Status",
+			Status:    status,
+			Value:     fmt.Sprintf("%d/%d ok", len(rows)-failedCount, len(rows)),
+			Threshold: "all loaded",
+			Detail:    detail,
+		})
+	}
+
+	// --- S3 Latency ---
+	rows, err = client.Query(ctx, `SELECT avg(ProfileEvents['S3ReadMicroseconds']/nullIf(ProfileEvents['S3ReadRequestsCount'],0))/1000 as avg_ms FROM system.query_log WHERE type='QueryFinish' AND ProfileEvents['S3ReadRequestsCount'] > 0 AND event_time >= now() - INTERVAL 5 MINUTE`)
+	if err == nil && len(rows) > 0 {
+		avgMs := toFloat64(rows[0]["avg_ms"])
+		status := "ok"
+		if avgMs > 200 {
+			status = "critical"
+		} else if avgMs > 100 {
+			status = "warn"
+		}
+		checks = append(checks, healthCheckResult{
+			ID:        "s3_latency",
+			Category:  "s3",
+			Name:      "S3 Read Latency (5m avg)",
+			Status:    status,
+			Value:     fmt.Sprintf("%.1fms", avgMs),
+			Threshold: "100ms/200ms",
+			Detail:    fmt.Sprintf("Average S3 read latency per request: %.1fms", avgMs),
+		})
+	}
+
+	// --- Query Storms ---
+	rows, err = client.Query(ctx, `SELECT user, count() as cnt FROM system.processes GROUP BY user HAVING cnt > 25`)
+	if err == nil {
+		status := "ok"
+		detail := "No users with >25 concurrent queries"
+		if len(rows) > 0 {
+			status = "warn"
+			var parts []string
+			for _, row := range rows {
+				parts = append(parts, fmt.Sprintf("%v: %.0f", row["user"], toFloat64(row["cnt"])))
+			}
+			detail = fmt.Sprintf("Users with >25 queries: %s", strings.Join(parts, ", "))
+			for _, row := range rows {
+				if toFloat64(row["cnt"]) > 100 {
+					status = "critical"
+					break
+				}
+			}
+		}
+		checks = append(checks, healthCheckResult{
+			ID:        "query_storms",
+			Category:  "queries",
+			Name:      "Query Storms",
+			Status:    status,
+			Value:     fmt.Sprintf("%d users", len(rows)),
+			Threshold: "25/100 per user",
+			Detail:    detail,
+		})
+	}
+
+	// --- Uptime ---
+	rows, err = client.Query(ctx, `SELECT uptime() as uptime`)
+	if err == nil && len(rows) > 0 {
+		uptimeSec := toFloat64(rows[0]["uptime"])
+		status := "ok"
+		if uptimeSec < 300 {
+			status = "warn"
+		}
+		checks = append(checks, healthCheckResult{
+			ID:        "uptime",
+			Category:  "system",
+			Name:      "Uptime",
+			Status:    status,
+			Value:     formatDuration(uptimeSec),
+			Threshold: ">5m",
+			Detail:    fmt.Sprintf("Server uptime: %s (%.0f seconds)", formatDuration(uptimeSec), uptimeSec),
+		})
+	}
+
+	writeJSON(w, http.StatusOK, checks)
+}
+
+// ---------------------------------------------------------------------------
+// 2. Query Patterns
+// ---------------------------------------------------------------------------
+
+func (s *Server) handleQueryPatterns(w http.ResponseWriter, r *http.Request) {
+	instance := r.PathValue("name")
+	client := s.manager.Get(instance)
+	if client == nil {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	fromTime, toTime := parseFromTo(r)
+	limit := parseIntParam(r, "limit", 50)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	sql := fmt.Sprintf(`SELECT
+		normalized_query_hash,
+		count() as cnt,
+		any(query_kind) as kind,
+		avg(query_duration_ms) as avg_ms,
+		max(query_duration_ms) as max_ms,
+		quantile(0.95)(query_duration_ms) as p95_ms,
+		avg(read_rows) as avg_read_rows,
+		max(read_rows) as max_read_rows,
+		avg(written_rows) as avg_written_rows,
+		avg(memory_usage) as avg_memory,
+		max(memory_usage) as max_memory,
+		any(user) as user,
+		any(client_name) as client,
+		countIf(type = 'ExceptionWhileProcessing') as failures,
+		substring(any(query), 1, 300) as sample_query
+	FROM system.query_log
+	WHERE event_time >= '%s' AND event_time <= '%s'
+	  AND type IN ('QueryFinish', 'ExceptionWhileProcessing')
+	GROUP BY normalized_query_hash
+	ORDER BY cnt DESC
+	LIMIT %d`, fromTime, toTime, limit)
+
+	rows, err := client.Query(ctx, sql)
+	if err != nil {
+		slog.Error("query patterns", "err", err, "instance", instance)
+		writeErr(w, http.StatusInternalServerError, "failed to query patterns")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, rows)
+}
+
+// ---------------------------------------------------------------------------
+// 3. Query Pattern Timeline
+// ---------------------------------------------------------------------------
+
+func (s *Server) handleQueryPatternTimeline(w http.ResponseWriter, r *http.Request) {
+	instance := r.PathValue("name")
+	client := s.manager.Get(instance)
+	if client == nil {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	hash := r.URL.Query().Get("hash")
+	if hash == "" {
+		writeErr(w, http.StatusBadRequest, "query parameter 'hash' is required")
+		return
+	}
+
+	fromTime, toTime := parseFromTo(r)
+	bucket := bucketSeconds(r)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	sql := fmt.Sprintf(`SELECT
+		toStartOfInterval(event_time, INTERVAL %d SECOND) as ts,
+		count() as cnt,
+		avg(query_duration_ms) as avg_ms,
+		avg(memory_usage) as avg_memory,
+		avg(read_rows) as avg_rows
+	FROM system.query_log
+	WHERE normalized_query_hash = %s
+	  AND event_time >= '%s' AND event_time <= '%s'
+	  AND type IN ('QueryFinish', 'ExceptionWhileProcessing')
+	GROUP BY ts ORDER BY ts`, bucket, hash, fromTime, toTime)
+
+	rows, err := client.Query(ctx, sql)
+	if err != nil {
+		slog.Error("query pattern timeline", "err", err, "instance", instance)
+		writeErr(w, http.StatusInternalServerError, "failed to query pattern timeline")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, rows)
+}
+
+// ---------------------------------------------------------------------------
+// 4. History: Failures
+// ---------------------------------------------------------------------------
+
+func (s *Server) handleHistoryFailures(w http.ResponseWriter, r *http.Request) {
+	instance := r.PathValue("name")
+	client := s.manager.Get(instance)
+	if client == nil {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	fromTime, toTime := parseFromTo(r)
+	bucket := bucketSeconds(r)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	sql := fmt.Sprintf(`SELECT
+		toStartOfInterval(event_time, INTERVAL %d SECOND) as ts,
+		count() as cnt,
+		exception_code,
+		any(exception) as sample
+	FROM system.query_log
+	WHERE type = 'ExceptionWhileProcessing'
+	  AND event_time >= '%s' AND event_time <= '%s'
+	GROUP BY ts, exception_code
+	ORDER BY ts`, bucket, fromTime, toTime)
+
+	rows, err := client.Query(ctx, sql)
+	if err != nil {
+		slog.Error("history failures", "err", err, "instance", instance)
+		writeErr(w, http.StatusInternalServerError, "failed to query failure history")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, rows)
+}
+
+// ---------------------------------------------------------------------------
+// 5. History: Merges
+// ---------------------------------------------------------------------------
+
+func (s *Server) handleHistoryMerges(w http.ResponseWriter, r *http.Request) {
+	instance := r.PathValue("name")
+	client := s.manager.Get(instance)
+	if client == nil {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	fromTime, toTime := parseFromTo(r)
+	bucket := bucketSeconds(r)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	sql := fmt.Sprintf(`SELECT
+		toStartOfInterval(event_time, INTERVAL %d SECOND) as ts,
+		countIf(event_type = 'MergeParts') as merge_count,
+		countIf(event_type = 'NewPart') as new_part_count,
+		countIf(event_type = 'RemovePart') as remove_count,
+		countIf(event_type = 'MovePart') as move_count,
+		avgIf(duration_ms, event_type = 'MergeParts') as avg_merge_ms,
+		sumIf(rows, event_type = 'MergeParts') as merged_rows,
+		sumIf(size_in_bytes, event_type = 'MergeParts') as merged_bytes
+	FROM system.part_log
+	WHERE event_time >= '%s' AND event_time <= '%s'
+	GROUP BY ts ORDER BY ts`, bucket, fromTime, toTime)
+
+	rows, err := client.Query(ctx, sql)
+	if err != nil {
+		slog.Error("history merges", "err", err, "instance", instance)
+		writeErr(w, http.StatusInternalServerError, "failed to query merge history")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, rows)
+}
+
+// ---------------------------------------------------------------------------
+// 6. History: Materialized Views
+// ---------------------------------------------------------------------------
+
+func (s *Server) handleHistoryMVs(w http.ResponseWriter, r *http.Request) {
+	instance := r.PathValue("name")
+	client := s.manager.Get(instance)
+	if client == nil {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	fromTime, toTime := parseFromTo(r)
+	bucket := bucketSeconds(r)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	sql := fmt.Sprintf(`SELECT
+		view_name,
+		toStartOfInterval(event_time, INTERVAL %d SECOND) as ts,
+		count() as cnt,
+		avg(view_duration_ms) as avg_ms,
+		max(view_duration_ms) as max_ms,
+		countIf(status != 'QueryFinish') as failures
+	FROM system.query_views_log
+	WHERE event_time >= '%s' AND event_time <= '%s'
+	GROUP BY view_name, ts
+	ORDER BY view_name, ts`, bucket, fromTime, toTime)
+
+	rows, err := client.Query(ctx, sql)
+	if err != nil {
+		slog.Error("history MVs", "err", err, "instance", instance)
+		writeErr(w, http.StatusInternalServerError, "failed to query MV history")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, rows)
+}
+
+// ---------------------------------------------------------------------------
+// 7. History: Inserts
+// ---------------------------------------------------------------------------
+
+func (s *Server) handleHistoryInserts(w http.ResponseWriter, r *http.Request) {
+	instance := r.PathValue("name")
+	client := s.manager.Get(instance)
+	if client == nil {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	fromTime, toTime := parseFromTo(r)
+	bucket := bucketSeconds(r)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	sql := fmt.Sprintf(`SELECT
+		toStartOfInterval(event_time, INTERVAL %d SECOND) as ts,
+		databases[1] as database,
+		tables[1] as table,
+		count() as insert_count,
+		sum(written_rows) as total_rows,
+		sum(written_bytes) as total_bytes,
+		countIf(written_rows < 100) as small_insert_count
+	FROM system.query_log
+	WHERE type = 'QueryFinish' AND query_kind = 'Insert'
+	  AND length(databases) >= 1 AND databases[1] != 'ch_analyzer'
+	  AND event_time >= '%s' AND event_time <= '%s'
+	GROUP BY ts, database, table
+	ORDER BY ts, total_rows DESC`, bucket, fromTime, toTime)
+
+	rows, err := client.Query(ctx, sql)
+	if err != nil {
+		slog.Error("history inserts", "err", err, "instance", instance)
+		writeErr(w, http.StatusInternalServerError, "failed to query insert history")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, rows)
+}
+
+// ---------------------------------------------------------------------------
+// 8. History: S3
+// ---------------------------------------------------------------------------
+
+func (s *Server) handleHistoryS3(w http.ResponseWriter, r *http.Request) {
+	instance := r.PathValue("name")
+	client := s.manager.Get(instance)
+	if client == nil {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	fromTime, toTime := parseFromTo(r)
+	bucket := bucketSeconds(r)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	sql := fmt.Sprintf(`SELECT
+		toStartOfInterval(event_time, INTERVAL %d SECOND) as ts,
+		count() as query_count,
+		sum(ProfileEvents['S3ReadRequestsCount']) as total_s3_requests,
+		sum(ProfileEvents['S3ReadMicroseconds']) as total_s3_us,
+		avg(ProfileEvents['S3ReadMicroseconds'] / nullIf(ProfileEvents['S3ReadRequestsCount'], 0)) / 1000 as avg_latency_ms
+	FROM system.query_log
+	WHERE type = 'QueryFinish'
+	  AND ProfileEvents['S3ReadRequestsCount'] > 0
+	  AND event_time >= '%s' AND event_time <= '%s'
+	GROUP BY ts ORDER BY ts`, bucket, fromTime, toTime)
+
+	rows, err := client.Query(ctx, sql)
+	if err != nil {
+		slog.Error("history s3", "err", err, "instance", instance)
+		writeErr(w, http.StatusInternalServerError, "failed to query S3 history")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, rows)
+}
+
+// ---------------------------------------------------------------------------
+// 9. History: Async Metrics
+// ---------------------------------------------------------------------------
+
+func (s *Server) handleHistoryAsyncMetrics(w http.ResponseWriter, r *http.Request) {
+	instance := r.PathValue("name")
+	client := s.manager.Get(instance)
+	if client == nil {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	metricsParam := r.URL.Query().Get("metrics")
+	if metricsParam == "" {
+		writeErr(w, http.StatusBadRequest, "query parameter 'metrics' is required")
+		return
+	}
+
+	// Build a quoted, comma-separated list for the IN clause.
+	metricNames := strings.Split(metricsParam, ",")
+	quoted := make([]string, 0, len(metricNames))
+	for _, m := range metricNames {
+		m = strings.TrimSpace(m)
+		if m != "" {
+			quoted = append(quoted, fmt.Sprintf("'%s'", m))
+		}
+	}
+	if len(quoted) == 0 {
+		writeErr(w, http.StatusBadRequest, "no valid metric names provided")
+		return
+	}
+	metricsList := strings.Join(quoted, ",")
+
+	fromTime, toTime := parseFromTo(r)
+	bucket := bucketSeconds(r)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	sql := fmt.Sprintf(`SELECT
+		toStartOfInterval(event_time, INTERVAL %d SECOND) as ts,
+		metric,
+		avg(value) as avg_value,
+		max(value) as max_value
+	FROM system.asynchronous_metric_log
+	WHERE metric IN (%s)
+	  AND event_time >= '%s' AND event_time <= '%s'
+	GROUP BY ts, metric
+	ORDER BY ts, metric`, bucket, metricsList, fromTime, toTime)
+
+	rows, err := client.Query(ctx, sql)
+	if err != nil {
+		slog.Error("history async metrics", "err", err, "instance", instance)
+		writeErr(w, http.StatusInternalServerError, "failed to query async metric history")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, rows)
+}
+
+// ---------------------------------------------------------------------------
+// 10. History: Disk I/O
+// ---------------------------------------------------------------------------
+
+func (s *Server) handleHistoryDiskIO(w http.ResponseWriter, r *http.Request) {
+	instance := r.PathValue("name")
+	client := s.manager.Get(instance)
+	if client == nil {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	fromTime, toTime := parseFromTo(r)
+	bucket := bucketSeconds(r)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	sql := fmt.Sprintf(`SELECT
+		toStartOfInterval(event_time, INTERVAL %d SECOND) as ts,
+		metric,
+		avg(value) as avg_value
+	FROM system.asynchronous_metric_log
+	WHERE (metric LIKE 'BlockReadBytes_%%' OR metric LIKE 'BlockWriteBytes_%%')
+	  AND event_time >= '%s' AND event_time <= '%s'
+	GROUP BY ts, metric
+	ORDER BY ts, metric`, bucket, fromTime, toTime)
+
+	rows, err := client.Query(ctx, sql)
+	if err != nil {
+		slog.Error("history disk io", "err", err, "instance", instance)
+		writeErr(w, http.StatusInternalServerError, "failed to query disk I/O history")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, rows)
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+// toFloat64 coerces a ClickHouse JSON value to float64.
+func toFloat64(v interface{}) float64 {
+	switch n := v.(type) {
+	case float64:
+		return n
+	case string:
+		f, _ := strconv.ParseFloat(n, 64)
+		return f
+	case json.Number:
+		f, _ := n.Float64()
+		return f
+	default:
+		return 0
+	}
+}
+
+// formatBytes returns a human-readable byte string (e.g. "64.2GB").
+func formatBytes(b float64) string {
+	switch {
+	case b >= 1<<40:
+		return fmt.Sprintf("%.1fTB", b/(1<<40))
+	case b >= 1<<30:
+		return fmt.Sprintf("%.1fGB", b/(1<<30))
+	case b >= 1<<20:
+		return fmt.Sprintf("%.1fMB", b/(1<<20))
+	case b >= 1<<10:
+		return fmt.Sprintf("%.1fKB", b/(1<<10))
+	default:
+		return fmt.Sprintf("%.0fB", b)
+	}
+}
+
+// formatDuration returns a human-readable duration from seconds.
+func formatDuration(seconds float64) string {
+	d := time.Duration(seconds) * time.Second
+	days := int(d.Hours()) / 24
+	hours := int(d.Hours()) % 24
+	mins := int(d.Minutes()) % 60
+
+	if days > 0 {
+		return fmt.Sprintf("%dd %dh %dm", days, hours, mins)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%dh %dm", hours, mins)
+	}
+	return fmt.Sprintf("%dm", mins)
+}

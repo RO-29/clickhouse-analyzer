@@ -1,0 +1,403 @@
+package config
+
+import (
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Duration wraps time.Duration to support human-readable YAML values like "5m", "1h".
+type Duration struct {
+	time.Duration
+}
+
+func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
+	var s string
+	if err := value.Decode(&s); err != nil {
+		return err
+	}
+	parsed, err := time.ParseDuration(s)
+	if err != nil {
+		return fmt.Errorf("invalid duration %q: %w", s, err)
+	}
+	d.Duration = parsed
+	return nil
+}
+
+func (d Duration) MarshalYAML() (interface{}, error) {
+	return d.Duration.String(), nil
+}
+
+// Config is the top-level configuration for ch-analyzer.
+type Config struct {
+	Instances  []Instance       `yaml:"instances"`
+	Polling    PollingConfig    `yaml:"polling"`
+	Thresholds ThresholdsConfig `yaml:"thresholds"`
+	Slack      SlackConfig      `yaml:"slack"`
+	Web        WebConfig        `yaml:"web"`
+	Storage    StorageConfig    `yaml:"storage"`
+	Prometheus PrometheusConfig `yaml:"prometheus"`
+	K8s        K8sConfig        `yaml:"k8s"`
+}
+
+// Instance describes a single ClickHouse connection target.
+type Instance struct {
+	Name     string `yaml:"name"`
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"`
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
+	Secure   bool   `yaml:"secure"`
+	Database string `yaml:"database"`
+}
+
+// PollingConfig controls how often metrics are collected.
+type PollingConfig struct {
+	Interval Duration `yaml:"interval"`
+}
+
+// ThresholdsConfig groups every category of threshold.
+type ThresholdsConfig struct {
+	Memory       MemoryThresholds       `yaml:"memory"`
+	CPU          CPUThresholds          `yaml:"cpu"`
+	Queries      QueriesThresholds      `yaml:"queries"`
+	Parts        PartsThresholds        `yaml:"parts"`
+	Merges       MergesThresholds       `yaml:"merges"`
+	Mutations    MutationsThresholds    `yaml:"mutations"`
+	Inserts      InsertsThresholds      `yaml:"inserts"`
+	Disk         DiskThresholds         `yaml:"disk"`
+	S3           S3Thresholds           `yaml:"s3"`
+	Replication  ReplicationThresholds  `yaml:"replication"`
+	Dictionaries DictionariesThresholds `yaml:"dictionaries"`
+	MV           MVThresholds           `yaml:"mv"`
+}
+
+type MemoryThresholds struct {
+	WarnPercent        float64 `yaml:"warn_percent"`
+	CriticalPercent    float64 `yaml:"critical_percent"`
+	RSSWarnPercent     float64 `yaml:"rss_warn_percent"`
+	RSSCriticalPercent float64 `yaml:"rss_critical_percent"`
+}
+
+type CPUThresholds struct {
+	WarnPercent     float64 `yaml:"warn_percent"`
+	CriticalPercent float64 `yaml:"critical_percent"`
+}
+
+type QueriesThresholds struct {
+	LongRunningThreshold Duration `yaml:"long_running_threshold"`
+	MaxConcurrent        int      `yaml:"max_concurrent"`
+	WarnConcurrent       int      `yaml:"warn_concurrent"`
+}
+
+type PartsThresholds struct {
+	WarnCount       int `yaml:"warn_count"`
+	CriticalCount   int `yaml:"critical_count"`
+	WarnPerPartition int `yaml:"warn_per_partition"`
+}
+
+type MergesThresholds struct {
+	MaxActive  int `yaml:"max_active"`
+	WarnActive int `yaml:"warn_active"`
+}
+
+type MutationsThresholds struct {
+	StuckThreshold Duration `yaml:"stuck_threshold"`
+}
+
+type InsertsThresholds struct {
+	ThroughputDropPercent float64 `yaml:"throughput_drop_percent"`
+	SmallInsertThreshold  int     `yaml:"small_insert_threshold"`
+	SmallInsertWarnCount  int     `yaml:"small_insert_warn_count"`
+}
+
+type DiskThresholds struct {
+	WarnPercent     float64 `yaml:"warn_percent"`
+	CriticalPercent float64 `yaml:"critical_percent"`
+}
+
+type S3Thresholds struct {
+	LatencyWarn        Duration `yaml:"latency_warn"`
+	LatencyCritical    Duration `yaml:"latency_critical"`
+	MaxConcurrentReads int      `yaml:"max_concurrent_reads"`
+}
+
+type ReplicationThresholds struct {
+	LagWarn     Duration `yaml:"lag_warn"`
+	LagCritical Duration `yaml:"lag_critical"`
+}
+
+type DictionariesThresholds struct {
+	ReloadFailThreshold int `yaml:"reload_fail_threshold"`
+}
+
+type MVThresholds struct {
+	LagWarn        Duration `yaml:"lag_warn"`
+	BloatRatioWarn float64  `yaml:"bloat_ratio_warn"`
+}
+
+// SlackConfig controls Slack alerting behaviour.
+type SlackConfig struct {
+	BotToken        string          `yaml:"bot_token"`
+	ChannelID       string          `yaml:"channel_id"`
+	DedupWindow     Duration        `yaml:"dedup_window"`
+	ResolveMessages bool            `yaml:"resolve_messages"`
+	Digest          DigestConfig    `yaml:"digest"`
+	SeverityRouting SeverityRouting `yaml:"severity_routing"`
+}
+
+type DigestConfig struct {
+	Enabled   bool   `yaml:"enabled"`
+	DailyTime string `yaml:"daily_time"`
+	WeeklyDay string `yaml:"weekly_day"`
+}
+
+type SeverityRouting struct {
+	Critical string `yaml:"critical"`
+	Warn     string `yaml:"warn"`
+	Info     string `yaml:"info"`
+}
+
+// WebConfig controls the built-in web dashboard.
+type WebConfig struct {
+	ListenAddr      string `yaml:"listen_addr"`
+	Enabled         bool   `yaml:"enabled"`
+	SuggestionsPath string `yaml:"suggestions_path"`
+}
+
+// StorageConfig controls metric persistence. Each node stores its own data.
+type StorageConfig struct {
+	Database  string   `yaml:"database"`
+	Retention Duration `yaml:"retention"`
+}
+
+// PrometheusConfig controls the optional Prometheus metrics endpoint.
+type PrometheusConfig struct {
+	Enabled    bool   `yaml:"enabled"`
+	ListenAddr string `yaml:"listen_addr"`
+}
+
+// K8sConfig enables Kubernetes-based ClickHouse pod discovery.
+type K8sConfig struct {
+	Enabled       bool   `yaml:"enabled"`
+	Namespace     string `yaml:"namespace"`
+	LabelSelector string `yaml:"label_selector"`
+}
+
+// Defaults returns a Config populated with sensible default values.
+func Defaults() *Config {
+	return &Config{
+		Polling: PollingConfig{
+			Interval: Duration{time.Minute},
+		},
+		Thresholds: ThresholdsConfig{
+			Memory: MemoryThresholds{
+				WarnPercent:        80,
+				CriticalPercent:    90,
+				RSSWarnPercent:     85,
+				RSSCriticalPercent: 95,
+			},
+			CPU: CPUThresholds{
+				WarnPercent:     80,
+				CriticalPercent: 95,
+			},
+			Queries: QueriesThresholds{
+				LongRunningThreshold: Duration{time.Minute},
+				MaxConcurrent:        100,
+				WarnConcurrent:       50,
+			},
+			Parts: PartsThresholds{
+				WarnCount:        1000,
+				CriticalCount:    3000,
+				WarnPerPartition: 300,
+			},
+			Merges: MergesThresholds{
+				MaxActive:  20,
+				WarnActive: 10,
+			},
+			Mutations: MutationsThresholds{
+				StuckThreshold: Duration{30 * time.Minute},
+			},
+			Inserts: InsertsThresholds{
+				ThroughputDropPercent: 50,
+				SmallInsertThreshold:  100,
+				SmallInsertWarnCount:  10,
+			},
+			Disk: DiskThresholds{
+				WarnPercent:     80,
+				CriticalPercent: 90,
+			},
+			S3: S3Thresholds{
+				LatencyWarn:        Duration{5 * time.Second},
+				LatencyCritical:    Duration{15 * time.Second},
+				MaxConcurrentReads: 50,
+			},
+			Replication: ReplicationThresholds{
+				LagWarn:     Duration{30 * time.Second},
+				LagCritical: Duration{5 * time.Minute},
+			},
+			Dictionaries: DictionariesThresholds{
+				ReloadFailThreshold: 3,
+			},
+			MV: MVThresholds{
+				LagWarn:        Duration{5 * time.Minute},
+				BloatRatioWarn: 10.0,
+			},
+		},
+		Slack: SlackConfig{
+			DedupWindow:     Duration{15 * time.Minute},
+			ResolveMessages: true,
+			Digest: DigestConfig{
+				Enabled:   true,
+				DailyTime: "09:00",
+				WeeklyDay: "monday",
+			},
+			SeverityRouting: SeverityRouting{
+				Critical: "immediate",
+				Warn:     "batched_5m",
+				Info:     "digest_only",
+			},
+		},
+		Web: WebConfig{
+			ListenAddr: ":8080",
+			Enabled:    true,
+		},
+		Storage: StorageConfig{
+			Database:  "ch_analyzer",
+			Retention: Duration{8760 * time.Hour},
+		},
+		Prometheus: PrometheusConfig{
+			Enabled:    false,
+			ListenAddr: ":9090",
+		},
+		K8s: K8sConfig{
+			Enabled: true,
+		},
+	}
+}
+
+// Load reads a YAML configuration file from path, applies defaults for any
+// unset fields, and validates the result.
+func Load(path string) (*Config, error) {
+	cfg := Defaults()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading config %s: %w", path, err)
+	}
+
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		return nil, fmt.Errorf("parsing config %s: %w", path, err)
+	}
+
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("validating config: %w", err)
+	}
+
+	return cfg, nil
+}
+
+// Validate checks the config for logical errors and missing required fields.
+func (c *Config) Validate() error {
+	var errs []string
+
+	if len(c.Instances) == 0 {
+		errs = append(errs, "at least one instance must be configured")
+	}
+
+	for i, inst := range c.Instances {
+		if inst.Name == "" {
+			errs = append(errs, fmt.Sprintf("instances[%d]: name is required", i))
+		}
+		if inst.Host == "" {
+			errs = append(errs, fmt.Sprintf("instances[%d] (%s): host is required", i, inst.Name))
+		}
+		if inst.Port <= 0 || inst.Port > 65535 {
+			errs = append(errs, fmt.Sprintf("instances[%d] (%s): port must be 1-65535, got %d", i, inst.Name, inst.Port))
+		}
+		if inst.Username == "" {
+			errs = append(errs, fmt.Sprintf("instances[%d] (%s): username is required", i, inst.Name))
+		}
+	}
+
+	if c.Polling.Interval.Duration < time.Second {
+		errs = append(errs, "polling.interval must be at least 1s")
+	}
+
+	// Memory thresholds
+	if c.Thresholds.Memory.WarnPercent >= c.Thresholds.Memory.CriticalPercent {
+		errs = append(errs, "memory: warn_percent must be less than critical_percent")
+	}
+	if c.Thresholds.Memory.RSSWarnPercent >= c.Thresholds.Memory.RSSCriticalPercent {
+		errs = append(errs, "memory: rss_warn_percent must be less than rss_critical_percent")
+	}
+
+	// CPU thresholds
+	if c.Thresholds.CPU.WarnPercent >= c.Thresholds.CPU.CriticalPercent {
+		errs = append(errs, "cpu: warn_percent must be less than critical_percent")
+	}
+
+	// Queries
+	if c.Thresholds.Queries.WarnConcurrent >= c.Thresholds.Queries.MaxConcurrent {
+		errs = append(errs, "queries: warn_concurrent must be less than max_concurrent")
+	}
+
+	// Parts
+	if c.Thresholds.Parts.WarnCount >= c.Thresholds.Parts.CriticalCount {
+		errs = append(errs, "parts: warn_count must be less than critical_count")
+	}
+
+	// Merges
+	if c.Thresholds.Merges.WarnActive >= c.Thresholds.Merges.MaxActive {
+		errs = append(errs, "merges: warn_active must be less than max_active")
+	}
+
+	// Disk
+	if c.Thresholds.Disk.WarnPercent >= c.Thresholds.Disk.CriticalPercent {
+		errs = append(errs, "disk: warn_percent must be less than critical_percent")
+	}
+
+	// S3
+	if c.Thresholds.S3.LatencyWarn.Duration >= c.Thresholds.S3.LatencyCritical.Duration {
+		errs = append(errs, "s3: latency_warn must be less than latency_critical")
+	}
+
+	// Replication
+	if c.Thresholds.Replication.LagWarn.Duration >= c.Thresholds.Replication.LagCritical.Duration {
+		errs = append(errs, "replication: lag_warn must be less than lag_critical")
+	}
+
+	// Slack digest validation
+	if c.Slack.Digest.Enabled {
+		if c.Slack.Digest.DailyTime != "" {
+			_, err := time.Parse("15:04", c.Slack.Digest.DailyTime)
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("slack.digest.daily_time must be HH:MM format, got %q", c.Slack.Digest.DailyTime))
+			}
+		}
+		validDays := map[string]bool{
+			"monday": true, "tuesday": true, "wednesday": true,
+			"thursday": true, "friday": true, "saturday": true, "sunday": true,
+		}
+		if c.Slack.Digest.WeeklyDay != "" && !validDays[strings.ToLower(c.Slack.Digest.WeeklyDay)] {
+			errs = append(errs, fmt.Sprintf("slack.digest.weekly_day must be a valid weekday, got %q", c.Slack.Digest.WeeklyDay))
+		}
+	}
+
+	// Storage
+	if c.Storage.Database == "" {
+		errs = append(errs, "storage.database is required")
+	}
+	if c.Storage.Retention.Duration <= 0 {
+		errs = append(errs, "storage.retention must be positive")
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("config validation failed:\n  - %s", strings.Join(errs, "\n  - "))
+	}
+
+	return nil
+}

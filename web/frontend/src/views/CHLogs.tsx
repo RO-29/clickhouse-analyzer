@@ -1,0 +1,220 @@
+import { useState, useEffect, useCallback, useRef, useMemo, type ReactNode } from 'react'
+import { RefreshCw } from 'lucide-react'
+import { useStore } from '../hooks/useStore'
+import { api } from '../lib/api'
+import { cn } from '../lib/utils'
+import type { CHLogEntry } from '../types/api'
+
+const CH_LEVELS = ['All', 'Fatal', 'Critical', 'Error', 'Warning', 'Notice', 'Information', 'Debug', 'Trace'] as const
+const TIME_WINDOWS = [
+  { label: '15m', minutes: 15 },
+  { label: '1h', minutes: 60 },
+  { label: '6h', minutes: 360 },
+  { label: '24h', minutes: 1440 },
+] as const
+const LIMITS = [100, 250, 500, 1000] as const
+
+const LEVEL_COLOR: Record<string, string> = {
+  Fatal: 'text-red-500 font-bold',
+  Critical: 'text-red-400',
+  Error: 'text-red-400',
+  Warning: 'text-yellow-400',
+  Notice: 'text-blue-400',
+  Information: 'text-green-400',
+  Debug: 'text-gray-400',
+  Trace: 'text-gray-500',
+}
+
+function highlightSearch(text: string, search: string): ReactNode {
+  if (!search.trim()) return text
+  const parts = text.split(new RegExp(`(${search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'))
+  return parts.map((part, i) =>
+    part.toLowerCase() === search.toLowerCase()
+      ? <mark key={i} className="bg-yellow-500/30 text-yellow-200 rounded px-0.5">{part}</mark>
+      : part
+  )
+}
+
+export default function CHLogs() {
+  const { instances, selectedInstance, setSelectedInstance } = useStore()
+
+  const [inst, setInst] = useState(() => selectedInstance || instances[0] || '')
+  const [level, setLevel] = useState<string>('All')
+  const [search, setSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const [minutes, setMinutes] = useState(60)
+  const [limit, setLimit] = useState(200)
+  const [logs, setLogs] = useState<CHLogEntry[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(null!)
+
+  // Keep inst in sync
+  useEffect(() => {
+    if (selectedInstance) setInst(selectedInstance)
+  }, [selectedInstance])
+
+  // Debounce search
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => setDebouncedSearch(search), 300)
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
+  }, [search])
+
+  const fetchLogs = useCallback(async () => {
+    if (!inst) return
+    setLoading(true)
+    setError(null)
+    try {
+      const lvl = level === 'All' ? undefined : level
+      const data = await api.chLogs(inst, lvl, debouncedSearch || undefined, minutes, limit)
+      setLogs(data)
+    } catch (e: any) {
+      setError(e.message)
+      setLogs([])
+    } finally {
+      setLoading(false)
+    }
+  }, [inst, level, debouncedSearch, minutes, limit])
+
+  useEffect(() => { fetchLogs() }, [fetchLogs])
+
+  // Stats by level
+  const stats = useMemo(() => {
+    const map: Record<string, number> = {}
+    for (const l of logs) {
+      const lv = l.level ?? 'Unknown'
+      map[lv] = (map[lv] ?? 0) + 1
+    }
+    return map
+  }, [logs])
+
+  return (
+    <div className="space-y-4">
+      {/* Controls */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <select
+          value={inst}
+          onChange={(e) => { setInst(e.target.value); setSelectedInstance(e.target.value) }}
+          className="rounded-md border border-[var(--border)] bg-[var(--card)] px-3 py-1.5 text-sm text-[var(--fg)] focus:outline-none focus:border-[var(--accent)]"
+        >
+          {instances.map((i) => (
+            <option key={i} value={i}>{i}</option>
+          ))}
+        </select>
+
+        <select
+          value={level}
+          onChange={(e) => setLevel(e.target.value)}
+          className="rounded-md border border-[var(--border)] bg-[var(--card)] px-3 py-1.5 text-sm text-[var(--fg)] focus:outline-none focus:border-[var(--accent)]"
+        >
+          {CH_LEVELS.map((l) => (
+            <option key={l} value={l}>{l}</option>
+          ))}
+        </select>
+
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search logs..."
+          className="rounded-md border border-[var(--border)] bg-[var(--card)] px-3 py-1.5 text-sm text-[var(--fg)] w-64 focus:outline-none focus:border-[var(--accent)] placeholder:text-[var(--dim)]"
+        />
+
+        <div className="flex gap-1">
+          {TIME_WINDOWS.map((tw) => (
+            <button
+              key={tw.label}
+              onClick={() => setMinutes(tw.minutes)}
+              className={cn(
+                'px-2.5 py-1 text-xs rounded-md transition-colors',
+                minutes === tw.minutes
+                  ? 'bg-[var(--accent)] text-white'
+                  : 'text-[var(--dim)] hover:text-[var(--fg)] border border-[var(--border)] hover:border-[var(--accent)]',
+              )}
+            >
+              {tw.label}
+            </button>
+          ))}
+        </div>
+
+        <select
+          value={limit}
+          onChange={(e) => setLimit(Number(e.target.value))}
+          className="rounded-md border border-[var(--border)] bg-[var(--card)] px-3 py-1.5 text-sm text-[var(--fg)] focus:outline-none focus:border-[var(--accent)]"
+        >
+          {LIMITS.map((l) => (
+            <option key={l} value={l}>{l}</option>
+          ))}
+        </select>
+
+        <button
+          onClick={fetchLogs}
+          disabled={loading}
+          className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--dim)] hover:text-[var(--fg)] hover:border-[var(--accent)] transition-colors disabled:opacity-50"
+        >
+          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+          Refresh
+        </button>
+      </div>
+
+      {/* Stats */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {Object.entries(stats).map(([lv, count]) => (
+          <span
+            key={lv}
+            className={cn(
+              'inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium',
+              lv === 'Fatal' || lv === 'Critical' || lv === 'Error'
+                ? 'bg-red-500/10 text-red-400'
+                : lv === 'Warning'
+                  ? 'bg-yellow-500/10 text-yellow-400'
+                  : 'bg-blue-500/10 text-blue-400',
+            )}
+          >
+            {lv}: {count}
+          </span>
+        ))}
+        <span className="text-xs text-[var(--dim)] ml-auto">{logs.length} entries</span>
+      </div>
+
+      {/* Error */}
+      {error && (
+        <div className="rounded-lg bg-red-500/10 border border-red-500/20 p-4 text-sm text-red-400">
+          {error}
+        </div>
+      )}
+
+      {/* Log entries */}
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl overflow-hidden">
+        {loading && logs.length === 0 ? (
+          <div className="text-sm text-[var(--dim)] text-center py-8">Loading...</div>
+        ) : logs.length === 0 ? (
+          <div className="text-sm text-[var(--dim)] text-center py-8">No logs found</div>
+        ) : (
+          <div className="divide-y divide-[var(--border)] font-mono text-xs max-h-[600px] overflow-y-auto">
+            {logs.map((entry, i) => (
+              <div key={i} className="flex items-start gap-2 px-4 py-1.5 hover:bg-[var(--hover)]">
+                <span className="text-[var(--dim)] shrink-0 w-36">{entry.event_time}</span>
+                <span className={cn('shrink-0 w-20', LEVEL_COLOR[entry.level] ?? 'text-gray-400')}>
+                  {entry.level}
+                </span>
+                <span className="text-[var(--accent)] shrink-0 max-w-32 truncate" title={entry.logger_name}>
+                  {entry.logger_name}
+                </span>
+                <span className="text-[var(--fg)] break-all flex-1 min-w-0">
+                  {highlightSearch(entry.message, debouncedSearch)}
+                </span>
+                {entry.query_id && (
+                  <span className="text-[var(--dim)] shrink-0 max-w-24 truncate" title={entry.query_id}>
+                    {entry.query_id}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}

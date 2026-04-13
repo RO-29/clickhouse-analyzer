@@ -1,0 +1,12 @@
+bin/
+data/
+*.db
+*.db-wal
+*.db-shm
+ch_audit_output.txt
+ch_audit.sh
+ch_history_check.txt
+what.md
+.git
+web/frontend/node_modules/
+web/frontend/dist/

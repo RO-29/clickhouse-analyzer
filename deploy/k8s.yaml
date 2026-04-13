@@ -1,0 +1,195 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ch-analyzer
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ch-analyzer-config
+  namespace: ch-analyzer
+stringData:
+  config.yaml: |
+    instances:
+      - name: "single-node-a"
+        host: "single-node-a.vpce.your-cluster.altinity.cloud"
+        port: 8443
+        username: "monitoring"
+        password: "CHANGE_ME"
+        secure: true
+        database: "chains"
+      - name: "single-node-b"
+        host: "single-node-b.vpce.your-cluster.altinity.cloud"
+        port: 8443
+        username: "monitoring"
+        password: "CHANGE_ME"
+        secure: true
+        database: "chains"
+      - name: "single-node-c"
+        host: "single-node-c.vpce.your-cluster.altinity.cloud"
+        port: 8443
+        username: "monitoring"
+        password: "CHANGE_ME"
+        secure: true
+        database: "chains"
+      - name: "single-node-d"
+        host: "single-node-d.vpce.your-cluster.altinity.cloud"
+        port: 8443
+        username: "monitoring"
+        password: "CHANGE_ME"
+        secure: true
+        database: "chains"
+      - name: "single-node-e"
+        host: "single-node-e.vpce.your-cluster.altinity.cloud"
+        port: 8443
+        username: "monitoring"
+        password: "CHANGE_ME"
+        secure: true
+        database: "chains"
+
+    polling:
+      interval: "1m"
+
+    thresholds:
+      memory:
+        warn_percent: 80
+        critical_percent: 90
+        rss_warn_percent: 85
+        rss_critical_percent: 95
+      cpu:
+        warn_percent: 80
+        critical_percent: 95
+      queries:
+        long_running_threshold: "1m"
+        max_concurrent: 100
+        warn_concurrent: 50
+      parts:
+        warn_count: 1000
+        critical_count: 3000
+        warn_per_partition: 300
+      merges:
+        max_active: 20
+        warn_active: 10
+      mutations:
+        stuck_threshold: "30m"
+      inserts:
+        throughput_drop_percent: 50
+        small_insert_threshold: 100
+        small_insert_warn_count: 10
+      disk:
+        warn_percent: 80
+        critical_percent: 90
+      s3:
+        latency_warn: "5s"
+        latency_critical: "15s"
+        max_concurrent_reads: 50
+      replication:
+        lag_warn: "30s"
+        lag_critical: "300s"
+      dictionaries:
+        reload_fail_threshold: 3
+      mv:
+        lag_warn: "5m"
+        bloat_ratio_warn: 10.0
+
+    slack:
+      bot_token: "xoxb-CHANGE_ME"
+      channel_id: "C0XXXXXXXXX"
+      dedup_window: "15m"
+      resolve_messages: true
+      digest:
+        enabled: true
+        daily_time: "09:00"
+        weekly_day: "monday"
+      severity_routing:
+        critical: "immediate"
+        warn: "batched_5m"
+        info: "digest_only"
+
+    web:
+      listen_addr: ":8080"
+      enabled: true
+
+    storage:
+      database: "ch_analyzer"
+      retention: "8760h"
+
+    prometheus:
+      enabled: true
+      listen_addr: ":9090"
+
+    k8s:
+      enabled: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ch-analyzer
+  namespace: ch-analyzer
+  labels:
+    app: ch-analyzer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ch-analyzer
+  template:
+    metadata:
+      labels:
+        app: ch-analyzer
+    spec:
+      containers:
+        - name: ch-analyzer
+          image: ch-analyzer:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: metrics
+              containerPort: 9090
+          volumeMounts:
+            - name: config
+              mountPath: /etc/ch-analyzer
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /api/instances
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /api/instances
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: config
+          secret:
+            secretName: ch-analyzer-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ch-analyzer
+  namespace: ch-analyzer
+  labels:
+    app: ch-analyzer
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+    - name: metrics
+      port: 9090
+      targetPort: 9090
+  selector:
+    app: ch-analyzer
