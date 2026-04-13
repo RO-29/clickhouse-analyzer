@@ -1,6 +1,9 @@
-import { cn, scoreColor, sevColor } from '../lib/utils'
+import { useState } from 'react'
+import { ChevronRight, RotateCcw } from 'lucide-react'
+import { cn, scoreColor, sevColor, fmtTime } from '../lib/utils'
 import { Card } from './Card'
 import { Badge } from './Badge'
+import { useStore } from '../hooks/useStore'
 import type { Instance } from '../types/api'
 
 const statusDot: Record<string, string> = {
@@ -24,21 +27,35 @@ export function NodeCard({
   onClick: () => void
   staleAlerts?: number
 }) {
+  const { navToDetail } = useStore()
+  const [expandedAlert, setExpandedAlert] = useState<number | null>(null)
+
   const areas = instance.area_status ?? []
   const topAlerts = instance.top_alerts ?? []
+  const counts = instance.alert_counts
   const freshAlerts = Math.max(0, instance.active_alerts - staleAlerts)
+
+  const memPct = instance.key_metrics?.['memory_pct']
+  const cpuPct = instance.key_metrics?.['cpu_pct']
+  const runningQ = instance.key_metrics?.['running_queries']
+  const activeMerges = instance.key_metrics?.['active_merges']
+
+  const handleAlertClick = (e: React.MouseEvent, idx: number) => {
+    e.stopPropagation()
+    setExpandedAlert(expandedAlert === idx ? null : idx)
+  }
+
+  const handleAlertNav = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    navToDetail(instance.name)
+  }
 
   return (
     <Card onClick={onClick} className="cursor-pointer hover:border-[var(--accent)]/40 transition-colors">
-      {/* Header: name + score */}
+      {/* Header: name + health score */}
       <div className="flex items-center justify-between mb-3">
         <div className="font-medium truncate">{instance.name}</div>
         <div className="flex items-center gap-2">
-          {freshAlerts > 0 && (
-            <Badge className="bg-red-500/10 text-red-400 border border-red-500/20 text-xs">
-              {freshAlerts}
-            </Badge>
-          )}
           {staleAlerts > 0 && freshAlerts === 0 && (
             <Badge className="bg-gray-500/10 text-gray-400 border border-gray-500/20 text-xs">
               {staleAlerts} stale
@@ -53,29 +70,98 @@ export function NodeCard({
         </div>
       </div>
 
+      {/* Key metrics row */}
+      <div className="grid grid-cols-4 gap-2 mb-3">
+        {[
+          { label: 'Mem', value: memPct != null ? `${memPct.toFixed(0)}%` : '—', warn: memPct != null && memPct > 85, crit: memPct != null && memPct > 95 },
+          { label: 'CPU', value: cpuPct != null ? `${cpuPct.toFixed(0)}%` : '—', warn: cpuPct != null && cpuPct > 80, crit: cpuPct != null && cpuPct > 95 },
+          { label: 'Queries', value: runningQ != null ? String(Math.round(runningQ)) : '—', warn: false, crit: false },
+          { label: 'Merges', value: activeMerges != null ? String(Math.round(activeMerges)) : '—', warn: false, crit: false },
+        ].map(m => (
+          <div key={m.label} className="text-center">
+            <div className={cn(
+              'text-sm font-semibold tabular-nums',
+              m.crit ? 'text-red-400' : m.warn ? 'text-yellow-400' : 'text-[var(--text)]'
+            )}>{m.value}</div>
+            <div className="text-[10px] text-[var(--dim)] uppercase tracking-wider">{m.label}</div>
+          </div>
+        ))}
+      </div>
+
       {/* Area pills */}
-      <div className="flex items-center gap-2 mb-3">
+      <div className="flex items-center gap-1.5 mb-3 flex-wrap">
         {areas.map((a) => (
           <div
             key={a.area}
-            className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-[var(--hover)] text-xs"
+            className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-[var(--hover)] text-xs"
             title={`${a.label}: ${a.status}`}
           >
-            <span className={cn('w-2 h-2 rounded-full', statusDot[a.status] ?? 'bg-gray-500', statusRing[a.status] ?? '')} />
+            <span className={cn('w-1.5 h-1.5 rounded-full shrink-0', statusDot[a.status] ?? 'bg-gray-500', statusRing[a.status] ?? '')} />
             <span className="text-[var(--dim)]">{a.label}</span>
           </div>
         ))}
       </div>
 
-      {/* Top issues */}
+      {/* Alert severity counts */}
+      {freshAlerts > 0 && counts && (
+        <div className="flex items-center gap-2 mb-2">
+          {counts.crit > 0 && (
+            <span className="text-xs font-medium text-red-400">{counts.crit} crit</span>
+          )}
+          {counts.warn > 0 && (
+            <span className="text-xs font-medium text-yellow-400">{counts.warn} warn</span>
+          )}
+          {counts.info > 0 && (
+            <span className="text-xs font-medium text-blue-400">{counts.info} info</span>
+          )}
+          {staleAlerts > 0 && (
+            <span className="text-xs text-gray-500">+{staleAlerts} stale</span>
+          )}
+        </div>
+      )}
+
+      {/* Top alerts — individually expandable */}
       {topAlerts.length > 0 ? (
-        <div className="space-y-1.5">
+        <div className="space-y-1">
           {topAlerts.map((a, i) => (
-            <div key={i} className="flex items-start gap-2 text-xs">
-              <Badge className={cn('border shrink-0', sevColor(a.severity))}>
-                {a.severity === 'critical' ? 'CRIT' : a.severity === 'warn' ? 'WARN' : 'INFO'}
-              </Badge>
-              <span className="truncate">{a.title}</span>
+            <div key={i}>
+              <button
+                onClick={(e) => handleAlertClick(e, i)}
+                className="w-full flex items-start gap-2 text-xs text-left rounded hover:bg-[var(--hover)] px-1 py-0.5 transition-colors"
+              >
+                <Badge className={cn('border shrink-0 mt-0.5', sevColor(a.severity))}>
+                  {a.severity === 'critical' ? 'CRIT' : a.severity === 'warn' ? 'WARN' : 'INFO'}
+                </Badge>
+                <span className={cn('truncate flex-1', a.possibly_recovered && 'opacity-60')}>
+                  {a.title}
+                </span>
+                {a.possibly_recovered && (
+                  <span title="Possibly recovered"><RotateCcw size={10} className="text-green-400 shrink-0 mt-0.5" /></span>
+                )}
+                <ChevronRight size={10} className={cn('text-[var(--dim)] shrink-0 mt-0.5 transition-transform', expandedAlert === i && 'rotate-90')} />
+              </button>
+              {expandedAlert === i && (
+                <div
+                  className="mx-1 mb-1 p-2 rounded bg-[var(--hover)] border border-[var(--border)] text-xs space-y-1"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="text-[var(--dim)]">
+                    Fired: <span className="text-[var(--text)]">{fmtTime(a.created_at)}</span>
+                  </div>
+                  {a.possibly_recovered && (
+                    <div className="flex items-center gap-1 text-green-400">
+                      <RotateCcw size={10} />
+                      Current metrics suggest this may have recovered
+                    </div>
+                  )}
+                  <button
+                    onClick={handleAlertNav}
+                    className="text-[var(--accent)] hover:underline"
+                  >
+                    → Open instance detail
+                  </button>
+                </div>
+              )}
             </div>
           ))}
         </div>

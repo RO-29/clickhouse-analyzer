@@ -409,7 +409,7 @@ function StatCard({ label, value, color, sub }: { label: string; value: string |
 type ViewMode = 'grouped' | 'flat' | 'timeline'
 
 export default function Alerts({ refreshKey }: { refreshKey?: number }) {
-  const { instances: cachedInstances, customFrom, customTo, setView, selectedInstance } = useStore()
+  const { instances: cachedInstances, customFrom, customTo, setView, selectedInstance, alertPreset, setAlertPreset } = useStore()
   const { analyze } = useAIAnalysis(selectedInstance)
   const handleAnalyzeAlert = useCallback((alert: Alert) => {
     analyze(`Alert: ${alert.title}`, { alert }, { contextType: 'row', tab: 'alerts', elementId: String(alert.id) })
@@ -428,13 +428,18 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
   const [viewMode, setViewMode] = useState<ViewMode>('grouped')
   const [staleHours, setStaleHours] = useState<number>(loadStaleHours)
 
-  const [filterInstance, setFilterInstance] = useState('all')
-  const [filterSeverity, setFilterSeverity] = useState('all')
+  const [filterInstance, setFilterInstance] = useState(alertPreset?.instance ?? 'all')
+  const [filterSeverity, setFilterSeverity] = useState(alertPreset?.severity ?? 'all')
   const [filterCategory, setFilterCategory] = useState('all')
   const [filterType, setFilterType] = useState('all')
   const [filterStatus, setFilterStatus] = useState('all')
 
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set())
+
+  // Consume the preset once on mount, then clear it so navigating back doesn't re-apply
+  useEffect(() => {
+    if (alertPreset) setAlertPreset(null)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Persist threshold to localStorage
   const updateStaleHours = useCallback((v: number) => {

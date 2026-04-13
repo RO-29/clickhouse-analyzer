@@ -8,6 +8,14 @@ export interface TopAlert {
   severity: string
   category: string
   title: string
+  possibly_recovered: boolean
+  created_at: number
+}
+
+export interface AlertCounts {
+  crit: number
+  warn: number
+  info: number
 }
 
 export interface Instance {
@@ -15,6 +23,7 @@ export interface Instance {
   health_score: number
   status: string
   active_alerts: number
+  alert_counts?: AlertCounts
   key_metrics: Record<string, number>
   area_status?: AreaStatus[]
   top_alerts?: TopAlert[]

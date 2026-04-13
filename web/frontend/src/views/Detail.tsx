@@ -41,6 +41,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
   const [tableMemory, setTableMemory] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
+  const [currentStateRefreshTick, setCurrentStateRefreshTick] = useState(0)
   const isFirstLoad = useRef(true)
   // Time-range-aware historical data (re-fetches when from/to changes)
   const [queryPatterns, setQueryPatterns] = useState<Record<string, any>[]>([])
@@ -97,7 +98,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
     }
     load()
     return () => { cancelled = true }
-  }, [instance, refreshKey])
+  }, [instance, refreshKey, currentStateRefreshTick])
 
   // Separate effect: re-runs whenever the time range changes
   useEffect(() => {
@@ -308,6 +309,15 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
           </div>
         )}
         <button
+          onClick={() => setCurrentStateRefreshTick(t => t + 1)}
+          disabled={refreshing}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-[var(--dim)] hover:bg-[var(--hover)] border border-[var(--border)] transition-colors shrink-0 disabled:opacity-50"
+          title="Refresh current-state data (health checks, running queries, disk)"
+        >
+          <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
+          Refresh now
+        </button>
+        <button
           onClick={() => handleAnalyze({ instance, activeAlerts, queries, tables, disks, s3Stats, cacheStats, tableMemory })}
           className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-purple-400 hover:bg-purple-500/15 border border-purple-500/20 transition-colors"
         >
@@ -316,8 +326,8 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
         </button>
       </div>
 
-      {/* ---- Health checklist ---- */}
-      <HealthChecklist instance={instance} />
+      {/* ---- Health checklist (current state — use Refresh now to re-fetch) ---- */}
+      <HealthChecklist instance={instance} refreshTrigger={currentStateRefreshTick} />
 
       {/* ---- Metric charts: 3-col compact grid (time-range aware) ---- */}
       <div className="grid grid-cols-3 gap-3">

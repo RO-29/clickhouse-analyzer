@@ -5,10 +5,6 @@ import { useStore } from '../hooks/useStore'
 import { cn } from '../lib/utils'
 import type { HealthCheck, Suggestion } from '../types/api'
 
-interface HealthChecklistProps {
-  instance: string
-}
-
 const statusIcon = (status: string) => {
   if (status === 'ok' || status === 'pass')
     return <CheckCircle2 size={16} className="text-green-400 shrink-0" />
@@ -112,18 +108,25 @@ function HealthCard({ check, instance }: { check: HealthCheck; instance: string 
   )
 }
 
-export function HealthChecklist({ instance }: HealthChecklistProps) {
+interface HealthChecklistProps {
+  instance: string
+  refreshTrigger?: number
+}
+
+export function HealthChecklist({ instance, refreshTrigger }: HealthChecklistProps) {
   const [checks, setChecks] = useState<HealthCheck[]>([])
   const [loading, setLoading] = useState(true)
+  const [lastChecked, setLastChecked] = useState<Date | null>(null)
 
   useEffect(() => {
     let cancelled = false
+    setLoading(true)
     api.healthCheck(instance)
-      .then(data => { if (!cancelled) setChecks(data) })
+      .then(data => { if (!cancelled) { setChecks(data); setLastChecked(new Date()) } })
       .catch(() => { if (!cancelled) setChecks([]) })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [instance])
+  }, [instance, refreshTrigger])
 
   if (loading) {
     return (
@@ -141,10 +144,20 @@ export function HealthChecklist({ instance }: HealthChecklistProps) {
   if (checks.length === 0) return null
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-      {checks.map(c => (
-        <HealthCard key={c.id} check={c} instance={instance} />
-      ))}
+    <div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+        {checks.map(c => (
+          <HealthCard key={c.id} check={c} instance={instance} />
+        ))}
+      </div>
+      {lastChecked && (
+        <div className="mt-2 text-[10px] text-[var(--dim)] text-right">
+          <span className="px-1.5 py-0.5 rounded bg-[var(--hover)] border border-[var(--border)]">
+            current state
+          </span>
+          {' '}as of {lastChecked.toLocaleTimeString()}
+        </div>
+      )}
     </div>
   )
 }

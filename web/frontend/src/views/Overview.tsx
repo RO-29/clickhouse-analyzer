@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { Sparkles, RefreshCw } from 'lucide-react'
+import { RefreshCw, Sparkles } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
@@ -11,37 +11,23 @@ import { DataTable } from '../components/DataTable'
 import type { Instance, Alert } from '../types/api'
 
 /* ------------------------------------------------------------------ */
-/*  Stat Card                                                         */
-/* ------------------------------------------------------------------ */
-function StatCard({ label, value, color, sub }: { label: string; value: string | number; color?: string; sub?: string }) {
-  return (
-    <Card>
-      <div className="text-3xl font-bold" style={{ color }}>{value}</div>
-      <div className="text-xs text-[var(--dim)] mt-1 uppercase tracking-wider">{label}</div>
-      {sub && <div className="text-xs text-[var(--dim)] mt-0.5">{sub}</div>}
-    </Card>
-  )
-}
-
-/* ------------------------------------------------------------------ */
 /*  Loading skeleton                                                  */
 /* ------------------------------------------------------------------ */
 function Skeleton() {
   return (
     <div className="space-y-6 animate-pulse">
-      <div className="grid grid-cols-5 gap-4">
-        {[...Array(5)].map((_, i) => (
+      <div className="grid grid-cols-7 gap-3">
+        {[...Array(7)].map((_, i) => (
           <Card key={i}>
-            <div className="h-9 bg-[var(--hover)] rounded w-1/2 mb-2" />
+            <div className="h-8 bg-[var(--hover)] rounded w-1/2 mb-2" />
             <div className="h-3 bg-[var(--hover)] rounded w-2/3" />
           </Card>
         ))}
       </div>
-      <div className="grid grid-cols-3 gap-4">
-        {[...Array(3)].map((_, i) => (
+      <div className="grid grid-cols-2 gap-4">
+        {[...Array(4)].map((_, i) => (
           <Card key={i}>
-            <div className="h-12 bg-[var(--hover)] rounded w-1/3 mb-2" />
-            <div className="h-3 bg-[var(--hover)] rounded w-1/2" />
+            <div className="h-24 bg-[var(--hover)] rounded" />
           </Card>
         ))}
       </div>
@@ -53,55 +39,58 @@ function Skeleton() {
 /*  Overview view                                                     */
 /* ------------------------------------------------------------------ */
 export default function Overview({ refreshKey }: { refreshKey?: number }) {
-  const { setView, setInstance, setInstances } = useStore()
-  // Pick the worst-health instance for analysis (so the analyze call has a valid instance)
+  const { setView, setInstance, setInstances, navToAlerts } = useStore()
   const [analyzeInstance, setAnalyzeInstance] = useState('')
   const { analyze } = useAIAnalysis(analyzeInstance)
   const handleAnalyze = useCallback((data: Record<string, any>) => {
     analyze('Overview', data, { contextType: 'tab', tab: 'overview' })
   }, [analyze])
+
   const [instances, setLocalInstances] = useState<Instance[]>([])
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
+  const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null)
+  const [manualRefreshTick, setManualRefreshTick] = useState(0)
   const isFirstLoad = useRef(true)
 
-  useEffect(() => {
+  const doLoad = useCallback(async (isManual = false) => {
     let cancelled = false
-    async function load() {
-      if (isFirstLoad.current) {
-        setLoading(true)
-      } else {
-        setRefreshing(true)
+    if (isFirstLoad.current) {
+      setLoading(true)
+    } else {
+      setRefreshing(true)
+    }
+    try {
+      const [inst, alrt] = await Promise.all([
+        api.overview(),
+        api.alerts.active(),
+      ])
+      if (!cancelled) {
+        setLocalInstances(inst)
+        setAlerts(alrt)
+        setInstances(inst.map((i) => i.name))
+        setLastRefreshed(new Date())
+        if (inst.length > 0) {
+          const worst = [...inst].sort((a, b) => a.health_score - b.health_score)[0]
+          setAnalyzeInstance(worst.name)
+        }
       }
-      try {
-        const [inst, alrt] = await Promise.all([
-          api.overview(),
-          api.alerts.active(),
-        ])
-        if (!cancelled) {
-          setLocalInstances(inst)
-          setAlerts(alrt)
-          setInstances(inst.map((i) => i.name))
-          // Pick worst-health instance for the analyze button
-          if (inst.length > 0) {
-            const worst = [...inst].sort((a, b) => a.health_score - b.health_score)[0]
-            setAnalyzeInstance(worst.name)
-          }
-        }
-      } catch {
-        // silently handle — user sees empty state
-      } finally {
-        if (!cancelled) {
-          setLoading(false)
-          setRefreshing(false)
-          isFirstLoad.current = false
-        }
+    } catch {
+      // silently handle
+    } finally {
+      if (!cancelled) {
+        setLoading(false)
+        setRefreshing(false)
+        isFirstLoad.current = false
       }
     }
-    load()
     return () => { cancelled = true }
-  }, [setInstances, refreshKey])
+  }, [setInstances])
+
+  useEffect(() => {
+    doLoad()
+  }, [doLoad, refreshKey, manualRefreshTick])
 
   if (loading) return <Skeleton />
 
@@ -113,7 +102,6 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
   const freshAlerts = alerts.filter(isFresh)
   const staleCount = alerts.filter((a) => !a.resolved && (now - (a.updated_at ?? a.created_at)) > staleHours * 3600).length
 
-  // Severity breakdown for fresh (non-stale, non-resolved) alerts
   const critFiring = freshAlerts.filter((a) => a.severity === 'critical').length
   const warnFiring = freshAlerts.filter((a) => a.severity === 'warn').length
   const infoFiring = freshAlerts.filter((a) => a.severity !== 'critical' && a.severity !== 'warn').length
@@ -124,69 +112,55 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
       staleByInstance.set(a.instance, (staleByInstance.get(a.instance) ?? 0) + 1)
     }
   }
-  const firingAlerts = freshAlerts.length
-  // Worst severity color: red if any critical, yellow if any warn, blue if only info
-  const firingColor = critFiring > 0 ? '#ef4444' : warnFiring > 0 ? '#eab308' : infoFiring > 0 ? '#3b82f6' : undefined
-  // Build breakdown sub-label
-  const firingParts: string[] = []
-  if (critFiring > 0) firingParts.push(`${critFiring} crit`)
-  if (warnFiring > 0) firingParts.push(`${warnFiring} warn`)
-  if (infoFiring > 0) firingParts.push(`${infoFiring} info`)
-  const firingSub = firingAlerts > 0 ? firingParts.join(' · ') : undefined
 
-  const avgHealth =
-    totalInstances > 0
-      ? Math.round(instances.reduce((s, i) => s + i.health_score, 0) / totalInstances)
-      : 0
-  const runningQueries = instances.reduce(
-    (s, i) => s + (i.key_metrics?.['running_queries'] ?? i.key_metrics?.['Query'] ?? 0),
-    0,
-  )
-  const activeMerges = instances.reduce(
-    (s, i) => s + (i.key_metrics?.['active_merges'] ?? i.key_metrics?.['Merge'] ?? 0),
-    0,
-  )
+  const avgHealth = totalInstances > 0
+    ? Math.round(instances.reduce((s, i) => s + i.health_score, 0) / totalInstances)
+    : 0
+  const runningQueries = instances.reduce((s, i) => s + (i.key_metrics?.['running_queries'] ?? 0), 0)
+  const activeMerges = instances.reduce((s, i) => s + (i.key_metrics?.['active_merges'] ?? 0), 0)
 
-  /* ---- click handler for instance cards ---- */
   const goToInstance = (name: string) => {
     setInstance(name)
     setView('detail')
   }
 
-  /* ---- alert table columns (using DataTable format API: format receives cell value) ---- */
   const alertCols = [
-    {
-      key: 'severity',
-      label: 'Severity',
-      format: (v: any) => <Badge severity={v} />,
-    },
+    { key: 'severity', label: 'Sev', format: (v: any) => <Badge severity={v} /> },
     { key: 'instance', label: 'Instance' },
     { key: 'category', label: 'Category' },
     { key: 'title', label: 'Title' },
-    {
-      key: 'created_at',
-      label: 'Time',
-      format: (v: any) => <span className="text-[var(--dim)]">{fmtTime(v)}</span>,
-    },
+    { key: 'created_at', label: 'Time', format: (v: any) => <span className="text-[var(--dim)]">{fmtTime(v)}</span> },
   ]
 
   return (
     <div className="space-y-6">
-      {/* ---- Current state notice ---- */}
+      {/* ---- Header: current state label + refresh ---- */}
       <div className="flex items-center gap-3">
-        <div className="flex-1 text-xs text-[var(--dim)] bg-[var(--hover)] rounded-lg px-3 py-2 border border-[var(--border)]">
-          Overview always shows <strong>current state</strong> — health scores, alerts, and metrics reflect right now.
-          Use <strong>Detail</strong> or <strong>Explore</strong> to view historical data with the time range selector.
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-semibold text-[var(--text)]">Overview</span>
+          <span className="text-xs px-1.5 py-0.5 rounded bg-[var(--hover)] text-[var(--dim)] border border-[var(--border)]">current state</span>
+          {lastRefreshed && (
+            <span className="text-xs text-[var(--dim)]">as of {lastRefreshed.toLocaleTimeString()}</span>
+          )}
         </div>
+        <div className="flex-1" />
         {refreshing && (
-          <div className="flex items-center gap-1.5 text-xs text-[var(--dim)] shrink-0">
+          <div className="flex items-center gap-1.5 text-xs text-[var(--dim)]">
             <RefreshCw size={11} className="animate-spin" />
             Refreshing…
           </div>
         )}
         <button
-          onClick={() => handleAnalyze({ instances, alerts, avgHealth, firingAlerts, staleCount, runningQueries, activeMerges })}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-purple-400 hover:bg-purple-500/15 border border-purple-500/20 transition-colors shrink-0"
+          onClick={() => setManualRefreshTick(t => t + 1)}
+          disabled={refreshing}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-[var(--dim)] hover:bg-[var(--hover)] border border-[var(--border)] transition-colors disabled:opacity-50"
+        >
+          <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
+          Refresh
+        </button>
+        <button
+          onClick={() => handleAnalyze({ instances, alerts, avgHealth, critFiring, warnFiring, infoFiring, staleCount, runningQueries, activeMerges })}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-purple-400 hover:bg-purple-500/15 border border-purple-500/20 transition-colors"
         >
           <Sparkles size={11} />
           Analyze
@@ -194,20 +168,61 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
       </div>
 
       {/* ---- Stat cards ---- */}
-      <div className="grid grid-cols-5 gap-4">
-        <StatCard label="Instances" value={totalInstances} />
-        <StatCard
-          label="Firing Alerts"
-          value={firingAlerts}
-          color={firingColor}
-          sub={firingSub ?? (staleCount > 0 ? `+${staleCount} stale` : undefined)}
-        />
-        <StatCard label="Avg Health" value={avgHealth} color={scoreColor(avgHealth)} />
-        <StatCard label="Running Queries" value={fmtNum(runningQueries)} />
-        <StatCard label="Active Merges" value={fmtNum(activeMerges)} />
+      <div className="grid grid-cols-7 gap-3">
+        {/* Summary: instances, health, queries, merges */}
+        <Card>
+          <div className="text-2xl font-bold">{totalInstances}</div>
+          <div className="text-xs text-[var(--dim)] mt-1 uppercase tracking-wider">Instances</div>
+        </Card>
+        <Card>
+          <div className="text-2xl font-bold" style={{ color: scoreColor(avgHealth) }}>{avgHealth}</div>
+          <div className="text-xs text-[var(--dim)] mt-1 uppercase tracking-wider">Avg Health</div>
+        </Card>
+        <Card>
+          <div className="text-2xl font-bold">{fmtNum(runningQueries)}</div>
+          <div className="text-xs text-[var(--dim)] mt-1 uppercase tracking-wider">Running Queries</div>
+        </Card>
+        <Card>
+          <div className="text-2xl font-bold">{fmtNum(activeMerges)}</div>
+          <div className="text-xs text-[var(--dim)] mt-1 uppercase tracking-wider">Active Merges</div>
+        </Card>
+
+        {/* Alert severity cards — clickable */}
+        <button
+          onClick={() => critFiring > 0 && navToAlerts({ severity: 'critical' })}
+          disabled={critFiring === 0}
+          className="text-left disabled:cursor-default"
+        >
+          <Card className={critFiring > 0 ? 'hover:border-red-500/40 transition-colors cursor-pointer' : ''}>
+            <div className={`text-2xl font-bold ${critFiring > 0 ? 'text-red-400' : 'text-[var(--dim)]'}`}>{critFiring}</div>
+            <div className="text-xs text-[var(--dim)] mt-1 uppercase tracking-wider">Critical</div>
+          </Card>
+        </button>
+        <button
+          onClick={() => warnFiring > 0 && navToAlerts({ severity: 'warn' })}
+          disabled={warnFiring === 0}
+          className="text-left disabled:cursor-default"
+        >
+          <Card className={warnFiring > 0 ? 'hover:border-yellow-500/40 transition-colors cursor-pointer' : ''}>
+            <div className={`text-2xl font-bold ${warnFiring > 0 ? 'text-yellow-400' : 'text-[var(--dim)]'}`}>{warnFiring}</div>
+            <div className="text-xs text-[var(--dim)] mt-1 uppercase tracking-wider">Warning</div>
+          </Card>
+        </button>
+        <button
+          onClick={() => infoFiring > 0 && navToAlerts({ severity: 'info' })}
+          disabled={infoFiring === 0}
+          className="text-left disabled:cursor-default"
+        >
+          <Card className={infoFiring > 0 ? 'hover:border-blue-500/40 transition-colors cursor-pointer' : ''}>
+            <div className={`text-2xl font-bold ${infoFiring > 0 ? 'text-blue-400' : 'text-[var(--dim)]'}`}>{infoFiring}</div>
+            <div className="text-xs text-[var(--dim)] mt-1 uppercase tracking-wider">
+              Info{staleCount > 0 ? <span className="ml-1 text-gray-500 normal-case font-normal">+{staleCount} stale</span> : null}
+            </div>
+          </Card>
+        </button>
       </div>
 
-      {/* ---- Instance node cards with area triage ---- */}
+      {/* ---- Instance node cards ---- */}
       <div className="grid grid-cols-2 gap-4">
         {instances.map((inst) => (
           <NodeCard
@@ -219,9 +234,9 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
         ))}
       </div>
 
-      {/* ---- Active alerts table (fresh only — no stale/resolved) ---- */}
+      {/* ---- Active alerts table (fresh only) ---- */}
       {freshAlerts.length > 0 && (
-        <Card title={`Active Alerts${staleCount > 0 ? ` · ${staleCount} stale hidden` : ''}`}>
+        <Card title={`Active Alerts · ${freshAlerts.length}${staleCount > 0 ? ` (${staleCount} stale hidden)` : ''}`}>
           <DataTable columns={alertCols} data={freshAlerts} maxRows={30} />
         </Card>
       )}

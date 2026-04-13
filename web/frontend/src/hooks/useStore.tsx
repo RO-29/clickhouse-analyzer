@@ -41,6 +41,9 @@ export interface Store {
   /** Returns current {from, to} epoch seconds */
   getTimeRange: () => { from: number; to: number }
   navToDetail: (instance: string) => void
+  navToAlerts: (filters?: { severity?: string; instance?: string }) => void
+  alertPreset: { severity?: string; instance?: string } | null
+  setAlertPreset: (preset: { severity?: string; instance?: string } | null) => void
   navToTerminal: (query: string, instance: string) => void
   openTableDetail: (instance: string, database: string, table: string) => void
   closeTableDetail: () => void
@@ -71,6 +74,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [terminalQuery, setTerminalQuery] = useState('')
   const [terminalInstance, setTerminalInstance] = useState('')
   const [tableDetail, setTableDetail] = useState<{ instance: string; database: string; table: string } | null>(null)
+  const [alertPreset, setAlertPreset] = useState<{ severity?: string; instance?: string } | null>(null)
   const [aiEntries, setAiEntries] = useState<AnalysisEntry[]>([])
   const [aiPanelOpen, setAiPanelOpen] = useState(false)
   const clearAiEntries = useCallback(() => setAiEntries([]), [])
@@ -104,6 +108,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const navToDetail = useCallback((instance: string) => {
     setSelectedInstance(instance)
     setView('detail')
+  }, [])
+
+  const navToAlerts = useCallback((filters?: { severity?: string; instance?: string }) => {
+    setAlertPreset(filters ?? null)
+    setView('alerts')
   }, [])
 
   const navToTerminal = useCallback((query: string, instance: string) => {
@@ -145,7 +154,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     tableDetail,
     aiEntries, aiPanelOpen,
     setAiEntries, setAiPanelOpen, clearAiEntries,
-    navToDetail, navToTerminal,
+    navToDetail, navToAlerts, alertPreset, setAlertPreset,
+    navToTerminal,
     openTableDetail, closeTableDetail,
   }
 

@@ -451,9 +451,17 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type topAlert struct {
-		Severity string `json:"severity"`
-		Category string `json:"category"`
-		Title    string `json:"title"`
+		Severity          string `json:"severity"`
+		Category          string `json:"category"`
+		Title             string `json:"title"`
+		PossiblyRecovered bool   `json:"possibly_recovered"`
+		CreatedAt         int64  `json:"created_at"`
+	}
+
+	type alertCounts struct {
+		Crit int `json:"crit"`
+		Warn int `json:"warn"`
+		Info int `json:"info"`
 	}
 
 	type instanceSummary struct {
@@ -461,6 +469,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		HealthScore  float64            `json:"health_score"`
 		Status       string             `json:"status"`
 		ActiveAlerts int                `json:"active_alerts"`
+		AlertCounts  alertCounts        `json:"alert_counts"`
 		KeyMetrics   map[string]float64 `json:"key_metrics"`
 		AreaStatus   []areaStatus       `json:"area_status"`
 		TopAlerts    []topAlert         `json:"top_alerts"`
@@ -547,6 +556,10 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 				switch m.Name {
 				case "memory_rss", "memory_tracked", "cpu_user", "cpu_system", "insert_rows_per_sec":
 					keyMetrics[m.Name] = m.Value
+				case "memory_usage_percent":
+					keyMetrics["memory_pct"] = m.Value
+				case "cpu_usage_percent":
+					keyMetrics["cpu_pct"] = m.Value
 				case "queries.running_count":
 					keyMetrics["running_queries"] = m.Value
 				case "tables.merges.active_count":
@@ -595,13 +608,33 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 
-		// Top alerts: use fresh only, sort by severity (critical first), take top 3.
+		// Alert severity breakdown counts.
+		counts := alertCounts{}
+		for _, a := range freshAlerts {
+			switch a.Severity {
+			case "critical":
+				counts.Crit++
+			case "warn":
+				counts.Warn++
+			default:
+				counts.Info++
+			}
+		}
+
+		// Top alerts: fresh only, sorted by severity (critical first), top 3.
+		// Mark possibly_recovered when current area metrics are back to "ok"
+		// despite the alert still being active.
 		sorted := make([]topAlert, 0, len(freshAlerts))
 		for _, a := range freshAlerts {
+			area := categoryToArea[a.Category]
+			currentStatus := areaWorst[area]
+			possiblyRecovered := (a.Severity == "critical" || a.Severity == "warn") && currentStatus == "ok"
 			sorted = append(sorted, topAlert{
-				Severity: a.Severity,
-				Category: a.Category,
-				Title:    a.Title,
+				Severity:          a.Severity,
+				Category:          a.Category,
+				Title:             a.Title,
+				PossiblyRecovered: possiblyRecovered,
+				CreatedAt:         a.CreatedAt.Unix(),
 			})
 		}
 		sort.Slice(sorted, func(i, j int) bool {
@@ -616,6 +649,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 			HealthScore:  score,
 			Status:       status,
 			ActiveAlerts: len(freshAlerts),
+			AlertCounts:  counts,
 			KeyMetrics:   keyMetrics,
 			AreaStatus:   areas,
 			TopAlerts:    sorted,

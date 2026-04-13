@@ -126,6 +126,38 @@ func (am *AlertManager) Start(ctx context.Context) {
 	)
 }
 
+// Rehydrate loads previously-active alerts from the store back into the
+// in-memory tracking map after a restart. This prevents alerts from being
+// orphaned when the server restarts while alerts are still active: without
+// rehydration the clean-check loop never runs for pre-restart alerts, so they
+// stay "active" in ClickHouse indefinitely even after conditions clear.
+//
+// Call Rehydrate once, after Start, before the first polling cycle.
+func (am *AlertManager) Rehydrate(alerts []collector.Alert) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	now := time.Now()
+	n := 0
+	for _, a := range alerts {
+		key := a.DedupKey
+		if key == "" {
+			key = fmt.Sprintf("%s:%s:%s", a.Instance, a.Category, a.Title)
+		}
+		if _, exists := am.activeAlerts[key]; !exists {
+			am.activeAlerts[key] = &ActiveAlert{
+				Alert:     a,
+				FirstSeen: now,
+				LastSeen:  now,
+				Count:     1,
+			}
+			n++
+		}
+	}
+	if n > 0 {
+		am.logger.Info("rehydrated active alerts from store", slog.Int("count", n))
+	}
+}
+
 // Stop gracefully shuts down background goroutines and flushes any remaining
 // warn batch. It blocks until everything is drained.
 func (am *AlertManager) Stop() {

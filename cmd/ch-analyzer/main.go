@@ -134,6 +134,33 @@ func main() {
 	)
 	alertMgr.Start(ctx)
 
+	// Rehydrate alerter with active alerts persisted in ClickHouse. Without
+	// this, a server restart orphans any alerts that were firing before the
+	// restart: the clean-check loop never counts them as absent, so they stay
+	// "active" forever even after conditions clear.
+	{
+		var storeAlerts []collector.Alert
+		for _, name := range clientMgr.Names() {
+			active, err := metricStore.GetActiveAlerts(name)
+			if err != nil {
+				slog.Warn("rehydrate: failed to load active alerts", "instance", name, "err", err)
+				continue
+			}
+			for _, a := range active {
+				storeAlerts = append(storeAlerts, collector.Alert{
+					Instance:  a.Instance,
+					Severity:  collector.Severity(a.Severity),
+					Category:  a.Category,
+					Title:     a.Title,
+					Message:   a.Message,
+					DedupKey:  a.DedupKey,
+					Timestamp: a.CreatedAt,
+				})
+			}
+		}
+		alertMgr.Rehydrate(storeAlerts)
+	}
+
 	// Initialize collectors
 	collectors := buildCollectors(cfg)
 
