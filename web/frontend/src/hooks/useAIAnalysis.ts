@@ -1,10 +1,10 @@
 import { useCallback } from 'react'
 import { useStore } from './useStore'
 import { notifyDone, notifyError, requestNotifPermission } from '../lib/notify'
-import type { AnalysisEntry, AnalyzeOptions, AISession } from '../types/api'
+import type { ChatSession, ChatMessage, AnalyzeOptions } from '../types/api'
 
 // Re-export so existing imports from this module keep working
-export type { AnalysisEntry, AnalyzeOptions }
+export type { AnalyzeOptions }
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 9)
@@ -57,64 +57,74 @@ async function readStream(
 
 export function useAIAnalysis(instance: string) {
   const {
-    aiSessions, setAiSessions,
-    activeSessionId, setActiveSessionId,
+    chatSessions, setChatSessions,
+    activeChatId, setActiveChatId,
     aiPanelOpen: isOpen, setAiPanelOpen: setIsOpen,
   } = useStore()
 
-  // Update a specific entry within a specific session
-  const updateEntry = useCallback((
+  // Update a specific message within a specific session
+  const updateMessage = useCallback((
     sessionId: string,
-    entryId: string,
-    updater: (e: AnalysisEntry) => AnalysisEntry,
+    msgId: string,
+    updater: (m: ChatMessage) => ChatMessage,
   ) => {
-    setAiSessions(prev => prev.map(s =>
+    setChatSessions(prev => prev.map(s =>
       s.id === sessionId
-        ? { ...s, updatedAt: Date.now(), entries: s.entries.map(e => e.id === entryId ? updater(e) : e) }
+        ? { ...s, updatedAt: Date.now(), messages: s.messages.map(m => m.id === msgId ? updater(m) : m) }
         : s
     ))
-  }, [setAiSessions])
+  }, [setChatSessions])
 
   const analyze = useCallback(async (
     label: string,
     visibleData: Record<string, any>,
     options: AnalyzeOptions,
   ) => {
-    const entryId = generateId()
     const now = Date.now()
+    const userMsgId = generateId()
+    const assistantMsgId = generateId()
 
-    const newEntry: AnalysisEntry = {
-      id: entryId,
-      label,
-      contextType: options.contextType,
-      tab: options.tab,
-      elementId: options.elementId,
-      status: 'streaming',
-      output: '',
+    const userMsg: ChatMessage = {
+      id: userMsgId,
+      role: 'user',
+      content: label,
+      status: 'done',
       timestamp: now,
     }
 
+    const assistantMsg: ChatMessage = {
+      id: assistantMsgId,
+      role: 'assistant',
+      content: '',
+      status: 'streaming',
+      phase: 'planning',
+      timestamp: now,
+      thinkingLines: [],
+      steps: [],
+    }
+
     // Find or create session; create new one if instance changed
-    let sessionId = activeSessionId
-    const existingSession = aiSessions.find(s => s.id === sessionId)
+    let sessionId = activeChatId
+    const existingSession = chatSessions.find(s => s.id === sessionId)
     const instanceMismatch = instance && existingSession?.instance && existingSession.instance !== instance
 
     if (!sessionId || !existingSession || instanceMismatch) {
-      const session: AISession = {
+      const session: ChatSession = {
         id: generateId(),
         name: label,
         instance: instance || '',
         createdAt: now,
         updatedAt: now,
-        entries: [newEntry],
+        timeWindowMins: 60,
+        messages: [userMsg, assistantMsg],
       }
-      setAiSessions(prev => [session, ...prev])
-      setActiveSessionId(session.id)
+      setChatSessions(prev => [session, ...prev])
+      setActiveChatId(session.id)
       sessionId = session.id
     } else {
-      setAiSessions(prev => prev.map(s =>
+      setChatSessions(prev => prev.map(s =>
         s.id === sessionId
-          ? { ...s, updatedAt: now, entries: [newEntry, ...s.entries] }
+          ? { ...s, updatedAt: now, messages: [...s.messages, userMsg, assistantMsg] }
           : s
       ))
     }
@@ -143,7 +153,7 @@ export function useAIAnalysis(instance: string) {
       if (!resp.ok || !resp.body) {
         let msg = `HTTP ${resp.status}`
         try { const j = await resp.json(); if (j?.error) msg = j.error } catch {}
-        updateEntry(sessionId!, entryId, e => ({ ...e, status: 'error', output: `Error: ${msg}` }))
+        updateMessage(sessionId!, assistantMsgId, m => ({ ...m, status: 'error', content: `Error: ${msg}` }))
         fireNotifyError()
         return
       }
@@ -151,58 +161,67 @@ export function useAIAnalysis(instance: string) {
       let doneSignaled = false
       await readStream(
         resp,
-        text => updateEntry(sessionId!, entryId, e => ({ ...e, output: e.output + text })),
+        text => updateMessage(sessionId!, assistantMsgId, m => ({ ...m, content: m.content + text })),
         msg => {
-          updateEntry(sessionId!, entryId, e => ({ ...e, status: 'error', output: e.output + `\n\n**Error:** ${msg}` }))
+          updateMessage(sessionId!, assistantMsgId, m => ({ ...m, status: 'error', content: m.content + `\n\n**Error:** ${msg}` }))
           fireNotifyError()
         },
         () => {
           doneSignaled = true
-          updateEntry(sessionId!, entryId, e => ({ ...e, status: 'done' }))
+          updateMessage(sessionId!, assistantMsgId, m => ({ ...m, status: 'done', phase: 'done' }))
         },
       )
-      if (!doneSignaled) updateEntry(sessionId!, entryId, e => e.status === 'streaming' ? { ...e, status: 'done' } : e)
+      if (!doneSignaled) updateMessage(sessionId!, assistantMsgId, m => m.status === 'streaming' ? { ...m, status: 'done', phase: 'done' } : m)
       fireNotifyDone()
     } catch (err: any) {
-      updateEntry(sessionId!, entryId, e => ({ ...e, status: 'error', output: `Error: ${err.message}` }))
+      updateMessage(sessionId!, assistantMsgId, m => ({ ...m, status: 'error', content: `Error: ${err.message}` }))
       fireNotifyError()
     }
-  }, [instance, aiSessions, activeSessionId, setAiSessions, setActiveSessionId, setIsOpen, updateEntry])
+  }, [instance, chatSessions, activeChatId, setChatSessions, setActiveChatId, setIsOpen, updateMessage])
 
   const followUp = useCallback(async (question: string) => {
-    if (!question.trim() || !activeSessionId) return
+    if (!question.trim() || !activeChatId) return
 
-    const session = aiSessions.find(s => s.id === activeSessionId)
+    const session = chatSessions.find(s => s.id === activeChatId)
     if (!session) return
 
-    // Build history context (up to 5 most recent completed entries)
-    const history = session.entries
-      .filter(e => e.status !== 'streaming')
-      .slice(0, 5)
-      .map(e => ({ label: e.label, output: e.output.slice(0, 2000) }))
+    // Build history context from completed assistant messages (up to 5 most recent)
+    const history = session.messages
+      .filter(m => m.role === 'assistant' && m.status !== 'streaming')
+      .slice(-5)
+      .map(m => ({ label: m.content.slice(0, 60), output: m.content.slice(0, 2000) }))
 
-    const lastEntry = session.entries[0]
-    const tab = lastEntry?.tab ?? 'advisor'
+    // Derive tab from session name or use 'advisor' as fallback
+    const tab = 'advisor'
 
     const trimmed = question.trim()
     const label = `Q: ${trimmed.slice(0, 60)}${trimmed.length > 60 ? '…' : ''}`
-    const entryId = generateId()
     const now = Date.now()
+    const userMsgId = generateId()
+    const assistantMsgId = generateId()
 
-    const newEntry: AnalysisEntry = {
-      id: entryId,
-      label,
-      contextType: 'followup',
-      tab,
-      status: 'streaming',
-      output: '',
+    const userMsg: ChatMessage = {
+      id: userMsgId,
+      role: 'user',
+      content: trimmed,
+      status: 'done',
       timestamp: now,
-      question: trimmed,
     }
 
-    setAiSessions(prev => prev.map(s =>
-      s.id === activeSessionId
-        ? { ...s, updatedAt: now, entries: [newEntry, ...s.entries] }
+    const assistantMsg: ChatMessage = {
+      id: assistantMsgId,
+      role: 'assistant',
+      content: '',
+      status: 'streaming',
+      phase: 'planning',
+      timestamp: now,
+      thinkingLines: [],
+      steps: [],
+    }
+
+    setChatSessions(prev => prev.map(s =>
+      s.id === activeChatId
+        ? { ...s, updatedAt: now, messages: [...s.messages, userMsg, assistantMsg] }
         : s
     ))
     setIsOpen(true)
@@ -230,7 +249,7 @@ export function useAIAnalysis(instance: string) {
       if (!resp.ok || !resp.body) {
         let msg = `HTTP ${resp.status}`
         try { const j = await resp.json(); if (j?.error) msg = j.error } catch {}
-        updateEntry(activeSessionId, entryId, e => ({ ...e, status: 'error', output: `Error: ${msg}` }))
+        updateMessage(activeChatId, assistantMsgId, m => ({ ...m, status: 'error', content: `Error: ${msg}` }))
         fireNotifyError()
         return
       }
@@ -238,42 +257,40 @@ export function useAIAnalysis(instance: string) {
       let doneSignaled = false
       await readStream(
         resp,
-        text => updateEntry(activeSessionId, entryId, e => ({ ...e, output: e.output + text })),
+        text => updateMessage(activeChatId, assistantMsgId, m => ({ ...m, content: m.content + text })),
         msg => {
-          updateEntry(activeSessionId, entryId, e => ({ ...e, status: 'error', output: e.output + `\n\n**Error:** ${msg}` }))
+          updateMessage(activeChatId, assistantMsgId, m => ({ ...m, status: 'error', content: m.content + `\n\n**Error:** ${msg}` }))
           fireNotifyError()
         },
         () => {
           doneSignaled = true
-          updateEntry(activeSessionId, entryId, e => ({ ...e, status: 'done' }))
+          updateMessage(activeChatId, assistantMsgId, m => ({ ...m, status: 'done', phase: 'done' }))
         },
       )
-      if (!doneSignaled) updateEntry(activeSessionId, entryId, e => e.status === 'streaming' ? { ...e, status: 'done' } : e)
+      if (!doneSignaled) updateMessage(activeChatId, assistantMsgId, m => m.status === 'streaming' ? { ...m, status: 'done', phase: 'done' } : m)
       fireNotifyDone()
     } catch (err: any) {
-      updateEntry(activeSessionId, entryId, e => ({ ...e, status: 'error', output: `Error: ${err.message}` }))
+      updateMessage(activeChatId, assistantMsgId, m => ({ ...m, status: 'error', content: `Error: ${err.message}` }))
       fireNotifyError()
     }
-  }, [instance, aiSessions, activeSessionId, setAiSessions, setIsOpen, updateEntry])
+  }, [instance, chatSessions, activeChatId, setChatSessions, setIsOpen, updateMessage])
 
   const newSession = useCallback(() => {
-    setActiveSessionId(null)
-  }, [setActiveSessionId])
+    setActiveChatId(null)
+  }, [setActiveChatId])
 
   const deleteSession = useCallback((sessionId: string) => {
-    setAiSessions(prev => prev.filter(s => s.id !== sessionId))
-    if (activeSessionId === sessionId) setActiveSessionId(null)
-  }, [setAiSessions, activeSessionId, setActiveSessionId])
-
-  // Backward compat: expose active session entries
-  const activeSession = aiSessions.find(s => s.id === activeSessionId)
-  const entries = activeSession?.entries ?? []
+    setChatSessions(prev => prev.filter(s => s.id !== sessionId))
+    if (activeChatId === sessionId) setActiveChatId(null)
+  }, [setChatSessions, activeChatId, setActiveChatId])
 
   return {
-    sessions: aiSessions,
-    entries,
-    activeSessionId,
-    setActiveSessionId,
+    sessions: chatSessions,
+    activeChatId,
+    setActiveChatId,
+    // Aliases for backward compat with App.tsx destructuring
+    activeSessionId: activeChatId,
+    setActiveSessionId: setActiveChatId,
     isOpen,
     setIsOpen,
     analyze,

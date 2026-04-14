@@ -116,27 +116,44 @@ export interface DiskInfo {
   free_readable: string; total_readable: string; used_percent: number
 }
 
-export interface AnalysisEntry {
+// Chat session model (replaces AISession + AnalysisEntry)
+export interface ChatSession {
+  id: string
+  name: string              // first user message, truncated
+  instance: string
+  timeWindowMins: number
+  createdAt: number         // epoch ms
+  updatedAt: number         // epoch ms
+  messages: ChatMessage[]
+}
+
+export interface ChatMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string           // user: question text; assistant: streamed markdown output
+  status: 'streaming' | 'done' | 'error'
+  timestamp: number         // epoch ms
+  // Assistant-only fields:
+  phase?: 'planning' | 'collecting' | 'streaming' | 'done' | 'error'
+  thinkingLines?: ThinkingLine[]
+  steps?: StepInfo[]
+}
+
+export interface ThinkingLine {
+  kind: 'plan' | 'tool' | 'sql'
+  text: string
+}
+
+export interface StepInfo {
   id: string
   label: string
-  contextType: 'tab' | 'row' | 'chart' | 'followup'
-  tab: string
-  elementId?: string
-  status: 'streaming' | 'done' | 'error'
-  output: string
-  timestamp: number  // epoch ms
-  question?: string  // user-typed follow-up question
+  sql?: string
+  status: 'pending' | 'running' | 'done' | 'error'
+  rowCount?: number
+  elapsedMs?: number
 }
 
-export interface AISession {
-  id: string
-  name: string       // auto-named from first entry's label
-  instance: string
-  createdAt: number  // epoch ms
-  updatedAt: number  // epoch ms
-  entries: AnalysisEntry[]
-}
-
+// Keep AnalyzeOptions for inline Analyze buttons on other tabs
 export interface AnalyzeOptions {
   contextType: 'tab' | 'row' | 'chart' | 'followup'
   tab: string

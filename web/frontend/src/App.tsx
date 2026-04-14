@@ -11,7 +11,7 @@ import Advisor from './views/Advisor'
 import Terminal from './views/Terminal'
 import AppLogs from './views/AppLogs'
 import CHLogs from './views/CHLogs'
-import QueryAnalyzer from './views/QueryAnalyzer'
+import ChatAnalyzer from './views/ChatAnalyzer'
 import { TableDetail } from './components/TableDetail'
 import { AIAnalysisPanel } from './components/AIAnalysisPanel'
 import { useAIAnalysis, PANEL_EXPANDED_HEIGHT, PANEL_COLLAPSED_HEIGHT } from './hooks/useAIAnalysis'
@@ -22,7 +22,7 @@ function Layout() {
   const { view, refreshInterval, sidebarCollapsed, setInstances, tableDetail, closeTableDetail, selectedInstance } = useStore()
   const intervalRef = useRef<number>(0)
   const [tick, setTick] = useState(0)
-  // Mount QueryAnalyzer once on first visit and keep it alive (preserves session state)
+  // Mount ChatAnalyzer once on first visit and keep it alive (preserves session state)
   const [analyzerMounted, setAnalyzerMounted] = useState(view === 'analyzer')
   const {
     sessions: aiSessions,
@@ -42,7 +42,7 @@ function Layout() {
     api.overview().then(data => setInstances(data.map(i => i.name))).catch(() => {})
   }, [setInstances])
 
-  // Mount analyzer on first visit, keep forever after
+  // Mount chat analyzer on first visit, keep forever after
   useEffect(() => {
     if (view === 'analyzer') setAnalyzerMounted(true)
   }, [view])
@@ -79,10 +79,10 @@ function Layout() {
             ? 'overflow-hidden flex flex-col'
             : 'p-6 max-w-[1600px] mx-auto overflow-auto',
         )}>
-          {/* AI Analyzer: mount once and keep alive (hidden when inactive) to preserve session */}
+          {/* Chat Analyzer: mount once and keep alive (hidden when inactive) to preserve session */}
           {analyzerMounted && (
             <div className={cn('flex-1 flex flex-col min-h-0 overflow-hidden', view !== 'analyzer' && 'hidden')}>
-              <QueryAnalyzer />
+              <ChatAnalyzer />
             </div>
           )}
           {/* All other views */}
