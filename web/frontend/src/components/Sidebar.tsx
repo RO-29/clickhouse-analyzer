@@ -50,12 +50,11 @@ export function Sidebar() {
   // Initial load
   useEffect(() => { fetchInstances() }, [fetchInstances])
 
-  // Auto-refresh health scores using the same interval as the rest of the app
+  // Always auto-refresh health scores every 60s (independent of global refresh setting)
   useEffect(() => {
-    if (refreshInterval <= 0) return
-    const id = setInterval(fetchInstances, refreshInterval * 1000)
+    const id = setInterval(fetchInstances, 60_000)
     return () => clearInterval(id)
-  }, [refreshInterval, fetchInstances])
+  }, [fetchInstances])
 
   const manualRefresh = useCallback(async () => {
     setRefreshing(true)
@@ -85,11 +84,12 @@ export function Sidebar() {
             const Icon = item.icon
             const active = view === item.view
             return (
-              <button
+              <a
                 key={item.view}
-                onClick={() => setView(item.view)}
+                href={`?view=${item.view}`}
+                onClick={(e) => { e.preventDefault(); setView(item.view) }}
                 className={cn(
-                  'w-full flex items-center gap-2.5 rounded-lg text-sm transition-colors',
+                  'w-full flex items-center gap-2.5 rounded-lg text-sm transition-colors no-underline',
                   collapsed ? 'justify-center px-0 py-2.5' : 'px-3 py-2',
                   active
                     ? 'bg-[var(--accent)]/15 text-[var(--accent)]'
@@ -99,7 +99,7 @@ export function Sidebar() {
               >
                 <Icon size={18} className="shrink-0" />
                 {!collapsed && <span>{item.label}</span>}
-              </button>
+              </a>
             )
           })}
         </div>

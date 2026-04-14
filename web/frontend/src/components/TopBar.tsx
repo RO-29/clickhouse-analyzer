@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Sun, Moon } from 'lucide-react'
 import { useStore, type View } from '../hooks/useStore'
 import { cn } from '../lib/utils'
 
@@ -30,7 +31,7 @@ const QUICK_RANGES = [
 ]
 
 export function TopBar() {
-  const { view, selectedInstance, rangePreset, setRangePreset, setCustomRange } = useStore()
+  const { view, selectedInstance, rangePreset, setRangePreset, setCustomRange, theme, toggleTheme } = useStore()
 
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
@@ -57,8 +58,16 @@ export function TopBar() {
         {/* Left: page title */}
         <h1 className="text-sm font-semibold truncate">{title}</h1>
 
-        {/* Right: time range controls — only for time-aware views */}
-        {!showTimeRange ? <div /> : <div className="flex items-center gap-2">
+        {/* Right: theme toggle + time range controls */}
+        <div className="flex items-center gap-3">
+          <button
+            onClick={toggleTheme}
+            className="p-1.5 rounded-lg text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)] transition-colors"
+            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          >
+            {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+          </button>
+        {!showTimeRange ? null : <div className="flex items-center gap-2">
           {/* Presets */}
           <div className="flex items-center bg-[var(--surface)] rounded-lg border border-[var(--border)] p-0.5">
             {PRESETS.map(p => (
@@ -121,6 +130,7 @@ export function TopBar() {
             </button>
           </div>
         </div>}
+        </div>
       </div>
     </header>
   )

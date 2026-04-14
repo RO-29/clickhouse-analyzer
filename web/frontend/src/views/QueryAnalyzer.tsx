@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity, AlertCircle, CheckCircle2, ChevronDown,
-  ClipboardCopy, Clock, Database, Loader2, RefreshCw, Send, Sparkles, X,
+  ClipboardCopy, Clock, Database, Loader2, RefreshCw, Send, Sparkles, X, History,
 } from 'lucide-react'
 import { marked } from 'marked'
 import { useStore } from '../hooks/useStore'
 import { cn } from '../lib/utils'
+import type { AnalysisEntry } from '../types/api'
 
 /* ─── marked config ──────────────────────────────────────────────────────── */
 
@@ -279,7 +280,7 @@ function RunningInfoCard({ mode, instance, timeWindow, phase, steps, linesReceiv
 /* ─── Main component ─────────────────────────────────────────────────────── */
 
 export default function QueryAnalyzer() {
-  const { instances, selectedInstance } = useStore()
+  const { instances, selectedInstance, aiEntries } = useStore()
 
   const [instance, setInstance] = useState(selectedInstance || instances[0] || '')
   const [mode, setMode] = useState<ModeId>('full')
@@ -292,6 +293,9 @@ export default function QueryAnalyzer() {
   const [output, setOutput] = useState('')
   const [errorMsg, setErrorMsg] = useState('')
   const [linesReceived, setLinesReceived] = useState(0)
+
+  // History: inline + deep analyses
+  const [selectedEntry, setSelectedEntry] = useState<AnalysisEntry | null>(null)
 
   const abortRef = useRef<AbortController | null>(null)
   const outputRef = useRef<HTMLDivElement>(null)
@@ -320,6 +324,7 @@ export default function QueryAnalyzer() {
     setOutput('')
     setErrorMsg('')
     setFollowUp('')
+    setSelectedEntry(null)
   }, [stopStream])
 
   const runAnalysis = useCallback((appendQuestion?: string) => {
@@ -593,13 +598,87 @@ export default function QueryAnalyzer() {
             </button>
           )}
         </div>
+
+        {/* ── History panel ── */}
+        {aiEntries.length > 0 && (
+          <div className="border-t border-[var(--border)] pt-3 mt-2">
+            <div className="flex items-center gap-1.5 mb-2">
+              <History size={10} className="text-[var(--dim)]" />
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--dim)]">History</span>
+              <span className="ml-auto text-[10px] text-[var(--dim)]">{aiEntries.length}</span>
+            </div>
+            <div className="space-y-1 max-h-60 overflow-y-auto pr-0.5">
+              {aiEntries.map((entry) => {
+                const isSelected = selectedEntry?.id === entry.id
+                const ts = entry.timestamp
+                const timeStr = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                const dateStr = ts.toLocaleDateString([], { month: 'short', day: 'numeric' })
+                const today = new Date().toDateString() === ts.toDateString()
+                return (
+                  <button
+                    key={entry.id}
+                    onClick={() => { setSelectedEntry(isSelected ? null : entry); if (!isSelected) { stopStream(); setPhase('idle'); setOutput(''); setErrorMsg('') } }}
+                    className={cn(
+                      'w-full text-left rounded-lg border px-2.5 py-2 transition-colors',
+                      isSelected
+                        ? 'border-purple-500/40 bg-purple-500/10'
+                        : 'border-[var(--border)] hover:border-purple-500/20 hover:bg-[var(--surface)]',
+                    )}
+                  >
+                    <div className="flex items-center gap-1 mb-0.5">
+                      <span className={cn(
+                        'w-1.5 h-1.5 rounded-full shrink-0',
+                        entry.status === 'done' ? 'bg-green-400' : entry.status === 'error' ? 'bg-red-400' : 'bg-yellow-400 animate-pulse',
+                      )} />
+                      <span className="text-[10px] text-[var(--dim)] ml-auto">{today ? timeStr : `${dateStr} ${timeStr}`}</span>
+                    </div>
+                    <div className="text-[11px] text-[var(--fg)] truncate leading-tight">{entry.label}</div>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* ── Main content ─────────────────────────────────────────────────── */}
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
 
+        {/* History entry viewer */}
+        {showSetup && selectedEntry && (
+          <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+            <div className="flex items-center gap-2 px-4 py-2 border-b border-[var(--border)] shrink-0 bg-[var(--card)]">
+              <Sparkles size={13} className="text-purple-400" />
+              <span className="text-xs font-medium text-[var(--fg)] flex-1 truncate">{selectedEntry.label}</span>
+              <span className="text-xs text-[var(--dim)]">
+                {selectedEntry.timestamp.toLocaleDateString([], { month: 'short', day: 'numeric' })} {selectedEntry.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </span>
+              <button onClick={() => setSelectedEntry(null)} className="text-[var(--dim)] hover:text-[var(--fg)] transition-colors ml-1">
+                <X size={13} />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto px-5 py-4">
+              {selectedEntry.output ? (
+                <div
+                  className="analysis-output text-sm leading-relaxed"
+                  dangerouslySetInnerHTML={{ __html: (() => {
+                    let out = marked.parse(selectedEntry.output) as string
+                    out = out
+                      .replace(/🔴\s*<strong>CRITICAL<\/strong>/g, '<span class="sev-critical">🔴 CRITICAL</span>')
+                      .replace(/🟠\s*<strong>WARNING<\/strong>/g, '<span class="sev-warning">🟠 WARNING</span>')
+                      .replace(/🟡\s*<strong>INFO<\/strong>/g, '<span class="sev-info">🟡 INFO</span>')
+                    return out
+                  })() }}
+                />
+              ) : (
+                <div className="text-sm text-[var(--dim)]">No output recorded.</div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Idle splash */}
-        {showSetup && (
+        {showSetup && !selectedEntry && (
           <div className="flex flex-col items-center justify-center h-full gap-5 text-center px-8">
             <div className="flex flex-col items-center gap-3">
               <div className="flex items-center justify-center w-14 h-14 rounded-xl bg-[var(--accent)]/10 border border-[var(--accent)]/20">
@@ -715,27 +794,30 @@ export default function QueryAnalyzer() {
 
             {/* Follow-up input */}
             {(phase === 'done' || (output && phase !== 'streaming')) && (
-              <div className="shrink-0 border-t border-[var(--border)] px-4 py-3 flex gap-2 items-end">
-                <textarea
-                  value={followUp}
-                  onChange={(e) => setFollowUp(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault()
-                      if (followUp.trim()) { runAnalysis(followUp); setFollowUp('') }
-                    }
-                  }}
-                  placeholder="Ask a follow-up question… (Enter to send)"
-                  rows={2}
-                  className="flex-1 resize-none rounded border border-[var(--border)] bg-[var(--surface)] px-2.5 py-2 text-xs focus:outline-none focus:border-[var(--accent)] placeholder:text-[var(--dim)]"
-                />
-                <button
-                  onClick={() => { if (followUp.trim()) { runAnalysis(followUp); setFollowUp('') } }}
-                  disabled={!followUp.trim()}
-                  className="shrink-0 flex items-center justify-center rounded border border-[var(--border)] px-2.5 py-2 text-[var(--accent)] hover:bg-[var(--hover)] transition-colors disabled:opacity-40"
-                >
-                  <Send size={13} />
-                </button>
+              <div className="shrink-0 border-t border-[var(--border)] px-4 py-3 bg-[var(--card)]">
+                <div className="text-[10px] text-[var(--dim)] mb-1.5 uppercase tracking-wider font-semibold">Ask a follow-up</div>
+                <div className="flex gap-2 items-end">
+                  <textarea
+                    value={followUp}
+                    onChange={(e) => setFollowUp(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault()
+                        if (followUp.trim()) { runAnalysis(followUp); setFollowUp('') }
+                      }
+                    }}
+                    placeholder="Type your question… (Enter to send, Shift+Enter for new line)"
+                    rows={4}
+                    className="flex-1 resize-none rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm focus:outline-none focus:border-[var(--accent)] placeholder:text-[var(--dim)]"
+                  />
+                  <button
+                    onClick={() => { if (followUp.trim()) { runAnalysis(followUp); setFollowUp('') } }}
+                    disabled={!followUp.trim()}
+                    className="shrink-0 flex items-center justify-center rounded-lg border border-[var(--border)] px-3 py-3 text-[var(--accent)] hover:bg-[var(--hover)] transition-colors disabled:opacity-40 self-end"
+                  >
+                    <Send size={15} />
+                  </button>
+                </div>
               </div>
             )}
           </div>

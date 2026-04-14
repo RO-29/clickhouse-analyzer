@@ -22,6 +22,8 @@ function Layout() {
   const { view, refreshInterval, sidebarCollapsed, setInstances, tableDetail, closeTableDetail, selectedInstance } = useStore()
   const intervalRef = useRef<number>(0)
   const [tick, setTick] = useState(0)
+  // Mount QueryAnalyzer once on first visit and keep it alive (preserves session state)
+  const [analyzerMounted, setAnalyzerMounted] = useState(view === 'analyzer')
   const { entries: aiEntries, isOpen: aiOpen, setIsOpen: setAiOpen, analyze: aiAnalyze, clearEntries: clearAiEntries } = useAIAnalysis(selectedInstance)
   const aiSpacerHeight = aiOpen ? PANEL_EXPANDED_HEIGHT : PANEL_COLLAPSED_HEIGHT
 
@@ -29,6 +31,11 @@ function Layout() {
   useEffect(() => {
     api.overview().then(data => setInstances(data.map(i => i.name))).catch(() => {})
   }, [setInstances])
+
+  // Mount analyzer on first visit, keep forever after
+  useEffect(() => {
+    if (view === 'analyzer') setAnalyzerMounted(true)
+  }, [view])
 
   // Auto-refresh
   useEffect(() => {
@@ -47,7 +54,6 @@ function Layout() {
     compare: <Compare key={tick} />,
     advisor: <Advisor key={tick} />,
     terminal: <Terminal />,
-    analyzer: <QueryAnalyzer />,
     logs: <AppLogs key={tick} />,
     chlogs: <CHLogs key={tick} />,
   }
@@ -63,7 +69,14 @@ function Layout() {
             ? 'overflow-hidden flex flex-col'
             : 'p-6 max-w-[1600px] mx-auto overflow-auto',
         )}>
-          {views[view] || <Overview />}
+          {/* AI Analyzer: mount once and keep alive (hidden when inactive) to preserve session */}
+          {analyzerMounted && (
+            <div className={cn('flex-1 flex flex-col min-h-0 overflow-hidden', view !== 'analyzer' && 'hidden')}>
+              <QueryAnalyzer />
+            </div>
+          )}
+          {/* All other views */}
+          {view !== 'analyzer' && (views[view] || <Overview />)}
           {/* Spacer so content doesn't hide behind the fixed AI panel */}
           {view !== 'analyzer' && view !== 'terminal' && (
             <div style={{ height: aiSpacerHeight }} aria-hidden />

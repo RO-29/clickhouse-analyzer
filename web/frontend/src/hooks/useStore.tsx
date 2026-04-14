@@ -57,7 +57,12 @@ const StoreContext = createContext<Store | null>(null)
 const defaultRange = presetToRange('1h')
 
 export function StoreProvider({ children }: { children: ReactNode }) {
-  const [view, setView] = useState<View>('overview')
+  const [view, setViewState] = useState<View>(() => {
+    const params = new URLSearchParams(window.location.search)
+    const v = params.get('view') as View | null
+    const valid: View[] = ['overview','detail','alerts','explore','compare','advisor','terminal','logs','chlogs','analyzer']
+    return v && valid.includes(v) ? v : 'overview'
+  })
   const [selectedInstance, setSelectedInstance] = useState('')
   const [instances, setInstances] = useState<string[]>([])
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
@@ -67,6 +72,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     document.documentElement.setAttribute('data-theme', t)
     return t
   })
+  const setView = useCallback((v: View) => {
+    setViewState(v)
+    const url = new URL(window.location.href)
+    url.searchParams.set('view', v)
+    window.history.pushState(null, '', url.toString())
+  }, [])
+
   const [refreshInterval, setRefreshInterval] = useState(300)
   const [rangePreset, setRangePresetRaw] = useState('1h')
   const [from, setFrom] = useState(defaultRange[0])
@@ -136,7 +148,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const store: Store = {
-    view, setView,
+    view, setView: setView as (v: View) => void,
     selectedInstance,
     instance: selectedInstance,
     setSelectedInstance,
