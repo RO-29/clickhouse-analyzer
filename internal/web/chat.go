@@ -786,6 +786,8 @@ func (s *Server) handleChatCLI(
 		return
 	}
 
+	client := s.manager.Get(instance)
+
 	sendEvent("status", `{"phase":"planning"}`)
 
 	// ── Pass 1: Ask Claude to produce a JSON query plan ───────────────────────
