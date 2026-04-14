@@ -4,6 +4,7 @@ import { marked } from 'marked'
 import { cn } from '../../lib/utils'
 import type { ChatMessage as ChatMessageType } from '../../types/api'
 import { CollapsibleProgress } from './CollapsibleProgress'
+import { SessionLogPanel } from './SessionLogPanel'
 
 marked.use({ gfm: true, breaks: false })
 
@@ -248,6 +249,11 @@ function AssistantBubble({ message, isLast }: { message: ChatMessageType; isLast
       {/* Evidence panel — shown when done */}
       {isDone && message.evidence && (
         <EvidencePanel evidence={message.evidence} />
+      )}
+
+      {/* Session log — shown when done */}
+      {isDone && message.logs && message.logs.length > 0 && (
+        <SessionLogPanel logs={message.logs} />
       )}
 
       {/* Timestamp */}

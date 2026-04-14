@@ -137,6 +137,7 @@ export interface ChatMessage {
   phase?: 'planning' | 'collecting' | 'streaming' | 'done' | 'error'
   thinkingLines?: ThinkingLine[]
   steps?: StepInfo[]
+  logs?: ChatLogEntry[]
   evidence?: {
     promptBytes: number
     promptKb: number
@@ -147,6 +148,20 @@ export interface ChatMessage {
     mode: string
     instance: string
   }
+}
+
+export interface ChatLogEntry {
+  ts: number                // epoch ms (absolute)
+  offsetMs: number          // ms since message started
+  kind: 'phase' | 'tool_start' | 'tool_done' | 'debug' | 'error' | 'done'
+  text: string
+  phase?: string
+  sql?: string
+  rowCount?: number
+  elapsedMs?: number
+  promptKb?: number
+  truncated?: boolean
+  mode?: string
 }
 
 export interface ThinkingLine {

@@ -6,7 +6,7 @@ import { ChatWelcome } from '../components/chat/ChatWelcome'
 import { ChatMessage } from '../components/chat/ChatMessage'
 import { ChatInput } from '../components/chat/ChatInput'
 import { notifyDone, notifyError, requestNotifPermission } from '../lib/notify'
-import type { ChatSession, ChatMessage as ChatMessageType, StepInfo, ThinkingLine } from '../types/api'
+import type { ChatSession, ChatMessage as ChatMessageType, StepInfo, ThinkingLine, ChatLogEntry } from '../types/api'
 
 /* ─── Helpers ────────────────────────────────────────────────────────────── */
 
@@ -37,6 +37,8 @@ export default function ChatAnalyzer() {
   const activeAssistantIdRef = useRef<string | null>(null)
   // Track the active session id for functional updaters
   const activeSessionIdRef = useRef<string | null>(null)
+  // Track message start time for log entry offsets
+  const msgStartMsRef = useRef<number>(0)
 
   // Sync instance when selectedInstance or instances list changes
   useEffect(() => {
@@ -145,7 +147,9 @@ export default function ChatAnalyzer() {
         timestamp: now + 1,
         thinkingLines: [],
         steps: [],
+        logs: [],
       }
+      msgStartMsRef.current = now + 1
 
       let sessionId: string
 
@@ -223,6 +227,32 @@ export default function ChatAnalyzer() {
           let remainder = ''
           let currentEvent = ''
 
+          // Helper: append a log entry to the active message
+          const appendLog = (entry: ChatLogEntry) => {
+            setChatSessions(prev =>
+              prev.map(s =>
+                s.id === sessionId
+                  ? {
+                      ...s,
+                      messages: s.messages.map(m =>
+                        m.id === assistantMsgId
+                          ? { ...m, logs: [...(m.logs ?? []), entry] }
+                          : m
+                      ),
+                    }
+                  : s
+              )
+            )
+          }
+
+          const mkLog = (partial: Omit<ChatLogEntry, 'ts' | 'offsetMs'>): ChatLogEntry => {
+            const ts = Date.now()
+            return { ...partial, ts, offsetMs: ts - msgStartMsRef.current }
+          }
+
+          // Track tool id → label for log entry text in tool_done
+          const toolLabelMap = new Map<string, string>()
+
           const processLine = (line: string) => {
             if (line.startsWith('event: ')) {
               currentEvent = line.slice(7).trim()
@@ -255,6 +285,13 @@ export default function ChatAnalyzer() {
                       instance: dbg.instance ?? '',
                     },
                   })
+                  appendLog(mkLog({
+                    kind: 'debug',
+                    text: `Prompt ready — ${(dbg.prompt_kb ?? 0).toFixed(1)} KB${dbg.truncated ? ' (truncated)' : ''} · mode: ${dbg.mode ?? '?'}`,
+                    promptKb: dbg.prompt_kb,
+                    truncated: dbg.truncated,
+                    mode: dbg.mode,
+                  }))
                 } catch { /* ignore */ }
 
               } else if (currentEvent === 'status') {
@@ -263,6 +300,18 @@ export default function ChatAnalyzer() {
                   updateAssistantMsg(sessionId, assistantMsgId, {
                     phase: payload.phase as ChatMessageType['phase'],
                   })
+                  const phaseLabel: Record<string, string> = {
+                    planning: 'Planning queries…',
+                    collecting: 'Collecting data…',
+                    streaming: 'Writing response…',
+                    done: 'Done',
+                    error: 'Error',
+                  }
+                  appendLog(mkLog({
+                    kind: 'phase',
+                    text: phaseLabel[payload.phase] ?? payload.phase,
+                    phase: payload.phase,
+                  }))
                 } catch {
                   // ignore
                 }
@@ -270,7 +319,7 @@ export default function ChatAnalyzer() {
               } else if (currentEvent === 'thinking') {
                 try {
                   const payload = JSON.parse(raw) as { text: string }
-                  const line: ThinkingLine = { kind: 'plan', text: payload.text }
+                  const thinkLine: ThinkingLine = { kind: 'plan', text: payload.text }
                   setChatSessions(prev =>
                     prev.map(s =>
                       s.id === sessionId
@@ -280,7 +329,7 @@ export default function ChatAnalyzer() {
                               m.id === assistantMsgId
                                 ? {
                                     ...m,
-                                    thinkingLines: [...(m.thinkingLines ?? []), line],
+                                    thinkingLines: [...(m.thinkingLines ?? []), thinkLine],
                                   }
                                 : m
                             ),
@@ -300,9 +349,11 @@ export default function ChatAnalyzer() {
                     label: string
                     sql?: string
                   }
+                  const label = payload.label ?? payload.name
+                  toolLabelMap.set(payload.id, label)
                   const step: StepInfo = {
                     id: payload.id,
-                    label: payload.label ?? payload.name,
+                    label,
                     sql: payload.sql,
                     status: 'running',
                   }
@@ -323,17 +374,25 @@ export default function ChatAnalyzer() {
                         : s
                     )
                   )
+                  appendLog(mkLog({
+                    kind: 'tool_start',
+                    text: label,
+                    sql: payload.sql,
+                  }))
                 } catch {
                   // ignore
                 }
 
               } else if (currentEvent === 'tool_done') {
                 try {
+                  // Backend sends: { id, elapsed_ms, rows }
                   const payload = JSON.parse(raw) as {
                     id: string
-                    rowCount?: number
-                    elapsedMs?: number
+                    elapsed_ms?: number
+                    rows?: number
                   }
+                  const rowCount = payload.rows
+                  const elapsedMs = payload.elapsed_ms
                   setChatSessions(prev =>
                     prev.map(s =>
                       s.id === sessionId
@@ -348,8 +407,8 @@ export default function ChatAnalyzer() {
                                         ? {
                                             ...step,
                                             status: 'done' as const,
-                                            rowCount: payload.rowCount,
-                                            elapsedMs: payload.elapsedMs,
+                                            rowCount,
+                                            elapsedMs,
                                           }
                                         : step
                                     ),
@@ -360,6 +419,12 @@ export default function ChatAnalyzer() {
                         : s
                     )
                   )
+                  appendLog(mkLog({
+                    kind: 'tool_done',
+                    text: toolLabelMap.get(payload.id) ?? payload.id,
+                    rowCount,
+                    elapsedMs,
+                  }))
                 } catch {
                   // ignore
                 }
@@ -397,12 +462,14 @@ export default function ChatAnalyzer() {
                     phase: 'error',
                     content: errMsg,
                   })
+                  appendLog(mkLog({ kind: 'error', text: errMsg }))
                 } catch {
                   updateAssistantMsg(sessionId, assistantMsgId, {
                     status: 'error',
                     phase: 'error',
                     content: raw,
                   })
+                  appendLog(mkLog({ kind: 'error', text: raw }))
                 }
               }
 
@@ -421,6 +488,11 @@ export default function ChatAnalyzer() {
           if (remainder) processLine(remainder)
 
           // Stream complete
+          const totalMs = Date.now() - msgStartMsRef.current
+          appendLog(mkLog({
+            kind: 'done',
+            text: `Response complete in ${totalMs < 1000 ? `${totalMs}ms` : `${(totalMs / 1000).toFixed(1)}s`}`,
+          }))
           updateAssistantMsg(sessionId, assistantMsgId, {
             status: 'done',
             phase: 'done',
