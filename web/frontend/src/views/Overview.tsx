@@ -8,7 +8,7 @@ import { Card } from '../components/Card'
 import { Badge } from '../components/Badge'
 import { NodeCard } from '../components/NodeCard'
 import { DataTable } from '../components/DataTable'
-import type { Instance, Alert, HealthResponse } from '../types/api'
+import type { Instance, Alert, AlertStats, HealthResponse } from '../types/api'
 
 /* ------------------------------------------------------------------ */
 /*  Loading skeleton                                                  */
@@ -38,6 +38,56 @@ function Skeleton() {
 /* ------------------------------------------------------------------ */
 /*  Overview view                                                     */
 /* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
+/*  Alert Activity Strip — 24h summary, loads independently          */
+/* ------------------------------------------------------------------ */
+function AlertActivityStrip({ onViewHistory }: { onViewHistory: () => void }) {
+  const [stats, setStats] = useState<AlertStats | null>(null)
+  useEffect(() => {
+    api.alerts.stats(24).then(setStats).catch(() => {})
+  }, [])
+
+  if (!stats || stats.total_fired === 0) return null
+
+  const fmtDur = (s: number) => {
+    if (s <= 0) return null
+    if (s < 3600) return `${Math.round(s / 60)}m avg`
+    return `${Math.round(s / 3600)}h avg`
+  }
+  const dur = fmtDur(stats.avg_duration_secs)
+
+  return (
+    <button
+      onClick={onViewHistory}
+      className="w-full text-left rounded-lg border border-[var(--border)] bg-[var(--card)] hover:bg-[var(--hover)] transition-colors px-4 py-2.5 flex items-center gap-4 flex-wrap"
+    >
+      <span className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider">24h alert activity</span>
+      <span className="flex items-center gap-1.5 text-sm">
+        <span className="font-semibold">{stats.total_fired}</span>
+        <span className="text-[var(--text-muted)]">fired</span>
+      </span>
+      {stats.currently_firing > 0 && (
+        <span className="flex items-center gap-1.5 text-sm text-[#ef4444]">
+          <span className="w-1.5 h-1.5 rounded-full bg-[#ef4444] animate-pulse" />
+          <span className="font-semibold">{stats.currently_firing}</span>
+          <span className="text-[#ef4444]/70">firing</span>
+        </span>
+      )}
+      <span className="flex items-center gap-1.5 text-sm text-[#22c55e]">
+        <span className="font-semibold">{stats.resolved}</span>
+        <span className="text-[var(--text-muted)]">resolved</span>
+      </span>
+      {dur && <span className="text-sm text-[var(--text-muted)]">{dur}</span>}
+      {stats.top_categories[0] && (
+        <span className="text-sm text-[var(--text-muted)]">
+          top: <span className="text-[var(--text)]">{stats.top_categories[0].category}</span>
+        </span>
+      )}
+      <span className="ml-auto text-xs text-[var(--accent)]">View history →</span>
+    </button>
+  )
+}
+
 export default function Overview({ refreshKey }: { refreshKey?: number }) {
   const { setView, setInstance, setInstances, navToAlerts } = useStore()
   const [analyzeInstance, setAnalyzeInstance] = useState('')
@@ -253,6 +303,9 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
           </Card>
         </button>
       </div>
+
+      {/* ---- 24h Alert Activity strip ---- */}
+      <AlertActivityStrip onViewHistory={() => setView('history')} />
 
       {/* ---- Instance node cards ---- */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

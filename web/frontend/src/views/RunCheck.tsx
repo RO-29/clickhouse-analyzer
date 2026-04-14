@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   PlayCircle, ChevronDown, ChevronRight, AlertTriangle, CheckCircle2,
-  XCircle, BarChart2, Clock, Loader2, Code2, Database, Info, RefreshCw,
+  XCircle, BarChart2, Clock, Loader2, Code2, Database, Info, RefreshCw, CalendarRange,
 } from 'lucide-react'
 import { api } from '../lib/api'
 import { cn } from '../lib/utils'
@@ -32,6 +32,22 @@ function groupByCategory(metas: CollectorMeta[]): Record<string, CollectorMeta[]
     ;(acc[m.category] ??= []).push(m)
     return acc
   }, {} as Record<string, CollectorMeta[]>)
+}
+
+// Time range helpers
+const PRESETS = [
+  { label: 'Live', minutes: 0 },
+  { label: '5m', minutes: 5 },
+  { label: '15m', minutes: 15 },
+  { label: '1h', minutes: 60 },
+  { label: '6h', minutes: 360 },
+  { label: '24h', minutes: 1440 },
+  { label: 'Custom', minutes: -1 },
+]
+
+function toLocalDatetimeInput(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -242,6 +258,24 @@ export default function RunCheck() {
   const [forcePollStatus, setForcePollStatus] = useState('')
   const resultsRef = useRef<HTMLDivElement>(null)
 
+  // Time range state
+  const [preset, setPreset] = useState(0)          // minutes; 0 = live, -1 = custom
+  const [customFrom, setCustomFrom] = useState(() => toLocalDatetimeInput(new Date(Date.now() - 3600_000)))
+  const [customTo, setCustomTo]     = useState(() => toLocalDatetimeInput(new Date()))
+
+  const timeRangeParams = useCallback((): { from?: number; to?: number } => {
+    if (preset === 0) return {}  // live — no range, collectors use their natural windows
+    if (preset === -1) {
+      const f = new Date(customFrom).getTime() / 1000
+      const t = new Date(customTo).getTime() / 1000
+      if (!isNaN(f) && !isNaN(t) && t > f) return { from: Math.floor(f), to: Math.floor(t) }
+      return {}
+    }
+    const to   = Math.floor(Date.now() / 1000)
+    const from = to - preset * 60
+    return { from, to }
+  }, [preset, customFrom, customTo])
+
   useEffect(() => {
     api.collectors().then(setCollectorMetas).catch(() => {})
     api.overview().then(data => setInstanceList(data.map(d => d.name))).catch(() => {})
@@ -288,9 +322,12 @@ export default function RunCheck() {
     setError('')
     setResults([])
     try {
+      const { from, to } = timeRangeParams()
       const resp = await api.runCheck(
         Array.from(selectedCollectors),
         Array.from(selectedInstances),
+        from,
+        to,
       )
       setResults(resp.results ?? [])
       // Scroll to results after a short tick so DOM has updated
@@ -327,6 +364,61 @@ export default function RunCheck() {
         <p className="text-sm text-[var(--dim)] mt-1">
           Run any collector on-demand against specific instances and see results immediately.
         </p>
+      </div>
+
+      {/* Time range picker */}
+      <div className="bg-[var(--card)] border border-[var(--border)] rounded-xl p-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <CalendarRange size={14} className="text-[var(--dim)]" />
+          <span className="text-sm font-semibold text-[var(--text)]">Time Range</span>
+          <span className="text-xs text-[var(--dim)] ml-1">— applies to query_log and text_log collectors</span>
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {PRESETS.map(p => (
+            <button
+              key={p.minutes}
+              onClick={() => setPreset(p.minutes)}
+              className={cn(
+                'px-3 py-1 rounded-lg text-xs font-medium transition-colors border',
+                preset === p.minutes
+                  ? 'bg-[var(--accent)]/15 text-[var(--accent)] border-[var(--accent)]/40'
+                  : 'border-[var(--border)] text-[var(--dim)] hover:text-[var(--text)] hover:border-[var(--accent)]/30',
+              )}
+            >{p.label}</button>
+          ))}
+        </div>
+        {preset === -1 && (
+          <div className="flex flex-wrap items-center gap-3 pt-1">
+            <label className="flex items-center gap-2 text-xs text-[var(--dim)]">
+              <span className="w-6">From</span>
+              <input
+                type="datetime-local"
+                value={customFrom}
+                onChange={e => setCustomFrom(e.target.value)}
+                className="bg-[var(--surface)] border border-[var(--border)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]/60"
+              />
+            </label>
+            <label className="flex items-center gap-2 text-xs text-[var(--dim)]">
+              <span className="w-6">To</span>
+              <input
+                type="datetime-local"
+                value={customTo}
+                onChange={e => setCustomTo(e.target.value)}
+                className="bg-[var(--surface)] border border-[var(--border)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]/60"
+              />
+            </label>
+          </div>
+        )}
+        {preset !== 0 && (
+          <p className="text-[11px] text-[var(--dim)]">
+            {preset === -1
+              ? 'Custom window — collectors will scan the specified time range instead of their default intervals'
+              : `Last ${PRESETS.find(p => p.minutes === preset)?.label} — collectors will scan this window instead of their default intervals`}
+          </p>
+        )}
+        {preset === 0 && (
+          <p className="text-[11px] text-[var(--dim)]">Live — collectors use their natural time windows (e.g. last 5 min for query failures)</p>
+        )}
       </div>
 
       {/* Diagnostic-only disclaimer */}

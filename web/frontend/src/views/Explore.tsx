@@ -15,6 +15,7 @@ import type {
   HistoryS3,
   HistoryAsyncMetric,
   S3Stats,
+  PartsAgeEntry,
 } from '../types/api'
 import type { AnalyzeOptions } from '../hooks/useAIAnalysis'
 
@@ -27,11 +28,13 @@ type Tab =
   | 'inserts'
   | 'metrics'
   | 'diskio'
+  | 'partsage'
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'patterns', label: 'Query Patterns' },
   { key: 'failures', label: 'Failures' },
   { key: 'merges', label: 'Merges & Parts' },
+  { key: 'partsage', label: 'Parts Age' },
   { key: 'mvs', label: 'MV Performance' },
   { key: 's3', label: 'S3 Latency' },
   { key: 'inserts', label: 'Insert Throughput' },
@@ -890,6 +893,97 @@ function ErrorBox({ message }: { message: string }) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Parts Age Tab                                                      */
+/* ------------------------------------------------------------------ */
+
+function PartsAgeTab({ instance, refreshKey }: { instance: string; refreshKey?: number }) {
+  const [rows, setRows] = useState<PartsAgeEntry[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    setLoading(true)
+    setError('')
+    api.partsAge(instance)
+      .then(data => setRows(data))
+      .catch(e => setError(e.message))
+      .finally(() => setLoading(false))
+  }, [instance, refreshKey])
+
+  const ageColor = (hours: number) => {
+    if (hours > 168) return 'text-[#ef4444]'   // >7d
+    if (hours > 72)  return 'text-[#f97316]'   // >3d
+    if (hours > 24)  return 'text-[#f59e0b]'   // >1d
+    return 'text-[var(--text)]'
+  }
+
+  const fmtAge = (hours: number) => {
+    if (hours < 24) return `${Math.round(hours)}h`
+    return `${Math.round(hours / 24)}d`
+  }
+
+  if (loading) return <div className="animate-pulse h-40 rounded-lg bg-[var(--hover)]" />
+  if (error) return <ErrorBox message={error} />
+
+  if (rows.length === 0) {
+    return (
+      <Card>
+        <div className="text-sm text-[var(--text-muted)] text-center py-8">
+          No tables with stale parts found (all parts &lt; 2 days old)
+        </div>
+      </Card>
+    )
+  }
+
+  return (
+    <Card title={`Parts Age — ${rows.length} tables sorted by oldest unmerged part`}>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs text-[var(--text-muted)] border-b border-[var(--border)]">
+              <th className="pb-2 pr-4 font-medium">Table</th>
+              <th className="pb-2 pr-4 font-medium text-right">Parts</th>
+              <th className="pb-2 pr-4 font-medium text-right">Oldest Part</th>
+              <th className="pb-2 pr-4 font-medium text-right">Oldest Date</th>
+              <th className="pb-2 pr-4 font-medium text-right">Rows</th>
+              <th className="pb-2 font-medium text-right">Size</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={i} className="border-b border-[var(--border)]/40 hover:bg-[var(--hover)] transition-colors">
+                <td className="py-2 pr-4 font-mono text-xs">
+                  <span className="text-[var(--text-muted)]">{r.database}.</span>
+                  <span>{r.table}</span>
+                </td>
+                <td className="py-2 pr-4 text-right tabular-nums">{fmtNum(r.part_count)}</td>
+                <td className={cn('py-2 pr-4 text-right tabular-nums font-semibold', ageColor(r.oldest_part_hours))}>
+                  {fmtAge(r.oldest_part_hours)}
+                </td>
+                <td className="py-2 pr-4 text-right text-xs text-[var(--text-muted)]">
+                  {r.oldest_modification ? r.oldest_modification.slice(0, 10) : '—'}
+                </td>
+                <td className="py-2 pr-4 text-right tabular-nums text-[var(--text-muted)]">
+                  {fmtNum(r.total_rows)}
+                </td>
+                <td className="py-2 text-right tabular-nums text-[var(--text-muted)]">
+                  {fmtBytes(r.total_bytes)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="mt-2 flex gap-4 text-xs text-[var(--text-muted)]">
+        <span className="flex items-center gap-1"><span className="text-[#ef4444]">■</span> &gt;7 days</span>
+        <span className="flex items-center gap-1"><span className="text-[#f97316]">■</span> &gt;3 days</span>
+        <span className="flex items-center gap-1"><span className="text-[#f59e0b]">■</span> &gt;1 day</span>
+      </div>
+    </Card>
+  )
+}
+
+/* ------------------------------------------------------------------ */
 /*  Main Explore Component                                             */
 /* ------------------------------------------------------------------ */
 
@@ -966,6 +1060,7 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
           {tab === 'patterns' && <QueryPatternsTab instance={inst} from={from} to={to} refreshKey={refreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
           {tab === 'failures' && <FailuresTab instance={inst} from={from} to={to} refreshKey={refreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
           {tab === 'merges' && <MergesTab instance={inst} from={from} to={to} refreshKey={refreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
+          {tab === 'partsage' && <PartsAgeTab instance={inst} refreshKey={refreshKey} />}
           {tab === 'mvs' && <MVTab instance={inst} from={from} to={to} refreshKey={refreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
           {tab === 's3' && <S3Tab instance={inst} from={from} to={to} refreshKey={refreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
           {tab === 'inserts' && <InsertsTab instance={inst} from={from} to={to} refreshKey={refreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}

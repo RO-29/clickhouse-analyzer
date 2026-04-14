@@ -3,6 +3,8 @@ import type {
   MetricResponse,
   HealthCheck,
   Alert,
+  AlertStats,
+  PartsAgeEntry,
   QueryPattern,
   QueryResult,
   QueryHistoryEntry,
@@ -55,7 +57,16 @@ export const api = {
   healthCheck: (inst: string) => get<HealthCheck[]>(`/api/instances/${inst}/health-check`),
   alerts: {
     active: () => get<Alert[]>('/api/alerts/active'),
-    history: (limit = 500) => get<Alert[]>(`/api/alerts/history?limit=${limit}`),
+    history: (params?: { limit?: number; from?: number; to?: number; instance?: string; severity?: string; category?: string }) => {
+      const p = new URLSearchParams({ limit: String(params?.limit ?? 500) })
+      if (params?.from) p.set('from', String(params.from))
+      if (params?.to) p.set('to', String(params.to))
+      if (params?.instance) p.set('instance', params.instance)
+      if (params?.severity) p.set('severity', params.severity)
+      if (params?.category) p.set('category', params.category)
+      return get<Alert[]>(`/api/alerts/history?${p}`)
+    },
+    stats: (hours = 24) => get<AlertStats>(`/api/alerts/stats?hours=${hours}`),
     at: (inst: string, from: number, to: number) =>
       get<HealthCheck[]>(`/api/instances/${inst}/alerts-at?from=${from}&to=${to}`),
     resolveStale: (hours: number) =>
@@ -148,7 +159,8 @@ export const api = {
   },
   health: () => get<HealthResponse>('/health'),
   collectors: () => get<CollectorMeta[]>('/api/collectors'),
-  runCheck: (collectors: string[], instances: string[]) =>
-    post<RunCheckResponse>('/api/run-check', { collectors, instances }),
+  runCheck: (collectors: string[], instances: string[], from?: number, to?: number) =>
+    post<RunCheckResponse>('/api/run-check', { collectors, instances, from, to }),
   forcePoll: () => post<{ status: string }>('/api/force-poll', {}),
+  partsAge: (inst: string) => get<PartsAgeEntry[]>(`/api/instances/${inst}/parts-age`),
 }

@@ -7,6 +7,7 @@ const VIEW_TITLES: Record<View, string> = {
   overview: 'Overview',
   detail: 'Instance Detail',
   alerts: 'Alerts',
+  history: 'Alert History',
   explore: 'Explore',
   compare: 'Compare Nodes',
   advisor: 'Advisor',

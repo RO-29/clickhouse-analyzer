@@ -43,6 +43,28 @@ export interface Alert {
   id: number; instance: string; severity: string; category: string
   title: string; message: string; resolved: boolean
   resolved_at?: number; created_at: number; updated_at: number; dedup_key: string
+  duration_s: number
+}
+
+export interface AlertStats {
+  period_hours: number
+  total_fired: number
+  currently_firing: number
+  resolved: number
+  critical: number
+  warn: number
+  avg_duration_secs: number
+  top_categories: { category: string; count: number }[]
+}
+
+export interface PartsAgeEntry {
+  database: string
+  table: string
+  part_count: number
+  oldest_part_hours: number
+  oldest_modification: string
+  total_rows: number
+  total_bytes: number
 }
 
 export interface HealthCheck {

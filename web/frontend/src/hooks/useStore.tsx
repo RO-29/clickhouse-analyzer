@@ -2,7 +2,7 @@ import { createContext, useContext, useState, useCallback, type ReactNode } from
 import { presetToRange } from '../lib/utils'
 import type { ChatSession } from '../types/api'
 
-export type View = 'overview' | 'detail' | 'alerts' | 'explore' | 'compare' | 'advisor' | 'terminal' | 'logs' | 'chlogs' | 'analyzer' | 'scanner' | 'cost' | 'maintenance' | 'runcheck'
+export type View = 'overview' | 'detail' | 'alerts' | 'history' | 'explore' | 'compare' | 'advisor' | 'terminal' | 'logs' | 'chlogs' | 'analyzer' | 'scanner' | 'cost' | 'maintenance' | 'runcheck'
 
 export interface Store {
   // State

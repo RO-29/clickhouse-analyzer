@@ -409,6 +409,11 @@ func buildCollectors(cfg *config.Config) []collector.Collector {
 	result = append(result, &collector.FreshnessCollector{})
 	result = append(result, &collector.SchemaDriftCollector{})
 	result = append(result, &collector.ProjectionCollector{})
+	result = append(result, &collector.TTLCollector{})
+	result = append(result, &collector.AsyncInsertsCollector{})
+	result = append(result, &collector.PartsAgeCollector{})
+	result = append(result, &collector.SlowQueryFingerprintCollector{})
+	result = append(result, &collector.KeeperCollector{})
 
 	if cfg.K8s.Enabled {
 		result = append(result, &collector.K8sCollector{

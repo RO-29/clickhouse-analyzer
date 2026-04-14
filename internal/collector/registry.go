@@ -34,15 +34,26 @@ WHERE metric IN ('MemoryTracking','BackgroundMergesMutationsPoolTask')`,
 		{
 			Name:        "queries",
 			DisplayName: "Query Activity",
-			Description: "Detects slow-running queries and reports the count of currently running queries.",
+			Description: "Detects slow queries (WARN >30s, CRIT >60s), query timeouts (TIMEOUT_EXCEEDED/TOO_SLOW), zombie HTTP queries, and query storms.",
 			Category:    "queries",
 			Queries: []string{
-				`SELECT query_id, user, elapsed, query
+				`-- Running queries by elapsed time
+SELECT query_id, user, elapsed, formatReadableSize(memory_usage) AS mem, query
 FROM system.processes
-WHERE elapsed > 60
-ORDER BY elapsed DESC
-LIMIT 20`,
-				`SELECT count() AS running_queries FROM system.processes`,
+WHERE elapsed > 30
+ORDER BY elapsed DESC LIMIT 20`,
+				`-- Zombie HTTP queries (client likely disconnected)
+SELECT query_id, user, http_user_agent, elapsed, query
+FROM system.processes
+WHERE http_user_agent != '' AND elapsed > 600
+ORDER BY elapsed DESC`,
+				`-- Recent timeout/cancellation exceptions
+SELECT exception_code, count() AS cnt, any(exception) AS sample
+FROM system.query_log
+WHERE type = 'ExceptionWhileProcessing'
+  AND exception_code IN (159, 160, 394)
+  AND event_time >= now() - INTERVAL 5 MINUTE
+GROUP BY exception_code ORDER BY cnt DESC`,
 			},
 		},
 		{
@@ -253,6 +264,83 @@ WHERE database NOT IN ('system','information_schema','INFORMATION_SCHEMA')
 LIMIT 100`,
 			},
 		},
+		{
+			Name:        "ttl",
+			DisplayName: "TTL Health",
+			Description: "Detects stuck TTL mutations and tables with TTL configured whose parts are suspiciously old.",
+			Category:    "tables",
+			Queries: []string{
+				`SELECT database, table, count() AS pending, min(create_time) AS oldest_create
+FROM system.mutations
+WHERE NOT is_done AND (command LIKE '%TTL%' OR command LIKE '%MODIFY%')
+  AND create_time < now() - INTERVAL 1 HOUR
+GROUP BY database, table`,
+				`SELECT t.database, t.name, count(p.name) AS part_count,
+  max(dateDiff('day', p.modification_time, now())) AS oldest_part_days
+FROM system.tables t JOIN system.parts p ON t.database = p.database AND t.name = p.table
+WHERE t.ttl_expression != '' AND p.active = 1
+  AND t.database NOT IN ('system','information_schema','INFORMATION_SCHEMA')
+GROUP BY t.database, t.name HAVING part_count > 5 AND oldest_part_days > 14`,
+			},
+		},
+		{
+			Name:        "async_inserts",
+			DisplayName: "Async Insert Health",
+			Description: "Monitors async insert flush failures and queue depth. No-ops gracefully if async inserts are not configured.",
+			Category:    "inserts",
+			Queries: []string{
+				`SELECT count() AS total, countIf(status = 'ExceptionWhileFlushing') AS errors
+FROM system.asynchronous_insert_log
+WHERE event_time > now() - INTERVAL 5 MINUTE`,
+				`SELECT count() AS queue_depth FROM system.asynchronous_insertions`,
+			},
+		},
+		{
+			Name:        "parts_age",
+			DisplayName: "Parts Age",
+			Description: "Detects tables where active parts have not been merged for an unusually long time, indicating merge pressure.",
+			Category:    "tables",
+			Queries: []string{
+				`SELECT database, table, count() AS part_count,
+  max(toUnixTimestamp(now()) - toUnixTimestamp(modification_time)) / 3600 AS oldest_part_hours,
+  sum(rows) AS total_rows, sum(bytes_on_disk) AS total_bytes
+FROM system.parts
+WHERE active = 1
+  AND database NOT IN ('system','information_schema','INFORMATION_SCHEMA')
+GROUP BY database, table
+HAVING part_count > 5 AND oldest_part_hours > 48
+ORDER BY oldest_part_hours DESC LIMIT 20`,
+			},
+		},
+		{
+			Name:        "slow_query_fingerprint",
+			DisplayName: "Query Storm Detection",
+			Description: "Detects repeated execution of the same query pattern at high frequency (query storms).",
+			Category:    "queries",
+			Queries: []string{
+				`SELECT normalized_query_hash, any(query) AS sample_query,
+  count() AS exec_count, avg(query_duration_ms) AS avg_ms, max(query_duration_ms) AS max_ms,
+  any(user) AS user
+FROM system.query_log
+WHERE type = 'QueryFinish' AND event_time > now() - INTERVAL 5 MINUTE
+  AND query_kind NOT IN ('Insert','Set','Create','Drop','Alter','Show','System')
+GROUP BY normalized_query_hash
+HAVING exec_count > 20 OR (exec_count > 5 AND avg_ms > 10000)
+ORDER BY exec_count DESC LIMIT 10`,
+			},
+		},
+		{
+			Name:        "keeper",
+			DisplayName: "Keeper / ZooKeeper Health",
+			Description: "Checks ClickHouse Keeper or ZooKeeper reachability and monitors connection latency and request backlog.",
+			Category:    "system",
+			Queries: []string{
+				`SELECT count() AS cnt FROM system.zookeeper WHERE path = '/'`,
+				`SELECT count() AS connected_nodes, sum(outstanding_requests) AS total_outstanding,
+  max(avg_latency) AS max_avg_latency_ms, max(max_latency) AS max_latency_ms
+FROM system.zookeeper_connection`,
+			},
+		},
 	}
 }
 
@@ -313,6 +401,16 @@ func BuildCollectorFromConfig(name string, cfg *config.Config) (Collector, bool)
 		return &SchemaDriftCollector{}, true
 	case "projections":
 		return &ProjectionCollector{}, true
+	case "ttl":
+		return &TTLCollector{}, true
+	case "async_inserts":
+		return &AsyncInsertsCollector{}, true
+	case "parts_age":
+		return &PartsAgeCollector{}, true
+	case "slow_query_fingerprint":
+		return &SlowQueryFingerprintCollector{}, true
+	case "keeper":
+		return &KeeperCollector{}, true
 	default:
 		return nil, false
 	}
@@ -352,6 +450,16 @@ func BuildCollector(name string) (Collector, bool) {
 		return &SchemaDriftCollector{}, true
 	case "projections":
 		return &ProjectionCollector{}, true
+	case "ttl":
+		return &TTLCollector{}, true
+	case "async_inserts":
+		return &AsyncInsertsCollector{}, true
+	case "parts_age":
+		return &PartsAgeCollector{}, true
+	case "slow_query_fingerprint":
+		return &SlowQueryFingerprintCollector{}, true
+	case "keeper":
+		return &KeeperCollector{}, true
 	default:
 		return nil, false
 	}

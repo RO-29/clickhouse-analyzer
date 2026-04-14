@@ -27,13 +27,15 @@ func (c *QueryCollector) Collect(ctx context.Context, client *chclient.Client) (
 	c.collectRunningQueries(ctx, client, result)
 	c.collectFailedQueries(ctx, client, result)
 	c.collectRepeatedPatterns(ctx, client, result)
+	c.collectTimeouts(ctx, client, result)
+	c.collectZombieQueries(ctx, client, result)
 
 	result.Duration = time.Since(start)
 	return result, nil
 }
 
 // collectRunningQueries examines system.processes for active queries, flags
-// long runners, and detects query storms.
+// long runners (WARN >30s, CRIT >60s), and detects query storms.
 func (c *QueryCollector) collectRunningQueries(ctx context.Context, client *chclient.Client, result *CollectResult) {
 	sql := `
 		SELECT
@@ -71,10 +73,19 @@ func (c *QueryCollector) collectRunningQueries(ctx context.Context, client *chcl
 			fmt.Sprintf("%s:queries:warn_concurrent", client.Name()))
 	}
 
-	// --- Collect per-query metrics and group alerts ---
-	threshold := c.Thresholds.LongRunningThreshold.Duration.Seconds()
+	// Two-tier thresholds: warn at 30s, critical at 60s
+	critThreshold := c.Thresholds.LongRunningThreshold.Duration.Seconds()
+	warnThreshold := c.Thresholds.LongRunningWarnThreshold.Duration.Seconds()
+	if warnThreshold <= 0 {
+		warnThreshold = 30
+	}
+	if critThreshold <= warnThreshold {
+		critThreshold = warnThreshold * 2
+	}
+
 	userCounts := make(map[string]int)
-	var longRunners []string
+	var critRunners []string
+	var warnRunners []string
 	var fullScans []string
 
 	for _, row := range rows {
@@ -95,13 +106,17 @@ func (c *QueryCollector) collectRunningQueries(ctx context.Context, client *chcl
 		result.AddMetric(client.Name(), "queries.running.read_rows", readRows, labels)
 		result.AddMetric(client.Name(), "queries.running.read_bytes", readBytes, labels)
 
-		if elapsed >= threshold {
-			truncQuery := query
-			if len(truncQuery) > 120 {
-				truncQuery = truncQuery[:120] + "..."
-			}
-			longRunners = append(longRunners, fmt.Sprintf("  - `%s` user=%s elapsed=%.0fs mem=%s: %s",
-				queryID, user, elapsed, humanBytes(memUsage), truncQuery))
+		truncQuery := query
+		if len(truncQuery) > 120 {
+			truncQuery = truncQuery[:120] + "..."
+		}
+		line := fmt.Sprintf("  - `%s` user=%s elapsed=%.0fs mem=%s: %s",
+			queryID, user, elapsed, humanBytes(memUsage), truncQuery)
+
+		if elapsed >= critThreshold {
+			critRunners = append(critRunners, line)
+		} else if elapsed >= warnThreshold {
+			warnRunners = append(warnRunners, line)
 		}
 
 		if readRows > 1_000_000_000 {
@@ -112,23 +127,33 @@ func (c *QueryCollector) collectRunningQueries(ctx context.Context, client *chcl
 		userCounts[user]++
 	}
 
-	// Single grouped alert for long-running queries.
-	if len(longRunners) > 0 {
-		sev := SeverityWarn
-		if len(longRunners) > 5 {
-			sev = SeverityCritical
-		}
+	// Critical long-running queries (>60s by default)
+	if len(critRunners) > 0 {
 		msg := fmt.Sprintf("*%d queries* running longer than %.0fs:\n%s\n\n"+
 			"*Investigate:*\n```\nSELECT query_id, user, elapsed, formatReadableSize(memory_usage) as mem,\n"+
 			"  read_rows, substring(query,1,100) as q\n"+
 			"FROM system.processes ORDER BY elapsed DESC\n```\n"+
 			"*Kill a query:*\n```\nKILL QUERY WHERE query_id = '<id>'\n```",
-			len(longRunners), threshold,
-			strings.Join(longRunners, "\n"))
-		result.AddAlert(client.Name(), sev, "queries",
-			fmt.Sprintf("Long-running queries: %d", len(longRunners)),
+			len(critRunners), critThreshold,
+			strings.Join(critRunners, "\n"))
+		result.AddAlert(client.Name(), SeverityCritical, "queries",
+			fmt.Sprintf("Long-running queries (critical): %d", len(critRunners)),
 			msg,
-			fmt.Sprintf("%s:queries:long_running", client.Name()))
+			fmt.Sprintf("%s:queries:long_running_crit", client.Name()))
+	}
+
+	// Warning long-running queries (>30s but <60s)
+	if len(warnRunners) > 0 {
+		msg := fmt.Sprintf("*%d queries* running longer than %.0fs:\n%s\n\n"+
+			"*Investigate:*\n```\nSELECT query_id, user, elapsed, formatReadableSize(memory_usage) as mem,\n"+
+			"  read_rows, substring(query,1,100) as q\n"+
+			"FROM system.processes ORDER BY elapsed DESC\n```",
+			len(warnRunners), warnThreshold,
+			strings.Join(warnRunners, "\n"))
+		result.AddAlert(client.Name(), SeverityWarn, "queries",
+			fmt.Sprintf("Long-running queries (warn): %d", len(warnRunners)),
+			msg,
+			fmt.Sprintf("%s:queries:long_running_warn", client.Name()))
 	}
 
 	// Single grouped alert for full table scans.
@@ -166,7 +191,7 @@ func (c *QueryCollector) collectRunningQueries(ctx context.Context, client *chcl
 
 // collectFailedQueries checks system.query_log for recent exceptions.
 func (c *QueryCollector) collectFailedQueries(ctx context.Context, client *chclient.Client, result *CollectResult) {
-	sql := `
+	sql := fmt.Sprintf(`
 		SELECT
 			query_id,
 			user,
@@ -178,9 +203,11 @@ func (c *QueryCollector) collectFailedQueries(ctx context.Context, client *chcli
 			event_time
 		FROM system.query_log
 		WHERE type = 'ExceptionWhileProcessing'
-		  AND event_time >= now() - INTERVAL 5 MINUTE
+		  AND %s
+		  AND exception_code NOT IN (159, 160, 394)  -- exclude timeouts (handled separately)
 		ORDER BY event_time DESC
-		LIMIT 50`
+		LIMIT 50`,
+		EventTimeCond(ctx, "event_time", "now() - INTERVAL 5 MINUTE"))
 
 	rows, err := client.Query(ctx, sql)
 	if err != nil {
@@ -217,10 +244,174 @@ func (c *QueryCollector) collectFailedQueries(ctx context.Context, client *chcli
 	}
 }
 
+// collectTimeouts detects TIMEOUT_EXCEEDED (159), TOO_SLOW (160), and
+// QUERY_WAS_CANCELLED (394) exceptions from system.query_log in the last 5m.
+func (c *QueryCollector) collectTimeouts(ctx context.Context, client *chclient.Client, result *CollectResult) {
+	sql := fmt.Sprintf(`
+		SELECT
+			exception_code,
+			count() AS cnt,
+			any(query) AS sample_query,
+			any(user) AS user,
+			any(exception) AS sample_exception
+		FROM system.query_log
+		WHERE type = 'ExceptionWhileProcessing'
+		  AND %s
+		  AND exception_code IN (159, 160, 394)
+		GROUP BY exception_code
+		ORDER BY cnt DESC`,
+		EventTimeCond(ctx, "event_time", "now() - INTERVAL 5 MINUTE"))
+
+	rows, err := client.Query(ctx, sql)
+	if err != nil {
+		c.logger().Warn("failed to query timeouts from query_log", slog.String("error", err.Error()))
+		return
+	}
+
+	if len(rows) == 0 {
+		return
+	}
+
+	codeNames := map[int64]string{
+		159: "TIMEOUT_EXCEEDED",
+		160: "TOO_SLOW",
+		394: "QUERY_WAS_CANCELLED",
+	}
+
+	var lines []string
+	totalCount := 0
+	hasCrit := false
+
+	for _, row := range rows {
+		code := int64(getFloat(row, "exception_code"))
+		cnt := int(getFloat(row, "cnt"))
+		user := getString(row, "user")
+		sample := getString(row, "sample_query")
+		if len(sample) > 100 {
+			sample = sample[:100] + "..."
+		}
+		name := codeNames[code]
+		if name == "" {
+			name = fmt.Sprintf("code_%d", code)
+		}
+		lines = append(lines, fmt.Sprintf("  - %s (%d): %dx user=%s sample: %s", name, code, cnt, user, sample))
+		totalCount += cnt
+		if cnt > 5 {
+			hasCrit = true
+		}
+
+		result.AddMetric(client.Name(), "queries.timeouts_5m", float64(cnt), map[string]string{
+			"exception_code": fmt.Sprintf("%d", code),
+			"name":           name,
+		})
+	}
+
+	sev := SeverityWarn
+	if hasCrit {
+		sev = SeverityCritical
+	}
+
+	msg := fmt.Sprintf("*%d query timeouts/cancellations* in last 5 minutes:\n%s\n\n"+
+		"*Investigate:*\n```\nSELECT exception_code, count() as cnt, avg(query_duration_ms) as avg_ms,\n"+
+		"  any(exception) as sample\n"+
+		"FROM system.query_log\n"+
+		"WHERE type='ExceptionWhileProcessing' AND exception_code IN (159,160,394)\n"+
+		"  AND event_time >= now() - INTERVAL 1 HOUR\n"+
+		"GROUP BY exception_code ORDER BY cnt DESC\n```",
+		totalCount, strings.Join(lines, "\n"))
+
+	result.AddAlert(client.Name(), sev, "queries",
+		fmt.Sprintf("Query timeouts: %d in 5m", totalCount),
+		msg,
+		fmt.Sprintf("%s:queries:timeouts_5m", client.Name()))
+}
+
+// collectZombieQueries detects long-running HTTP-interface queries where the
+// client has likely disconnected but the server is still executing the query.
+// These appear in system.processes with http_user_agent set and high elapsed time.
+func (c *QueryCollector) collectZombieQueries(ctx context.Context, client *chclient.Client, result *CollectResult) {
+	// HTTP queries running > 10 minutes are likely orphaned: client disconnected
+	// but server keeps the query alive. ClickHouse doesn't auto-cancel these unless
+	// cancel_http_readonly_queries_on_client_close is enabled.
+	sql := `
+		SELECT
+			query_id,
+			user,
+			http_user_agent,
+			elapsed,
+			query,
+			memory_usage,
+			read_rows
+		FROM system.processes
+		WHERE http_user_agent != ''
+		  AND elapsed > 600
+		  AND is_cancelled = 0
+		ORDER BY elapsed DESC
+		LIMIT 20`
+
+	rows, err := client.Query(ctx, sql)
+	if err != nil {
+		c.logger().Warn("failed to query zombie queries", slog.String("error", err.Error()))
+		return
+	}
+
+	if len(rows) == 0 {
+		return
+	}
+
+	var lines []string
+	for _, row := range rows {
+		queryID := getString(row, "query_id")
+		user := getString(row, "user")
+		agent := getString(row, "http_user_agent")
+		elapsed := getFloat(row, "elapsed")
+		mem := getFloat(row, "memory_usage")
+		query := getString(row, "query")
+		if len(query) > 100 {
+			query = query[:100] + "..."
+		}
+		if len(agent) > 40 {
+			agent = agent[:40]
+		}
+		lines = append(lines, fmt.Sprintf("  - `%s` user=%s elapsed=%.0fs mem=%s agent=%s: %s",
+			queryID, user, elapsed, humanBytes(mem), agent, query))
+	}
+
+	result.AddMetric(client.Name(), "queries.zombie_count", float64(len(rows)), nil)
+
+	msg := fmt.Sprintf("*%d possible zombie queries* (HTTP client disconnected, server still running >10m):\n%s\n\n"+
+		"*To fix:* Enable `cancel_http_readonly_queries_on_client_close = 1` in server config\n"+
+		"*Kill manually:*\n```\nKILL QUERY WHERE query_id IN ('%s')\n```\n\n"+
+		"*To prevent:* Set `max_execution_time` in user profiles or query settings",
+		len(rows), strings.Join(lines, "\n"),
+		strings.Join(extractQueryIDs(rows), "','"))
+
+	sev := SeverityWarn
+	if len(rows) >= 3 {
+		sev = SeverityCritical
+	}
+
+	result.AddAlert(client.Name(), sev, "queries",
+		fmt.Sprintf("Zombie queries: %d orphaned HTTP queries", len(rows)),
+		msg,
+		fmt.Sprintf("%s:queries:zombie", client.Name()))
+}
+
+// extractQueryIDs pulls the query_id strings from a rows slice.
+func extractQueryIDs(rows []map[string]interface{}) []string {
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if id := getString(row, "query_id"); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 // collectRepeatedPatterns detects repeated identical query patterns via
 // normalised_query_hash from system.query_log.
 func (c *QueryCollector) collectRepeatedPatterns(ctx context.Context, client *chclient.Client, result *CollectResult) {
-	sql := `
+	sql := fmt.Sprintf(`
 		SELECT
 			normalized_query_hash,
 			any(query) AS sample_query,
@@ -230,11 +421,12 @@ func (c *QueryCollector) collectRepeatedPatterns(ctx context.Context, client *ch
 			any(user) AS user
 		FROM system.query_log
 		WHERE type = 'QueryFinish'
-		  AND event_time >= now() - INTERVAL 5 MINUTE
+		  AND %s
 		GROUP BY normalized_query_hash
 		HAVING cnt > 50
 		ORDER BY cnt DESC
-		LIMIT 20`
+		LIMIT 20`,
+		EventTimeCond(ctx, "event_time", "now() - INTERVAL 5 MINUTE"))
 
 	rows, err := client.Query(ctx, sql)
 	if err != nil {

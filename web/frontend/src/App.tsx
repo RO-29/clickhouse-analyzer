@@ -15,6 +15,7 @@ import ChatAnalyzer from './views/ChatAnalyzer'
 import TableScanner from './views/TableScanner'
 import CostExplorer from './views/CostExplorer'
 import Maintenance from './views/Maintenance'
+import AlertHistory from './views/AlertHistory'
 import RunCheck from './views/RunCheck'
 import { TableDetail } from './components/TableDetail'
 import { AIAnalysisPanel } from './components/AIAnalysisPanel'
@@ -79,6 +80,7 @@ function Layout() {
     overview: <Overview refreshKey={tick} />,
     detail: <Detail refreshKey={tick} />,
     alerts: <Alerts refreshKey={tick} />,
+    history: <AlertHistory refreshKey={tick} />,
     explore: <Explore refreshKey={tick} />,
     compare: <Compare />,
     advisor: <Advisor />,

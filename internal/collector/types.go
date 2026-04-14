@@ -153,6 +153,49 @@ func toString(v interface{}) string {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Time-range context helpers
+// ---------------------------------------------------------------------------
+
+// TimeRange holds an optional start/end window for historical queries.
+type TimeRange struct {
+	From time.Time
+	To   time.Time
+}
+
+type ctxTimeRangeKey struct{}
+
+// WithTimeRange attaches a custom query window to ctx.
+func WithTimeRange(ctx context.Context, from, to time.Time) context.Context {
+	return context.WithValue(ctx, ctxTimeRangeKey{}, TimeRange{From: from, To: to})
+}
+
+// TimeRangeFromCtx returns the time range attached to ctx, if any.
+func TimeRangeFromCtx(ctx context.Context) (TimeRange, bool) {
+	tr, ok := ctx.Value(ctxTimeRangeKey{}).(TimeRange)
+	return tr, ok
+}
+
+// EventTimeCond returns a SQL fragment filtering col by the context time range,
+// or falls back to `col >= {defaultExpr}` when no range is set.
+// Example:
+//
+//	EventTimeCond(ctx, "event_time", "now() - INTERVAL 5 MINUTE")
+//	→ "event_time >= now() - INTERVAL 5 MINUTE"   (no range)
+//	→ "event_time BETWEEN toDateTime(1714000000) AND toDateTime(1714003600)"  (range set)
+func EventTimeCond(ctx context.Context, col, defaultExpr string) string {
+	tr, ok := TimeRangeFromCtx(ctx)
+	if !ok {
+		return fmt.Sprintf("%s >= %s", col, defaultExpr)
+	}
+	return fmt.Sprintf("%s BETWEEN toDateTime(%d) AND toDateTime(%d)",
+		col, tr.From.Unix(), tr.To.Unix())
+}
+
+// ---------------------------------------------------------------------------
+// Row helpers
+// ---------------------------------------------------------------------------
+
 // getFloat extracts a named column from a row as float64.
 func getFloat(row map[string]interface{}, key string) float64 {
 	v, ok := row[key]

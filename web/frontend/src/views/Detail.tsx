@@ -70,7 +70,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
       }
       try {
         const [ah, q, t, d, m, s3, cs, tm, repl, maint] = await Promise.all([
-          api.alerts.history(500).catch(() => [] as Alert[]),
+          api.alerts.history({ limit: 500 }).catch(() => [] as Alert[]),
           api.queries(instance!).catch(() => []),
           api.tables(instance!).catch(() => []),
           api.disks(instance!).catch(() => []),
@@ -193,7 +193,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
     try {
       await api.alerts.resolve(dedupKey)
       // Refresh alert history
-      const ah = await api.alerts.history(500).catch(() => [] as Alert[])
+      const ah = await api.alerts.history({ limit: 500 }).catch(() => [] as Alert[])
       setAlertHistory((ah as Alert[]).filter((a) => a.instance === instance))
     } catch (e: any) {
       console.error('resolve alert failed:', e)

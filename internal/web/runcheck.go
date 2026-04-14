@@ -14,6 +14,8 @@ import (
 type runCheckRequest struct {
 	Collectors []string `json:"collectors"`
 	Instances  []string `json:"instances"`
+	From       *int64   `json:"from,omitempty"` // unix seconds, optional time range start
+	To         *int64   `json:"to,omitempty"`   // unix seconds, optional time range end
 }
 
 // runCheckResultItem holds the outcome of one (instance, collector) pair.
@@ -130,7 +132,13 @@ func (s *Server) handleRunCheck(w http.ResponseWriter, r *http.Request) {
 
 			coll, _ := collector.BuildCollectorFromConfig(wi.collectorName, s.cfg)
 
-			ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+			baseCtx := r.Context()
+			if req.From != nil && req.To != nil {
+				baseCtx = collector.WithTimeRange(baseCtx,
+					time.Unix(*req.From, 0),
+					time.Unix(*req.To, 0))
+			}
+			ctx, cancel := context.WithTimeout(baseCtx, 30*time.Second)
 			defer cancel()
 
 			start := time.Now()

@@ -142,7 +142,7 @@ func (c *ErrorsCollector) collectSystemErrors(ctx context.Context, client *chcli
 // collectTextLog scans system.text_log for recent Fatal/Critical log entries.
 // These are extremely rare and always indicate serious problems.
 func (c *ErrorsCollector) collectTextLog(ctx context.Context, client *chclient.Client, result *CollectResult) {
-	sql := `
+	sql := fmt.Sprintf(`
 		SELECT
 			level,
 			message,
@@ -150,9 +150,10 @@ func (c *ErrorsCollector) collectTextLog(ctx context.Context, client *chclient.C
 			event_time
 		FROM system.text_log
 		WHERE level IN ('Fatal', 'Critical')
-		  AND event_time > now() - INTERVAL 10 MINUTE
+		  AND %s
 		ORDER BY event_time DESC
-		LIMIT 10`
+		LIMIT 10`,
+		EventTimeCond(ctx, "event_time", "now() - INTERVAL 10 MINUTE"))
 
 	rows, err := client.Query(ctx, sql)
 	if err != nil {

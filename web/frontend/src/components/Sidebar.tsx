@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import {
-  LayoutDashboard, Bell, Search, GitCompareArrows, Lightbulb, TerminalSquare, FileText, Database,
+  LayoutDashboard, Bell, BellDot, Search, GitCompareArrows, Lightbulb, TerminalSquare, FileText, Database,
   Sun, Moon, ChevronsLeft, ChevronsRight, Sparkles, RefreshCw, ScanSearch, DollarSign, Shield, PlayCircle,
 } from 'lucide-react'
 import { useStore, type View } from '../hooks/useStore'
@@ -11,6 +11,7 @@ import type { Instance } from '../types/api'
 const NAV_ITEMS: { view: View; label: string; icon: typeof LayoutDashboard }[] = [
   { view: 'overview', label: 'Overview', icon: LayoutDashboard },
   { view: 'alerts', label: 'Alerts', icon: Bell },
+  { view: 'history', label: 'Alert History', icon: BellDot },
   { view: 'explore', label: 'Explore', icon: Search },
   { view: 'compare', label: 'Compare', icon: GitCompareArrows },
   { view: 'advisor', label: 'Advisor', icon: Lightbulb },

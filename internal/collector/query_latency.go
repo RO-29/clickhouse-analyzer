@@ -29,19 +29,33 @@ func (c *QueryLatencyCollector) Collect(ctx context.Context, client *chclient.Cl
 	start := time.Now()
 	result := &CollectResult{}
 
-	currentP95, currentCnt, err := c.queryP95(ctx, client,
-		`type = 'QueryFinish' AND is_initial_query = 1
+	var currentWhere, baselineWhere string
+	if tr, ok := TimeRangeFromCtx(ctx); ok {
+		// Custom time range: use it as current window; baseline = same window 24h prior.
+		currentWhere = fmt.Sprintf(
+			"type = 'QueryFinish' AND is_initial_query = 1 AND query_duration_ms > 0"+
+				" AND event_time BETWEEN toDateTime(%d) AND toDateTime(%d)",
+			tr.From.Unix(), tr.To.Unix())
+		baselineWhere = fmt.Sprintf(
+			"type = 'QueryFinish' AND is_initial_query = 1 AND query_duration_ms > 0"+
+				" AND event_time BETWEEN toDateTime(%d) AND toDateTime(%d)",
+			tr.From.Unix()-86400, tr.To.Unix()-86400)
+	} else {
+		currentWhere = `type = 'QueryFinish' AND is_initial_query = 1
 		  AND event_time > now() - INTERVAL 30 MINUTE
-		  AND query_duration_ms > 0`)
+		  AND query_duration_ms > 0`
+		baselineWhere = `type = 'QueryFinish' AND is_initial_query = 1
+		  AND event_time BETWEEN now() - INTERVAL 25 HOUR AND now() - INTERVAL 23 HOUR
+		  AND query_duration_ms > 0`
+	}
+
+	currentP95, currentCnt, err := c.queryP95(ctx, client, currentWhere)
 	if err != nil {
 		result.Duration = time.Since(start)
 		return result, nil
 	}
 
-	baselineP95, baselineCnt, err := c.queryP95(ctx, client,
-		`type = 'QueryFinish' AND is_initial_query = 1
-		  AND event_time BETWEEN now() - INTERVAL 25 HOUR AND now() - INTERVAL 23 HOUR
-		  AND query_duration_ms > 0`)
+	baselineP95, baselineCnt, err := c.queryP95(ctx, client, baselineWhere)
 	if err != nil {
 		result.Duration = time.Since(start)
 		return result, nil

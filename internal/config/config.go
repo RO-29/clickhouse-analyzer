@@ -109,9 +109,10 @@ type CPUThresholds struct {
 }
 
 type QueriesThresholds struct {
-	LongRunningThreshold Duration `yaml:"long_running_threshold"`
-	MaxConcurrent        int      `yaml:"max_concurrent"`
-	WarnConcurrent       int      `yaml:"warn_concurrent"`
+	LongRunningThreshold     Duration `yaml:"long_running_threshold"`
+	LongRunningWarnThreshold Duration `yaml:"long_running_warn_threshold"`
+	MaxConcurrent            int      `yaml:"max_concurrent"`
+	WarnConcurrent           int      `yaml:"warn_concurrent"`
 }
 
 type PartsThresholds struct {
@@ -278,9 +279,10 @@ func Defaults() *Config {
 				CriticalPercent: 95,
 			},
 			Queries: QueriesThresholds{
-				LongRunningThreshold: Duration{time.Minute},
-				MaxConcurrent:        100,
-				WarnConcurrent:       50,
+				LongRunningThreshold:     Duration{time.Minute},
+				LongRunningWarnThreshold: Duration{30 * time.Second},
+				MaxConcurrent:            100,
+				WarnConcurrent:           50,
 			},
 			Parts: PartsThresholds{
 				WarnCount:        1000,

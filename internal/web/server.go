@@ -210,6 +210,10 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/collectors", s.handleGetCollectors)
 	mux.HandleFunc("POST /api/run-check", s.handleRunCheck)
 	mux.HandleFunc("POST /api/force-poll", s.handleForcePoll)
+
+	// Alert stats and parts age for Overview / Explore.
+	mux.HandleFunc("GET /api/alerts/stats", s.handleAlertStats)
+	mux.HandleFunc("GET /api/instances/{name}/parts-age", s.handlePartsAge)
 }
 
 // ---------------------------------------------------------------------------
@@ -751,12 +755,40 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, results)
 }
 
-// GET /api/alerts/history?limit=200 — all alerts (active+resolved) across all instances.
+// GET /api/alerts/history — all alerts (active+resolved) with optional filters.
+//
+// Query params:
+//
+//	limit    int    max results (default 500)
+//	from     int64  unix timestamp start (default: now-30d)
+//	to       int64  unix timestamp end   (default: now)
+//	instance string filter to one instance
+//	severity string filter by severity (critical|warn|info)
+//	category string filter by category
 func (s *Server) handleAlertHistory(w http.ResponseWriter, r *http.Request) {
-	names := s.manager.Names()
-	limit := parseIntParam(r, "limit", 200)
-	from := time.Now().Add(-30 * 24 * time.Hour)
-	to := time.Now()
+	limit := parseIntParam(r, "limit", 500)
+	fromUnix := int64(parseIntParam(r, "from", 0))
+	toUnix := int64(parseIntParam(r, "to", 0))
+	instanceFilter := r.URL.Query().Get("instance")
+	severityFilter := r.URL.Query().Get("severity")
+	categoryFilter := r.URL.Query().Get("category")
+
+	now := time.Now()
+	from := now.Add(-30 * 24 * time.Hour)
+	to := now
+	if fromUnix > 0 {
+		from = time.Unix(fromUnix, 0)
+	}
+	if toUnix > 0 {
+		to = time.Unix(toUnix, 0)
+	}
+
+	var names []string
+	if instanceFilter != "" {
+		names = []string{instanceFilter}
+	} else {
+		names = s.manager.Names()
+	}
 
 	var all []store.Alert
 	for _, name := range names {
@@ -768,7 +800,7 @@ func (s *Server) handleAlertHistory(w http.ResponseWriter, r *http.Request) {
 		all = append(all, alerts...)
 	}
 
-	// Also add active alerts that might not be in history yet.
+	// Include active alerts not yet present in history.
 	for _, name := range names {
 		active, _ := s.store.GetActiveAlerts(name)
 		for _, a := range active {
@@ -785,7 +817,102 @@ func (s *Server) handleAlertHistory(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// In-memory filtering for severity / category (avoids store layer complexity).
+	if severityFilter != "" || categoryFilter != "" {
+		filtered := all[:0]
+		for _, a := range all {
+			if severityFilter != "" && a.Severity != severityFilter {
+				continue
+			}
+			if categoryFilter != "" && a.Category != categoryFilter {
+				continue
+			}
+			filtered = append(filtered, a)
+		}
+		all = filtered
+	}
+
+	// Sort newest first, cap at limit.
+	sort.Slice(all, func(i, j int) bool {
+		return all[i].CreatedAt.After(all[j].CreatedAt)
+	})
+	if len(all) > limit {
+		all = all[:limit]
+	}
+
 	writeJSON(w, http.StatusOK, marshalAlerts(all))
+}
+
+// GET /api/alerts/stats?hours=24 — aggregated alert statistics for Overview.
+func (s *Server) handleAlertStats(w http.ResponseWriter, r *http.Request) {
+	hours := parseIntParam(r, "hours", 24)
+	from := time.Now().Add(-time.Duration(hours) * time.Hour)
+	to := time.Now()
+
+	names := s.manager.Names()
+	var historical []store.Alert
+	for _, name := range names {
+		alerts, _ := s.store.GetAlertHistory(name, from, to, 2000)
+		historical = append(historical, alerts...)
+	}
+	var active []store.Alert
+	for _, name := range names {
+		a, _ := s.store.GetActiveAlerts(name)
+		active = append(active, a...)
+	}
+
+	type catEntry struct {
+		Category string `json:"category"`
+		Count    int    `json:"count"`
+	}
+	catCounts := map[string]int{}
+	critical, warn, resolved := 0, 0, 0
+	var durationSecs []float64
+
+	for _, a := range historical {
+		catCounts[a.Category]++
+		if a.Severity == "critical" {
+			critical++
+		} else if a.Severity == "warn" {
+			warn++
+		}
+		if a.Resolved && a.ResolvedAt != nil && !a.CreatedAt.IsZero() {
+			d := a.ResolvedAt.Sub(a.CreatedAt).Seconds()
+			if d > 0 {
+				durationSecs = append(durationSecs, d)
+			}
+			resolved++
+		}
+	}
+
+	var avgDurationSecs float64
+	if len(durationSecs) > 0 {
+		sum := 0.0
+		for _, d := range durationSecs {
+			sum += d
+		}
+		avgDurationSecs = sum / float64(len(durationSecs))
+	}
+
+	var topCats []catEntry
+	for cat, cnt := range catCounts {
+		topCats = append(topCats, catEntry{Category: cat, Count: cnt})
+	}
+	sort.Slice(topCats, func(i, j int) bool { return topCats[i].Count > topCats[j].Count })
+	if len(topCats) > 5 {
+		topCats = topCats[:5]
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"period_hours":      hours,
+		"total_fired":       len(historical),
+		"currently_firing":  len(active),
+		"resolved":          resolved,
+		"critical":          critical,
+		"warn":              warn,
+		"avg_duration_secs": avgDurationSecs,
+		"top_categories":    topCats,
+	})
 }
 
 // GET /api/alerts/active — all active alerts across all instances.
@@ -802,6 +929,66 @@ func (s *Server) handleActiveAlerts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, marshalAlerts(all))
+}
+
+// GET /api/instances/{name}/parts-age — active parts sorted by age, for the Explore Parts Age tab.
+func (s *Server) handlePartsAge(w http.ResponseWriter, r *http.Request) {
+	instance := r.PathValue("name")
+	client := s.manager.Get(instance)
+	if client == nil {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	sql := `
+		SELECT
+			database, table,
+			count() AS part_count,
+			max(toUnixTimestamp(now()) - toUnixTimestamp(modification_time)) / 3600 AS oldest_part_hours,
+			min(modification_time) AS oldest_modification,
+			sum(rows) AS total_rows,
+			sum(bytes_on_disk) AS total_bytes
+		FROM system.parts
+		WHERE active = 1
+		  AND database NOT IN ('system','information_schema','INFORMATION_SCHEMA')
+		GROUP BY database, table
+		HAVING part_count > 1
+		ORDER BY oldest_part_hours DESC
+		LIMIT 200`
+
+	rows, err := client.Query(ctx, sql)
+	if err != nil {
+		slog.Error("parts-age query failed", "instance", instance, "err", err)
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	type partsAgeEntry struct {
+		Database          string  `json:"database"`
+		Table             string  `json:"table"`
+		PartCount         float64 `json:"part_count"`
+		OldestPartHours   float64 `json:"oldest_part_hours"`
+		OldestModification string `json:"oldest_modification"`
+		TotalRows         float64 `json:"total_rows"`
+		TotalBytes        float64 `json:"total_bytes"`
+	}
+
+	out := make([]partsAgeEntry, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, partsAgeEntry{
+			Database:           toString(row["database"]),
+			Table:              toString(row["table"]),
+			PartCount:          toFloat64(row["part_count"]),
+			OldestPartHours:    toFloat64(row["oldest_part_hours"]),
+			OldestModification: toString(row["oldest_modification"]),
+			TotalRows:          toFloat64(row["total_rows"]),
+			TotalBytes:         toFloat64(row["total_bytes"]),
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // GET /api/instances/{name}/ch-logs?level=Error&search=foo&limit=200&minutes=60
@@ -1002,25 +1189,35 @@ func writeErr(w http.ResponseWriter, status int, msg string) {
 }
 
 type alertJSON struct {
-	ID         int64   `json:"id"`
-	Instance   string  `json:"instance"`
-	Severity   string  `json:"severity"`
-	Category   string  `json:"category"`
-	Title      string  `json:"title"`
-	Message    string  `json:"message"`
-	Resolved   bool    `json:"resolved"`
-	ResolvedAt *int64  `json:"resolved_at,omitempty"`
-	CreatedAt  int64   `json:"created_at"`
-	UpdatedAt  int64   `json:"updated_at"`
-	DedupKey   string  `json:"dedup_key"`
+	ID         int64  `json:"id"`
+	Instance   string `json:"instance"`
+	Severity   string `json:"severity"`
+	Category   string `json:"category"`
+	Title      string `json:"title"`
+	Message    string `json:"message"`
+	Resolved   bool   `json:"resolved"`
+	ResolvedAt *int64 `json:"resolved_at,omitempty"`
+	CreatedAt  int64  `json:"created_at"`
+	UpdatedAt  int64  `json:"updated_at"`
+	DedupKey   string `json:"dedup_key"`
+	// DurationS is the alert lifetime in seconds: resolved_at-created_at when
+	// resolved, or now-created_at when still firing.
+	DurationS int64 `json:"duration_s"`
 }
 
 func marshalAlerts(alerts []store.Alert) []alertJSON {
+	now := time.Now()
 	out := make([]alertJSON, len(alerts))
 	for i, a := range alerts {
 		updatedAt := a.UpdatedAt.Unix()
 		if a.UpdatedAt.IsZero() {
 			updatedAt = a.CreatedAt.Unix()
+		}
+		var durationS int64
+		if a.Resolved && a.ResolvedAt != nil {
+			durationS = a.ResolvedAt.Unix() - a.CreatedAt.Unix()
+		} else if !a.CreatedAt.IsZero() {
+			durationS = int64(now.Sub(a.CreatedAt).Seconds())
 		}
 		out[i] = alertJSON{
 			ID:        a.ID,
@@ -1033,6 +1230,7 @@ func marshalAlerts(alerts []store.Alert) []alertJSON {
 			CreatedAt: a.CreatedAt.Unix(),
 			UpdatedAt: updatedAt,
 			DedupKey:  a.DedupKey,
+			DurationS: durationS,
 		}
 		if a.ResolvedAt != nil {
 			ts := a.ResolvedAt.Unix()
