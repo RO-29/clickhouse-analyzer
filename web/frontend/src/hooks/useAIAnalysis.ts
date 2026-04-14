@@ -63,7 +63,14 @@ export function useAIAnalysis(instance: string) {
     chatSessions, setChatSessions,
     activeChatId, setActiveChatId,
     aiPanelOpen: isOpen, setAiPanelOpen: setIsOpen,
+    instances: storeInstances,
   } = useStore()
+
+  // Resolve which instance to use for API calls.
+  // Falls back to the first known instance when the prop is empty (e.g. Compare view).
+  const resolveInstance = useCallback((override?: string): string => {
+    return override || instance || storeInstances[0] || ''
+  }, [instance, storeInstances])
 
   // Update a specific message within a specific session
   const updateMessage = useCallback((
@@ -139,8 +146,14 @@ export function useAIAnalysis(instance: string) {
     const fireNotifyDone = () => { if (!notified) { notified = true; notifyDone(label) } }
     const fireNotifyError = () => { if (!notified) { notified = true; notifyError(label) } }
 
+    const instForReq = resolveInstance()
+    if (!instForReq) {
+      updateMessage(sessionId!, assistantMsgId, m => ({ ...m, status: 'error', content: 'Error: No instance selected. Pick an instance from the sidebar first.' }))
+      return
+    }
+
     try {
-      const resp = await fetch(`/api/instances/${instance}/analyze-element`, {
+      const resp = await fetch(`/api/instances/${instForReq}/analyze-element`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -195,7 +208,7 @@ export function useAIAnalysis(instance: string) {
       updateMessage(sessionId!, assistantMsgId, m => ({ ...m, status: 'error', content: `Error: ${err.message}` }))
       fireNotifyError()
     }
-  }, [instance, chatSessions, activeChatId, setChatSessions, setActiveChatId, setIsOpen, updateMessage])
+  }, [instance, chatSessions, activeChatId, setChatSessions, setActiveChatId, setIsOpen, updateMessage, resolveInstance])
 
   const followUp = useCallback(async (question: string) => {
     if (!question.trim() || !activeChatId) return
@@ -245,7 +258,7 @@ export function useAIAnalysis(instance: string) {
     setIsOpen(true)
     requestNotifPermission()
 
-    const instanceForReq = instance || session.instance
+    const instanceForReq = resolveInstance(session.instance)
 
     let notified = false
     const fireNotifyDone = () => { if (!notified) { notified = true; notifyDone(label) } }
