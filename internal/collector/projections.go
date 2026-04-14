@@ -39,14 +39,15 @@ func (c *ProjectionCollector) Collect(ctx context.Context, client *chclient.Clie
 // collectProjectionsList fetches the list of defined projections.
 func (c *ProjectionCollector) collectProjectionsList(ctx context.Context, client *chclient.Client, result *CollectResult) {
 	sql := `
-		SELECT database, table, name, part_name, is_frozen
+		SELECT database, table, name
 		FROM system.projections
 		WHERE database NOT IN ('system','information_schema','INFORMATION_SCHEMA')
 		LIMIT 100`
 
 	rows, err := client.Query(ctx, sql)
 	if err != nil {
-		if strings.Contains(err.Error(), "UNKNOWN_TABLE") {
+		if strings.Contains(err.Error(), "UNKNOWN_TABLE") ||
+			strings.Contains(err.Error(), "UNKNOWN_IDENTIFIER") {
 			return
 		}
 		c.logger().Warn("failed to query system.projections", slog.String("error", err.Error()))

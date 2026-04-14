@@ -26,34 +26,63 @@ func (c *FreshnessCollector) logger() *slog.Logger {
 	return slog.Default()
 }
 
+// queryFreshness runs the freshness query. modern=true uses databases[1]/tables[1] (CH 22+);
+// modern=false falls back to the scalar database/table columns (pre-22).
+func (c *FreshnessCollector) queryFreshness(ctx context.Context, client *chclient.Client, modern bool) ([]map[string]interface{}, error) {
+	var sql string
+	if modern {
+		sql = `
+			SELECT databases[1] AS database, tables[1] AS table,
+				max(event_time) AS last_insert,
+				count() AS inserts_24h
+			FROM system.query_log
+			WHERE type = 'QueryFinish'
+			  AND query_kind = 'Insert'
+			  AND event_time > now() - INTERVAL 24 HOUR
+			  AND length(databases) > 0
+			  AND databases[1] NOT IN ('system','information_schema','INFORMATION_SCHEMA')
+			GROUP BY databases[1], tables[1]
+			HAVING inserts_24h > 5
+			   AND last_insert < now() - INTERVAL 20 MINUTE
+			ORDER BY last_insert ASC
+			LIMIT 20`
+	} else {
+		sql = `
+			SELECT database, table,
+				max(event_time) AS last_insert,
+				countIf(event_time > now() - INTERVAL 24 HOUR) AS inserts_24h
+			FROM system.query_log
+			WHERE type = 'QueryFinish'
+			  AND query_kind = 'Insert'
+			  AND event_time > now() - INTERVAL 24 HOUR
+			  AND database NOT IN ('system','information_schema','INFORMATION_SCHEMA')
+			GROUP BY database, table
+			HAVING inserts_24h > 5
+			   AND last_insert < now() - INTERVAL 20 MINUTE
+			ORDER BY last_insert ASC
+			LIMIT 20`
+	}
+	return client.Query(ctx, sql)
+}
+
 func (c *FreshnessCollector) Collect(ctx context.Context, client *chclient.Client) (*CollectResult, error) {
 	start := time.Now()
 	result := &CollectResult{}
 
-	sql := `
-		SELECT database, table,
-			max(event_time) AS last_insert,
-			countIf(event_time > now() - INTERVAL 24 HOUR) AS inserts_24h
-		FROM system.query_log
-		WHERE type = 'QueryFinish'
-		  AND query_kind = 'Insert'
-		  AND event_time > now() - INTERVAL 24 HOUR
-		  AND database NOT IN ('system','information_schema','INFORMATION_SCHEMA')
-		GROUP BY database, table
-		HAVING inserts_24h > 5
-		   AND last_insert < now() - INTERVAL 20 MINUTE
-		ORDER BY last_insert ASC
-		LIMIT 20`
-
-	rows, err := client.Query(ctx, sql)
+	// CH 22+ uses databases[]/tables[] arrays. Older builds have scalar database/table columns.
+	// Try modern schema first.
+	rows, err := c.queryFreshness(ctx, client, true)
 	if err != nil {
-		if strings.Contains(err.Error(), "UNKNOWN_TABLE") {
+		rows, err = c.queryFreshness(ctx, client, false)
+		if err != nil {
+			if strings.Contains(err.Error(), "UNKNOWN_TABLE") {
+				result.Duration = time.Since(start)
+				return result, nil
+			}
+			c.logger().Warn("failed to query insert freshness", slog.String("error", err.Error()))
 			result.Duration = time.Since(start)
 			return result, nil
 		}
-		c.logger().Warn("failed to query insert freshness", slog.String("error", err.Error()))
-		result.Duration = time.Since(start)
-		return result, nil
 	}
 
 	if len(rows) == 0 {
