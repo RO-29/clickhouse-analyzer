@@ -143,7 +143,8 @@ export function useAIAnalysis(instance: string) {
     requestNotifPermission()
 
     let notified = false
-    const fireNotifyDone = () => { if (!notified) { notified = true; notifyDone(label) } }
+    // sessionId is a `let` — closure sees its final value once the stream ends
+    const fireNotifyDone  = () => { if (!notified) { notified = true; notifyDone(label, sessionId ?? undefined) } }
     const fireNotifyError = () => { if (!notified) { notified = true; notifyError(label) } }
 
     const instForReq = resolveInstance()
@@ -261,7 +262,7 @@ export function useAIAnalysis(instance: string) {
     const instanceForReq = resolveInstance(session.instance)
 
     let notified = false
-    const fireNotifyDone = () => { if (!notified) { notified = true; notifyDone(label) } }
+    const fireNotifyDone  = () => { if (!notified) { notified = true; notifyDone(label, activeChatId ?? undefined) } }
     const fireNotifyError = () => { if (!notified) { notified = true; notifyError(label) } }
 
     try {
