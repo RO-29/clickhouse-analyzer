@@ -329,32 +329,18 @@ func (s *Store) resolveAlertOnClient(client *chclient.Client, dedupKey string) e
 
 	now := time.Now().Format("2006-01-02 15:04:05")
 
-	sql := fmt.Sprintf(`SELECT id, instance, severity, category, title, message, created_at, version
-		FROM %s.alerts FINAL
-		WHERE dedup_key = '%s' AND resolved = 0
-		ORDER BY created_at DESC LIMIT 1`,
-		s.database, escape(dedupKey))
-
-	rows, err := client.Query(ctx, sql)
-	if err != nil || len(rows) == 0 {
-		return nil
-	}
-
-	row := rows[0]
-	id := getFloat(row, "id")
-	createdAt := getString(row, "created_at")
-	nextVersion := int(getFloat(row, "version")) + 1
-
+	// Resolve ALL unresolved rows for this dedup_key. There may be more than one
+	// if previous auto-resolve cycles failed and InsertAlert created new rows with
+	// different created_at values (different ORDER BY keys = separate CH entities).
+	// Using INSERT...SELECT with version+1 per row avoids the hardcoded-version
+	// race and handles every accumulated duplicate in one shot.
 	insertSQL := fmt.Sprintf(`INSERT INTO %s.alerts
-		(id, instance, severity, category, title, message, resolved, resolved_at, created_at, dedup_key, version)
-		VALUES (%d, '%s', '%s', '%s', '%s', '%s', 1, '%s', '%s', '%s', %d)`,
-		s.database, int64(id),
-		escape(getString(row, "instance")),
-		escape(getString(row, "severity")),
-		escape(getString(row, "category")),
-		escape(getString(row, "title")),
-		escape(getString(row, "message")),
-		now, createdAt, escape(dedupKey), nextVersion)
+		(id, instance, severity, category, title, message, resolved, resolved_at, created_at, dedup_key, version, updated_at)
+		SELECT id, instance, severity, category, title, message, 1, '%s', created_at, dedup_key, version+1, updated_at
+		FROM %s.alerts FINAL
+		WHERE dedup_key = '%s' AND resolved = 0`,
+		s.database, now,
+		s.database, escape(dedupKey))
 
 	if _, err := client.QuerySingleValue(ctx, insertSQL); err != nil {
 		return fmt.Errorf("store: resolve alert: %w", err)
