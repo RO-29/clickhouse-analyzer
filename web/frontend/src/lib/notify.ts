@@ -43,20 +43,16 @@ export function requestNotifPermission() {
   }
 }
 
-/** Play a pleasant double-ding and optionally show a browser notification. */
+/** Play a pleasant double-ding and show a browser notification. */
 export function notifyDone(label: string) {
   // Two-note ascending ding: E5 → A5
   playTone([659, 880], 0.18)
-  if (!document.hasFocus()) {
-    showBrowserNotif('Analysis complete', label)
-  }
+  showBrowserNotif('Analysis complete', label)
 }
 
-/** Play a low error buzz and optionally show a browser notification. */
+/** Play a low error buzz and show a browser notification. */
 export function notifyError(label: string) {
   // Descending low tones: D3 → A2
   playTone([147, 110], 0.25, 0.2)
-  if (!document.hasFocus()) {
-    showBrowserNotif('Analysis failed', label)
-  }
+  showBrowserNotif('Analysis failed', label)
 }

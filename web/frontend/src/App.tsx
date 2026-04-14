@@ -101,18 +101,20 @@ function Layout() {
           onClose={closeTableDetail}
         />
       )}
-      <AIAnalysisPanel
-        instance={selectedInstance}
-        isOpen={aiOpen}
-        onToggle={() => setAiOpen(!aiOpen)}
-        onAnalyze={aiAnalyze}
-        onFollowUp={aiFollowUp}
-        onNewSession={aiNewSession}
-        onDeleteSession={aiDeleteSession}
-        onSelectSession={setAiActiveSession}
-        sessions={aiSessions}
-        activeSessionId={aiActiveSessionId}
-      />
+      {view !== 'analyzer' && (
+        <AIAnalysisPanel
+          instance={selectedInstance}
+          isOpen={aiOpen}
+          onToggle={() => setAiOpen(!aiOpen)}
+          onAnalyze={aiAnalyze}
+          onFollowUp={aiFollowUp}
+          onNewSession={aiNewSession}
+          onDeleteSession={aiDeleteSession}
+          onSelectSession={setAiActiveSession}
+          sessions={aiSessions}
+          activeSessionId={aiActiveSessionId}
+        />
+      )}
     </div>
   )
 }

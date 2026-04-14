@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity, AlertCircle, CheckCircle2, ChevronDown,
-  ClipboardCopy, Clock, Database, Loader2, RefreshCw, Send, Sparkles, X, History,
+  ClipboardCopy, Clock, Database, Loader2, MessageSquare, RefreshCw, Send, Sparkles, X, History,
 } from 'lucide-react'
 import { marked } from 'marked'
 import { useStore } from '../hooks/useStore'
 import { cn } from '../lib/utils'
 import { notifyDone, notifyError, requestNotifPermission } from '../lib/notify'
-import type { AnalysisEntry } from '../types/api'
+import type { AnalysisEntry, AISession } from '../types/api'
 
 /* ─── marked config ──────────────────────────────────────────────────────── */
 
@@ -281,7 +281,7 @@ function RunningInfoCard({ mode, instance, timeWindow, phase, steps, linesReceiv
 /* ─── Main component ─────────────────────────────────────────────────────── */
 
 export default function QueryAnalyzer() {
-  const { instances, selectedInstance, aiEntries, setAiEntries } = useStore()
+  const { instances, selectedInstance, aiSessions, setAiSessions, setActiveSessionId: storeSetActiveSessionId } = useStore()
 
   const [instance, setInstance] = useState(selectedInstance || instances[0] || '')
   const [mode, setMode] = useState<ModeId>('full')
@@ -295,19 +295,28 @@ export default function QueryAnalyzer() {
   const [errorMsg, setErrorMsg] = useState('')
   const [linesReceived, setLinesReceived] = useState(0)
 
-  // History: inline + deep analyses
-  const [selectedEntry, setSelectedEntry] = useState<AnalysisEntry | null>(null)
+  // History: session-based
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
+  const selectedSession = useMemo(() =>
+    aiSessions.find(s => s.id === selectedSessionId) ?? null,
+    [aiSessions, selectedSessionId],
+  )
 
   const abortRef = useRef<AbortController | null>(null)
   const outputRef = useRef<HTMLDivElement>(null)
   // Accumulate full output text so we can save to history on completion
   const outputAccRef = useRef('')
   const analysisStartRef = useRef<Date>(new Date())
+  const liveSessionIdRef = useRef<string | null>(null)
+  const liveEntryIdRef = useRef<string | null>(null)
 
-  // Sync instance when store changes
+  // Sync instance when store changes; auto-select first if none chosen
   useEffect(() => {
-    if (selectedInstance && !instance) setInstance(selectedInstance)
-  }, [selectedInstance, instance])
+    if (!instance) {
+      const pick = selectedInstance || instances[0]
+      if (pick) setInstance(pick)
+    }
+  }, [selectedInstance, instances]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-scroll output
   useEffect(() => {
@@ -328,18 +337,21 @@ export default function QueryAnalyzer() {
     setOutput('')
     setErrorMsg('')
     setFollowUp('')
-    setSelectedEntry(null)
+    setSelectedSessionId(null)
+    liveSessionIdRef.current = null
+    liveEntryIdRef.current = null
   }, [stopStream])
 
   const runAnalysis = useCallback((appendQuestion?: string) => {
     if (!instance) return
     stopStream()
     requestNotifPermission()
-    setSelectedEntry(null)
+    setSelectedSessionId(null)
 
     const q = appendQuestion ?? (question || '')
     const modeLabel = MODES.find((m) => m.id === mode)?.label ?? mode
     const entryLabel = `${modeLabel} — ${instance}`
+    const now = Date.now()
     outputAccRef.current = ''
     analysisStartRef.current = new Date()
 
@@ -349,22 +361,59 @@ export default function QueryAnalyzer() {
     setErrorMsg('')
     setLinesReceived(0)
 
+    // Create a streaming session entry immediately so it shows in history
+    const newEntryId = now.toString(36) + Math.random().toString(36).slice(2)
+    const streamingEntry: AnalysisEntry = {
+      id: newEntryId,
+      label: entryLabel,
+      contextType: 'tab',
+      tab: 'analyzer',
+      status: 'streaming',
+      output: '',
+      timestamp: now,
+      question: appendQuestion || undefined,
+    }
+
+    // Follow-up: add to existing live session; new run: create fresh session
+    if (appendQuestion && liveSessionIdRef.current) {
+      setAiSessions(prev => prev.map(s =>
+        s.id === liveSessionIdRef.current
+          ? { ...s, updatedAt: now, entries: [streamingEntry, ...s.entries] }
+          : s
+      ))
+    } else {
+      const newSessionId = (now + 1).toString(36) + Math.random().toString(36).slice(2, 7)
+      const newSession: AISession = {
+        id: newSessionId,
+        name: entryLabel,
+        instance,
+        createdAt: now,
+        updatedAt: now,
+        entries: [streamingEntry],
+      }
+      setAiSessions(prev => [newSession, ...prev])
+      storeSetActiveSessionId(newSessionId)
+      liveSessionIdRef.current = newSessionId
+    }
+    liveEntryIdRef.current = newEntryId
+
     // Deduplication flag — only notify once per run
     let notified = false
     const fireNotifyDone = () => { if (!notified) { notified = true; notifyDone(entryLabel) } }
     const fireNotifyError = (msg?: string) => { if (!notified) { notified = true; notifyError(msg ? `${entryLabel}: ${msg}` : entryLabel) } }
 
-    const saveToHistory = (status: 'done' | 'error') => {
-      const entry: AnalysisEntry = {
-        id: Date.now().toString(36) + Math.random().toString(36).slice(2),
-        label: entryLabel,
-        contextType: 'tab',
-        tab: 'analyzer',
-        status,
-        output: outputAccRef.current,
-        timestamp: analysisStartRef.current.getTime(),
+    const updateLiveEntry = (status: 'done' | 'error') => {
+      const sessId = liveSessionIdRef.current
+      const entryId = liveEntryIdRef.current
+      if (sessId && entryId) {
+        setAiSessions(prev => prev.map(s =>
+          s.id === sessId
+            ? { ...s, updatedAt: Date.now(), entries: s.entries.map(e =>
+                e.id === entryId ? { ...e, status, output: outputAccRef.current } : e
+              )}
+            : s
+        ))
       }
-      setAiEntries((prev) => [entry, ...prev])
     }
 
     const ctrl = new AbortController()
@@ -430,7 +479,7 @@ export default function QueryAnalyzer() {
               const errMsg = payload as string
               setErrorMsg(errMsg)
               setPhase('error')
-              saveToHistory('error')
+              updateLiveEntry('error')
               fireNotifyError(errMsg)
             } else if (event === 'stderr') {
               setErrorMsg((prev) => prev ? prev + '\n' + (payload as string) : 'Claude: ' + (payload as string))
@@ -453,17 +502,17 @@ export default function QueryAnalyzer() {
       if (remainder) processLine(remainder)
       setSteps((prev) => prev.map((s) => ({ ...s, status: 'done' as const })))
       setPhase('done')
-      saveToHistory('done')
+      updateLiveEntry('done')
       fireNotifyDone()
     }).catch((err: unknown) => {
       if (err instanceof Error && err.name !== 'AbortError') {
         setErrorMsg(err.message)
         setPhase('error')
-        saveToHistory('error')
+        updateLiveEntry('error')
         fireNotifyError(err.message)
       }
     })
-  }, [instance, mode, timeWindow, question, stopStream, setAiEntries])
+  }, [instance, mode, timeWindow, question, stopStream, setAiSessions, storeSetActiveSessionId])
 
   useEffect(() => () => stopStream(), [stopStream])
 
@@ -638,24 +687,35 @@ export default function QueryAnalyzer() {
         </div>
 
         {/* ── History panel ── */}
-        {aiEntries.length > 0 && (
+        {aiSessions.length > 0 && (
           <div className="border-t border-[var(--border)] pt-3 mt-2">
             <div className="flex items-center gap-1.5 mb-2">
               <History size={10} className="text-[var(--dim)]" />
               <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--dim)]">History</span>
-              <span className="ml-auto text-[10px] text-[var(--dim)]">{aiEntries.length}</span>
+              <span className="ml-auto text-[10px] text-[var(--dim)]">{aiSessions.length}</span>
             </div>
             <div className="space-y-1 max-h-60 overflow-y-auto pr-0.5">
-              {aiEntries.map((entry) => {
-                const isSelected = selectedEntry?.id === entry.id
-                const ts = new Date(entry.timestamp)
+              {aiSessions.map((session) => {
+                const isSelected = selectedSessionId === session.id
+                const latestEntry = session.entries[0]
+                const ts = new Date(session.updatedAt)
                 const timeStr = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                 const dateStr = ts.toLocaleDateString([], { month: 'short', day: 'numeric' })
                 const today = new Date().toDateString() === ts.toDateString()
                 return (
                   <button
-                    key={entry.id}
-                    onClick={() => { setSelectedEntry(isSelected ? null : entry); if (!isSelected) { stopStream(); setPhase('idle'); setOutput(''); setErrorMsg('') } }}
+                    key={session.id}
+                    onClick={() => {
+                      if (isSelected) {
+                        setSelectedSessionId(null)
+                      } else {
+                        setSelectedSessionId(session.id)
+                        stopStream()
+                        setPhase('idle')
+                        setOutput('')
+                        setErrorMsg('')
+                      }
+                    }}
                     className={cn(
                       'w-full text-left rounded-lg border px-2.5 py-2 transition-colors',
                       isSelected
@@ -666,11 +726,16 @@ export default function QueryAnalyzer() {
                     <div className="flex items-center gap-1 mb-0.5">
                       <span className={cn(
                         'w-1.5 h-1.5 rounded-full shrink-0',
-                        entry.status === 'done' ? 'bg-green-400' : entry.status === 'error' ? 'bg-red-400' : 'bg-yellow-400 animate-pulse',
+                        latestEntry?.status === 'done' ? 'bg-green-400'
+                          : latestEntry?.status === 'error' ? 'bg-red-400'
+                          : 'bg-yellow-400 animate-pulse',
                       )} />
                       <span className="text-[10px] text-[var(--dim)] ml-auto">{today ? timeStr : `${dateStr} ${timeStr}`}</span>
                     </div>
-                    <div className="text-[11px] text-[var(--fg)] truncate leading-tight">{entry.label}</div>
+                    <div className="text-[11px] text-[var(--fg)] truncate leading-tight">{session.name}</div>
+                    {session.entries.length > 1 && (
+                      <div className="text-[9px] text-[var(--dim)] mt-0.5">{session.entries.length} entries</div>
+                    )}
                   </button>
                 )
               })}
@@ -682,41 +747,64 @@ export default function QueryAnalyzer() {
       {/* ── Main content ─────────────────────────────────────────────────── */}
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
 
-        {/* History entry viewer */}
-        {showSetup && selectedEntry && (
+        {/* Session history viewer */}
+        {showSetup && selectedSession && (
           <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
             <div className="flex items-center gap-2 px-4 py-2 border-b border-[var(--border)] shrink-0 bg-[var(--card)]">
               <Sparkles size={13} className="text-purple-400" />
-              <span className="text-xs font-medium text-[var(--fg)] flex-1 truncate">{selectedEntry.label}</span>
+              <span className="text-xs font-medium text-[var(--fg)] flex-1 truncate">{selectedSession.name}</span>
               <span className="text-xs text-[var(--dim)]">
-                {new Date(selectedEntry.timestamp).toLocaleDateString([], { month: 'short', day: 'numeric' })} {new Date(selectedEntry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                {new Date(selectedSession.updatedAt).toLocaleDateString([], { month: 'short', day: 'numeric' })}
               </span>
-              <button onClick={() => setSelectedEntry(null)} className="text-[var(--dim)] hover:text-[var(--fg)] transition-colors ml-1">
+              <button onClick={() => setSelectedSessionId(null)} className="text-[var(--dim)] hover:text-[var(--fg)] transition-colors ml-1">
                 <X size={13} />
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto px-5 py-4">
-              {selectedEntry.output ? (
-                <div
-                  className="analysis-output text-sm leading-relaxed"
-                  dangerouslySetInnerHTML={{ __html: (() => {
-                    let out = marked.parse(selectedEntry.output) as string
-                    out = out
-                      .replace(/🔴\s*<strong>CRITICAL<\/strong>/g, '<span class="sev-critical">🔴 CRITICAL</span>')
-                      .replace(/🟠\s*<strong>WARNING<\/strong>/g, '<span class="sev-warning">🟠 WARNING</span>')
-                      .replace(/🟡\s*<strong>INFO<\/strong>/g, '<span class="sev-info">🟡 INFO</span>')
-                    return out
-                  })() }}
-                />
-              ) : (
-                <div className="text-sm text-[var(--dim)]">No output recorded.</div>
-              )}
+            <div className="flex-1 overflow-y-auto px-5 py-4 space-y-6">
+              {selectedSession.entries.map((entry, idx) => (
+                <div key={entry.id}>
+                  {idx > 0 && <hr className="border-[var(--border)] mb-2" />}
+                  <div className="flex items-center gap-2 mb-2">
+                    {entry.question ? (
+                      <div className="flex items-center gap-1.5 text-xs text-purple-400 italic">
+                        <MessageSquare size={11} className="shrink-0" />
+                        {entry.question}
+                      </div>
+                    ) : (
+                      <div className="text-xs text-[var(--dim)]">{entry.label}</div>
+                    )}
+                    <span className="ml-auto text-[10px] text-[var(--dim)] shrink-0">
+                      {new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  </div>
+                  {entry.output ? (
+                    <div
+                      className="analysis-output text-sm leading-relaxed"
+                      dangerouslySetInnerHTML={{ __html: (() => {
+                        let out = marked.parse(entry.output) as string
+                        out = out
+                          .replace(/🔴\s*<strong>CRITICAL<\/strong>/g, '<span class="sev-critical">🔴 CRITICAL</span>')
+                          .replace(/🟠\s*<strong>WARNING<\/strong>/g, '<span class="sev-warning">🟠 WARNING</span>')
+                          .replace(/🟡\s*<strong>INFO<\/strong>/g, '<span class="sev-info">🟡 INFO</span>')
+                        return out
+                      })() }}
+                    />
+                  ) : entry.status === 'streaming' ? (
+                    <div className="flex items-center gap-2 text-sm text-[var(--dim)]">
+                      <Loader2 size={13} className="animate-spin text-[var(--accent)]" />
+                      Analyzing…
+                    </div>
+                  ) : (
+                    <div className="text-sm text-[var(--dim)]">No output recorded.</div>
+                  )}
+                </div>
+              ))}
             </div>
           </div>
         )}
 
         {/* Idle splash */}
-        {showSetup && !selectedEntry && (
+        {showSetup && !selectedSession && (
           <div className="flex flex-col items-center justify-center h-full gap-5 text-center px-8">
             <div className="flex flex-col items-center gap-3">
               <div className="flex items-center justify-center w-14 h-14 rounded-xl bg-[var(--accent)]/10 border border-[var(--accent)]/20">
