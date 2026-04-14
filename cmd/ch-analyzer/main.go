@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -31,6 +32,7 @@ func main() {
 	showVersion := flag.Bool("version", false, "Show version and exit")
 	mcpServer := flag.Bool("mcp-server", false, "Run as MCP stdio server (used by Claude CLI subprocess)")
 	mcpInstance := flag.String("mcp-instance", "", "ClickHouse instance name for MCP server mode")
+	dryRun := flag.Bool("dry-run", false, "Run all collectors once, print alerts that would fire, then exit")
 	flag.Parse()
 
 	if *showVersion {
@@ -174,11 +176,43 @@ func main() {
 	}
 
 	storeAdapter := &alertStoreAdapter{store: metricStore}
-	alertMgr := alerter.NewAlertManager(
-		slackNotifier,
-		storeAdapter,
+
+	// Build inhibition rules from config, then append defaults.
+	var inhibitionRules []alerter.InhibitionRule
+	for _, r := range cfg.Inhibition {
+		inhibitionRules = append(inhibitionRules, alerter.InhibitionRule{
+			SourceCategory: r.SourceCategory,
+			SourceSeverity: r.SourceSeverity,
+			TargetCategory: r.TargetCategory,
+			TargetSeverity: r.TargetSeverity,
+		})
+	}
+	inhibitionRules = append(inhibitionRules, alerter.DefaultInhibitionRules()...)
+
+	alertMgrOpts := []alerter.Option{
 		alerter.WithDedupWindow(cfg.Slack.DedupWindow.Duration),
-	)
+		alerter.WithInhibition(inhibitionRules),
+	}
+
+	// PagerDuty notifier.
+	if cfg.Notify.PagerDuty.Enabled && cfg.Notify.PagerDuty.RoutingKey != "" {
+		pdNotifier := alerter.NewPagerDutyNotifier(cfg.Notify.PagerDuty.RoutingKey)
+		alertMgrOpts = append(alertMgrOpts, alerter.WithPagerDuty(pdNotifier))
+		slog.Info("PagerDuty notifier enabled")
+	}
+
+	// Webhook notifier.
+	if cfg.Notify.Webhook.Enabled && cfg.Notify.Webhook.URL != "" {
+		whNotifier := alerter.NewWebhookNotifier(cfg.Notify.Webhook.URL, cfg.Notify.Webhook.Secret)
+		alertMgrOpts = append(alertMgrOpts, alerter.WithWebhook(whNotifier))
+		slog.Info("webhook notifier enabled", slog.String("url", cfg.Notify.Webhook.URL))
+	}
+
+	// Maintenance store (shared with web server).
+	maintenanceStore := alerter.NewMaintenanceStore()
+	alertMgrOpts = append(alertMgrOpts, alerter.WithMaintenance(maintenanceStore))
+
+	alertMgr := alerter.NewAlertManager(slackNotifier, storeAdapter, alertMgrOpts...)
 	alertMgr.Start(ctx)
 
 	// Rehydrate alerter with active alerts persisted in ClickHouse. Without
@@ -211,6 +245,31 @@ func main() {
 	// Initialize collectors
 	collectors := buildCollectors(cfg)
 
+	// Dry-run mode: collect once, print alerts, exit.
+	if *dryRun {
+		slog.Info("dry-run mode: running one collection cycle")
+		var dryAlerts []collector.Alert
+		var dryMu sync.Mutex
+		clientMgr.ForEachParallel(ctx, func(_ context.Context, instanceName string, client *chclient.Client) error {
+			for _, c := range collectors {
+				result, err := c.Collect(ctx, client)
+				if err != nil {
+					slog.Warn("collector failed in dry-run", "collector", c.Name(), "instance", instanceName, "error", err)
+					continue
+				}
+				dryMu.Lock()
+				dryAlerts = append(dryAlerts, result.Alerts...)
+				dryMu.Unlock()
+			}
+			return nil
+		})
+		for _, a := range dryAlerts {
+			fmt.Printf("[%s] %s:%s — %s\n", strings.ToUpper(string(a.Severity)), a.Instance, a.Category, a.Title)
+		}
+		fmt.Printf("Dry run complete. %d alert(s) would fire.\n", len(dryAlerts))
+		os.Exit(0)
+	}
+
 	// Start web server
 	// Load custom suggestions if configured.
 	web.LoadSuggestions(cfg.Web.SuggestionsPath)
@@ -218,6 +277,8 @@ func main() {
 	var webServer *web.Server
 	if cfg.Web.Enabled {
 		webServer = web.New(cfg.Web.ListenAddr, cfg, metricStore, az, clientMgr, logBuffer)
+		webServer.SetMaintenanceStore(maintenanceStore)
+		webServer.SetVersion(version)
 		go func() {
 			if err := webServer.Start(ctx); err != nil {
 				slog.Error("web server error", "error", err)
@@ -245,13 +306,22 @@ func main() {
 
 	// Note: no pruner needed — ClickHouse TTL handles retention automatically.
 
+	// Circuit breaker state — lives in main goroutine, no lock needed.
+	instanceFailures := make(map[string]int)       // consecutive all-collector failure count
+	instanceBackoff := make(map[string]time.Time)  // when backoff expires
+
 	// Main polling loop
 	slog.Info("starting main polling loop", "interval", cfg.Polling.Interval.String())
 	ticker := time.NewTicker(cfg.Polling.Interval.Duration)
 	defer ticker.Stop()
 
+	poll := func() {
+		runCollectionCB(ctx, clientMgr, collectors, az, alertMgr, metricStore, promExporter,
+			instanceFailures, instanceBackoff)
+	}
+
 	// Run immediately on startup
-	runCollection(ctx, clientMgr, collectors, az, alertMgr, metricStore, promExporter)
+	poll()
 
 	for {
 		select {
@@ -271,7 +341,7 @@ func main() {
 			slog.Info("shutdown complete")
 			return
 		case <-ticker.C:
-			runCollection(ctx, clientMgr, collectors, az, alertMgr, metricStore, promExporter)
+			poll()
 		}
 	}
 }
@@ -318,6 +388,13 @@ func buildCollectors(cfg *config.Config) []collector.Collector {
 
 	result = append(result, &collector.ErrorsCollector{})
 
+	result = append(result, &collector.BackgroundPoolCollector{})
+	result = append(result, &collector.CacheHealthCollector{})
+	result = append(result, &collector.QueryLatencyCollector{})
+	result = append(result, &collector.FreshnessCollector{})
+	result = append(result, &collector.SchemaDriftCollector{})
+	result = append(result, &collector.ProjectionCollector{})
+
 	if cfg.K8s.Enabled {
 		result = append(result, &collector.K8sCollector{
 			Config: cfg.K8s,
@@ -327,7 +404,7 @@ func buildCollectors(cfg *config.Config) []collector.Collector {
 	return result
 }
 
-func runCollection(
+func runCollectionCB(
 	ctx context.Context,
 	clientMgr *chclient.Manager,
 	collectors []collector.Collector,
@@ -335,15 +412,28 @@ func runCollection(
 	alertMgr *alerter.AlertManager,
 	metricStore *store.Store,
 	promExporter *prometheus.Exporter,
+	instanceFailures map[string]int,
+	instanceBackoff map[string]time.Time,
 ) {
 	start := time.Now()
 
+	// Collect which instances are in backoff before dispatching.
+	// The maps are owned by main() and read/written only from this function
+	// which runs synchronously in the main goroutine — no lock needed.
 	clientMgr.ForEachParallel(ctx, func(_ context.Context, instanceName string, client *chclient.Client) error {
+		// Circuit breaker: skip instances in backoff.
+		if backoffUntil, ok := instanceBackoff[instanceName]; ok && time.Now().Before(backoffUntil) {
+			slog.Debug("instance in backoff, skipping", "instance", instanceName)
+			return nil
+		}
+
 		instanceStart := time.Now()
 
-		// Run all collectors for this instance
+		// Run all collectors for this instance.
 		var allResults []*collector.CollectResult
 		var mu sync.Mutex
+		var errorCount int
+		var errorMu sync.Mutex
 
 		var wg sync.WaitGroup
 		for _, c := range collectors {
@@ -357,6 +447,9 @@ func runCollection(
 						"instance", instanceName,
 						"error", err,
 					)
+					errorMu.Lock()
+					errorCount++
+					errorMu.Unlock()
 					return
 				}
 				mu.Lock()
@@ -366,14 +459,37 @@ func runCollection(
 		}
 		wg.Wait()
 
-		// Analyze results
+		// Circuit breaker: if ALL collectors failed, increment failure count.
+		collectionFailed := len(allResults) == 0 && errorCount == len(collectors)
+		if collectionFailed {
+			instanceFailures[instanceName]++
+			if instanceFailures[instanceName] >= 5 {
+				instanceBackoff[instanceName] = time.Now().Add(5 * time.Minute)
+				slog.Warn("instance entering backoff after 5 failures", "instance", instanceName)
+				alertMgr.Process([]collector.Alert{{
+					Instance:  instanceName,
+					Severity:  collector.SeverityCritical,
+					Category:  "connectivity",
+					Title:     "Instance unreachable",
+					Message:   fmt.Sprintf("ClickHouse instance %s has failed to respond for 5 consecutive polls. Entering 5-minute backoff.", instanceName),
+					DedupKey:  instanceName + ":connectivity:unreachable",
+					Timestamp: time.Now(),
+				}})
+			}
+			return nil
+		}
+		// Reset failure counter on any successful collection.
+		instanceFailures[instanceName] = 0
+		delete(instanceBackoff, instanceName)
+
+		// Analyze results.
 		analysisResult, err := az.Analyze(instanceName, allResults)
 		if err != nil {
 			slog.Error("analysis failed", "instance", instanceName, "error", err)
 			return nil
 		}
 
-		// Store metrics
+		// Store metrics.
 		var allMetrics []store.Metric
 		for _, r := range allResults {
 			for _, m := range r.Metrics {
@@ -402,7 +518,7 @@ func runCollection(
 			}
 		}
 
-		// Update prometheus
+		// Update prometheus.
 		if promExporter != nil {
 			var collectorMetrics []collector.Metric
 			for _, r := range allResults {
@@ -412,7 +528,7 @@ func runCollection(
 			promExporter.Update(collectorMetrics)
 		}
 
-		// Process alerts
+		// Process alerts.
 		var allAlerts []collector.Alert
 		for _, r := range allResults {
 			allAlerts = append(allAlerts, r.Alerts...)

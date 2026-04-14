@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rohitjain/ch-analyzer/internal/alerter"
 	"github.com/rohitjain/ch-analyzer/internal/analyzer"
 	"github.com/rohitjain/ch-analyzer/internal/chclient"
 	"github.com/rohitjain/ch-analyzer/internal/config"
@@ -35,6 +36,9 @@ type Server struct {
 	srv          *http.Server
 	logs         *LogBuffer
 	queryHistory *QueryHistory
+	maintenance  *alerter.MaintenanceStore
+	startTime    time.Time
+	version      string
 }
 
 // New creates a new web Server.
@@ -48,7 +52,19 @@ func New(addr string, cfg *config.Config, store *store.Store, analyzer *analyzer
 		configPath:   os.Getenv("CH_ANALYZER_CONFIG"),
 		logs:         logs,
 		queryHistory: NewQueryHistory(100),
+		startTime:    time.Now(),
 	}
+}
+
+// SetMaintenanceStore sets the maintenance store for the server.
+// Called from main after the alerter is initialised.
+func (s *Server) SetMaintenanceStore(ms *alerter.MaintenanceStore) {
+	s.maintenance = ms
+}
+
+// SetVersion sets the binary version string shown in /health.
+func (s *Server) SetVersion(v string) {
+	s.version = v
 }
 
 // Start begins serving HTTP traffic. It blocks until the server is shut down.
@@ -176,6 +192,12 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Cost explorer.
 	mux.HandleFunc("GET /api/instances/{name}/cost", s.handleCost)
 	mux.HandleFunc("GET /api/cost", s.handleCostOverview)
+
+	// Health and maintenance endpoints.
+	mux.HandleFunc("GET /health", s.handleHealth)
+	mux.HandleFunc("GET /api/maintenance", s.handleMaintenanceList)
+	mux.HandleFunc("POST /api/maintenance", s.handleMaintenanceCreate)
+	mux.HandleFunc("DELETE /api/maintenance/{id}", s.handleMaintenanceDelete)
 }
 
 // ---------------------------------------------------------------------------

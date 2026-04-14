@@ -20,6 +20,8 @@ import type {
   CostReport,
   CostOverview,
   ReplicaStatus,
+  MaintenanceWindow,
+  HealthResponse,
 } from '../types/api'
 
 const BASE = ''
@@ -136,4 +138,11 @@ export const api = {
       `/api/instances/${inst}/analyze-element/queries?${params}`,
     )
   },
+  maintenance: {
+    list: () => get<MaintenanceWindow[]>('/api/maintenance'),
+    create: (instance: string, reason: string, durationMinutes: number, createdBy?: string) =>
+      post<MaintenanceWindow>('/api/maintenance', { instance, reason, duration_minutes: durationMinutes, created_by: createdBy ?? 'user' }),
+    delete: (id: string) => fetch(`/api/maintenance/${id}`, { method: 'DELETE' }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`) }),
+  },
+  health: () => get<HealthResponse>('/health'),
 }

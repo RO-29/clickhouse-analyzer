@@ -33,15 +33,18 @@ func (d Duration) MarshalYAML() (interface{}, error) {
 
 // Config is the top-level configuration for ch-analyzer.
 type Config struct {
-	Instances  []Instance       `yaml:"instances"`
-	Polling    PollingConfig    `yaml:"polling"`
-	Thresholds ThresholdsConfig `yaml:"thresholds"`
-	Slack      SlackConfig      `yaml:"slack"`
-	Web        WebConfig        `yaml:"web"`
-	Storage    StorageConfig    `yaml:"storage"`
-	Prometheus PrometheusConfig `yaml:"prometheus"`
-	K8s        K8sConfig        `yaml:"k8s"`
-	Altinity   AltinityConfig   `yaml:"altinity"`
+	Instances   []Instance         `yaml:"instances"`
+	Polling     PollingConfig      `yaml:"polling"`
+	Thresholds  ThresholdsConfig   `yaml:"thresholds"`
+	Slack       SlackConfig        `yaml:"slack"`
+	Web         WebConfig          `yaml:"web"`
+	Storage     StorageConfig      `yaml:"storage"`
+	Prometheus  PrometheusConfig   `yaml:"prometheus"`
+	K8s         K8sConfig          `yaml:"k8s"`
+	Altinity    AltinityConfig     `yaml:"altinity"`
+	Notify      NotifyConfig       `yaml:"notify"`
+	Inhibition  []InhibitionConfig `yaml:"inhibition"`
+	Maintenance MaintenanceConfig  `yaml:"maintenance"`
 }
 
 // AltinityConfig controls cost estimation for the Altinity Cloud Cost Explorer.
@@ -75,18 +78,22 @@ type PollingConfig struct {
 
 // ThresholdsConfig groups every category of threshold.
 type ThresholdsConfig struct {
-	Memory       MemoryThresholds       `yaml:"memory"`
-	CPU          CPUThresholds          `yaml:"cpu"`
-	Queries      QueriesThresholds      `yaml:"queries"`
-	Parts        PartsThresholds        `yaml:"parts"`
-	Merges       MergesThresholds       `yaml:"merges"`
-	Mutations    MutationsThresholds    `yaml:"mutations"`
-	Inserts      InsertsThresholds      `yaml:"inserts"`
-	Disk         DiskThresholds         `yaml:"disk"`
-	S3           S3Thresholds           `yaml:"s3"`
-	Replication  ReplicationThresholds  `yaml:"replication"`
-	Dictionaries DictionariesThresholds `yaml:"dictionaries"`
-	MV           MVThresholds           `yaml:"mv"`
+	Memory        MemoryThresholds        `yaml:"memory"`
+	CPU           CPUThresholds           `yaml:"cpu"`
+	Queries       QueriesThresholds       `yaml:"queries"`
+	Parts         PartsThresholds         `yaml:"parts"`
+	Merges        MergesThresholds        `yaml:"merges"`
+	Mutations     MutationsThresholds     `yaml:"mutations"`
+	Inserts       InsertsThresholds       `yaml:"inserts"`
+	Disk          DiskThresholds          `yaml:"disk"`
+	S3            S3Thresholds            `yaml:"s3"`
+	Replication   ReplicationThresholds   `yaml:"replication"`
+	Dictionaries  DictionariesThresholds  `yaml:"dictionaries"`
+	MV            MVThresholds            `yaml:"mv"`
+	BackgroundPool BackgroundPoolThresholds `yaml:"background_pool"`
+	CacheHealth   CacheHealthThresholds   `yaml:"cache_health"`
+	QueryLatency  QueryLatencyThresholds  `yaml:"query_latency"`
+	Freshness     FreshnessThresholds     `yaml:"freshness"`
 }
 
 type MemoryThresholds struct {
@@ -152,6 +159,58 @@ type MVThresholds struct {
 	LagWarn        Duration `yaml:"lag_warn"`
 	BloatRatioWarn float64  `yaml:"bloat_ratio_warn"`
 }
+
+type BackgroundPoolThresholds struct {
+	WarnPercent     float64 `yaml:"warn_percent"`
+	CriticalPercent float64 `yaml:"critical_percent"`
+}
+
+type CacheHealthThresholds struct {
+	MarkHitRateWarnPercent     float64 `yaml:"mark_hit_rate_warn_percent"`
+	MarkHitRateCriticalPercent float64 `yaml:"mark_hit_rate_critical_percent"`
+	MinQueriesForAlert         int     `yaml:"min_queries_for_alert"`
+}
+
+type QueryLatencyThresholds struct {
+	SpikeWarnMultiplier     float64 `yaml:"spike_warn_multiplier"`
+	SpikeCriticalMultiplier float64 `yaml:"spike_critical_multiplier"`
+	MinBaselineMs           float64 `yaml:"min_baseline_ms"`
+	MinQueryCount           int     `yaml:"min_query_count"`
+}
+
+type FreshnessThresholds struct {
+	GapMinutes      int `yaml:"gap_minutes"`
+	MinDailyInserts int `yaml:"min_daily_inserts"`
+}
+
+// NotifyConfig groups non-Slack notification targets.
+type NotifyConfig struct {
+	PagerDuty PagerDutyConfig `yaml:"pagerduty"`
+	Webhook   WebhookConfig   `yaml:"webhook"`
+}
+
+type PagerDutyConfig struct {
+	Enabled    bool   `yaml:"enabled"`
+	RoutingKey string `yaml:"routing_key"`
+}
+
+type WebhookConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	URL     string `yaml:"url"`
+	Secret  string `yaml:"secret"`
+}
+
+// InhibitionConfig maps to alerter.InhibitionRule.
+type InhibitionConfig struct {
+	SourceCategory string `yaml:"source_category"`
+	SourceSeverity string `yaml:"source_severity"`
+	TargetCategory string `yaml:"target_category"`
+	TargetSeverity string `yaml:"target_severity"`
+}
+
+// MaintenanceConfig is reserved for future persistence config.
+// Currently windows are in-memory.
+type MaintenanceConfig struct{}
 
 // SlackConfig controls Slack alerting behaviour.
 type SlackConfig struct {
@@ -259,6 +318,25 @@ func Defaults() *Config {
 			MV: MVThresholds{
 				LagWarn:        Duration{5 * time.Minute},
 				BloatRatioWarn: 10.0,
+			},
+			BackgroundPool: BackgroundPoolThresholds{
+				WarnPercent:     70,
+				CriticalPercent: 90,
+			},
+			CacheHealth: CacheHealthThresholds{
+				MarkHitRateWarnPercent:     50,
+				MarkHitRateCriticalPercent: 30,
+				MinQueriesForAlert:         100,
+			},
+			QueryLatency: QueryLatencyThresholds{
+				SpikeWarnMultiplier:     2.0,
+				SpikeCriticalMultiplier: 3.0,
+				MinBaselineMs:           100,
+				MinQueryCount:           10,
+			},
+			Freshness: FreshnessThresholds{
+				GapMinutes:      20,
+				MinDailyInserts: 5,
 			},
 		},
 		Slack: SlackConfig{

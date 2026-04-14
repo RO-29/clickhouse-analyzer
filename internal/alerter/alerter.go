@@ -69,6 +69,24 @@ type AlertManager struct {
 	// alert is marked resolved. Default: 4 (~4 min with 1-min polling).
 	resolveCleanChecks int
 
+	// Inhibition suppresses noisy symptom alerts when a root-cause is firing.
+	inhibition *InhibitionMatcher
+
+	// maintenance suppresses all alerts for instances in a maintenance window.
+	maintenance *MaintenanceStore
+
+	// pagerduty sends critical alert events to PagerDuty (optional).
+	pagerduty *PagerDutyNotifier
+
+	// webhook sends structured JSON payloads to a generic endpoint (optional).
+	webhook *WebhookNotifier
+
+	// instanceFirstFired records when the first Slack alert was sent per instance.
+	instanceFirstFired map[string]time.Time
+
+	// lastEscalated records the last time an escalation notice was sent per instance.
+	lastEscalated map[string]time.Time
+
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 	logger *slog.Logger
@@ -94,6 +112,30 @@ func WithResolveCleanChecks(n int) Option {
 	return func(am *AlertManager) { am.resolveCleanChecks = n }
 }
 
+// WithInhibition installs an InhibitionMatcher that suppresses noisy
+// symptom alerts when a root-cause alert is already firing.
+func WithInhibition(rules []InhibitionRule) Option {
+	return func(am *AlertManager) {
+		am.inhibition = &InhibitionMatcher{Rules: rules}
+	}
+}
+
+// WithMaintenance installs a MaintenanceStore. Alerts for instances that are
+// in maintenance are silently dropped (not persisted or sent to Slack).
+func WithMaintenance(store *MaintenanceStore) Option {
+	return func(am *AlertManager) { am.maintenance = store }
+}
+
+// WithPagerDuty installs a PagerDutyNotifier for critical alert escalation.
+func WithPagerDuty(notifier *PagerDutyNotifier) Option {
+	return func(am *AlertManager) { am.pagerduty = notifier }
+}
+
+// WithWebhook installs a WebhookNotifier for generic event delivery.
+func WithWebhook(notifier *WebhookNotifier) Option {
+	return func(am *AlertManager) { am.webhook = notifier }
+}
+
 // NewAlertManager creates a ready-to-use AlertManager. Call Start to begin
 // background goroutines and Stop to shut them down.
 func NewAlertManager(slackNotifier *SlackNotifier, store StoreInterface, opts ...Option) *AlertManager {
@@ -107,6 +149,8 @@ func NewAlertManager(slackNotifier *SlackNotifier, store StoreInterface, opts ..
 		instanceTS:         make(map[string]string),
 		dirtyInst:          make(map[string]bool),
 		lastInstanceUpdate: make(map[string]time.Time),
+		instanceFirstFired: make(map[string]time.Time),
+		lastEscalated:      make(map[string]time.Time),
 		logger: slog.Default().With(
 			slog.String("component", "alert-manager"),
 		),
@@ -192,6 +236,16 @@ func (am *AlertManager) Process(alerts []collector.Alert) {
 		}
 		seen[key] = true
 
+		// Maintenance check: if the instance is in maintenance, skip entirely
+		// (no tracking, no persistence, no Slack).
+		if am.maintenance != nil && am.maintenance.IsInMaintenance(alert.Instance) {
+			am.logger.Debug("alert suppressed (maintenance)",
+				slog.String("instance", alert.Instance),
+				slog.String("dedup_key", key),
+			)
+			continue
+		}
+
 		active, exists := am.activeAlerts[key]
 		if exists {
 			// Already tracking — update counters, no Slack update on mere count bumps.
@@ -220,6 +274,16 @@ func (am *AlertManager) Process(alerts []collector.Alert) {
 			am.mu.Unlock()
 			am.enqueueInfo(alert)
 			am.mu.Lock()
+			continue
+		}
+
+		// Inhibition check: track the alert in activeAlerts for resolution
+		// detection, but don't mark the instance dirty (no Slack notification).
+		if am.inhibition != nil && am.inhibition.IsInhibited(*active, am.activeAlerts) {
+			am.logger.Debug("alert inhibited",
+				slog.String("dedup_key", key),
+				slog.String("instance", alert.Instance),
+			)
 			continue
 		}
 
@@ -354,7 +418,67 @@ func (am *AlertManager) updateInstanceMessage(instance string) {
 			active.Notified = true
 		}
 	}
+
+	if len(instanceAlerts) == 0 {
+		// All-clear: reset escalation tracking.
+		delete(am.instanceFirstFired, instance)
+		delete(am.lastEscalated, instance)
+	} else {
+		// First time we're posting for this instance — record the time.
+		if _, ok := am.instanceFirstFired[instance]; !ok {
+			am.instanceFirstFired[instance] = time.Now()
+		}
+	}
+	// Take snapshot of top alert for webhook/pagerduty calls (outside lock).
+	var topAlert *ActiveAlert
+	if len(instanceAlerts) > 0 {
+		cp := *instanceAlerts[0]
+		topAlert = &cp
+	}
 	am.mu.Unlock()
+
+	// Webhook notification for the top alert (or all-clear).
+	if am.webhook != nil {
+		var wp WebhookPayload
+		if topAlert != nil {
+			wp = WebhookPayload{
+				Event:     "alert_firing",
+				Instance:  instance,
+				Severity:  string(topAlert.Alert.Severity),
+				Category:  topAlert.Alert.Category,
+				Title:     topAlert.Alert.Title,
+				Message:   topAlert.Alert.Message,
+				DedupKey:  topAlert.Alert.DedupKey,
+				FiredAt:   topAlert.FirstSeen,
+				FireCount: topAlert.Count,
+			}
+		} else {
+			wp = WebhookPayload{
+				Event:    "all_clear",
+				Instance: instance,
+			}
+		}
+		if err := am.webhook.Send(wp); err != nil {
+			am.logger.Warn("webhook send failed",
+				slog.String("instance", instance), slog.String("error", err.Error()))
+		}
+	}
+
+	// PagerDuty: trigger for each critical alert.
+	if am.pagerduty != nil && len(instanceAlerts) > 0 {
+		for _, a := range instanceAlerts {
+			if a.Alert.Severity == collector.SeverityCritical {
+				dk := a.Alert.DedupKey
+				if dk == "" {
+					dk = fmt.Sprintf("%s:%s:%s", a.Alert.Instance, a.Alert.Category, a.Alert.Title)
+				}
+				if err := am.pagerduty.TriggerAlert(a.Alert, dk); err != nil {
+					am.logger.Warn("pagerduty trigger failed",
+						slog.String("dedup_key", dk), slog.String("error", err.Error()))
+				}
+			}
+		}
+	}
 }
 
 // drainDirtyInstances returns and clears the current dirty set.
@@ -414,6 +538,25 @@ func (am *AlertManager) heartbeatLoop(ctx context.Context) {
 
 			for inst := range instances {
 				am.updateInstanceMessage(inst)
+
+				// Escalation check: if the instance has been firing for >30 min
+				// without a response, post an escalation notice (at most once per 30 min).
+				am.mu.Lock()
+				first, hasFired := am.instanceFirstFired[inst]
+				last, hasEscalated := am.lastEscalated[inst]
+				am.mu.Unlock()
+
+				if hasFired && time.Since(first) > 30*time.Minute {
+					if !hasEscalated || time.Since(last) > 30*time.Minute {
+						firingMinutes := int(time.Since(first).Minutes())
+						if am.slack != nil {
+							_ = am.slack.PostEscalationNotice(inst, firingMinutes)
+						}
+						am.mu.Lock()
+						am.lastEscalated[inst] = time.Now()
+						am.mu.Unlock()
+					}
+				}
 			}
 		}
 	}
@@ -474,6 +617,33 @@ func (am *AlertManager) checkResolutions() {
 		if am.store != nil {
 			if err := am.store.ResolveAlert(key); err != nil {
 				am.logger.Error("failed to persist alert resolution",
+					slog.String("dedup_key", key), slog.String("error", err.Error()))
+			}
+		}
+
+		// PagerDuty: resolve the incident.
+		if am.pagerduty != nil {
+			if err := am.pagerduty.ResolveAlert(key); err != nil {
+				am.logger.Warn("pagerduty resolve failed",
+					slog.String("dedup_key", key), slog.String("error", err.Error()))
+			}
+		}
+
+		// Webhook: notify resolution.
+		if am.webhook != nil {
+			wp := WebhookPayload{
+				Event:     "alert_resolved",
+				Instance:  active.Alert.Instance,
+				Severity:  string(active.Alert.Severity),
+				Category:  active.Alert.Category,
+				Title:     active.Alert.Title,
+				Message:   active.Alert.Message,
+				DedupKey:  key,
+				FiredAt:   active.FirstSeen,
+				FireCount: active.Count,
+			}
+			if err := am.webhook.Send(wp); err != nil {
+				am.logger.Warn("webhook send (resolve) failed",
 					slog.String("dedup_key", key), slog.String("error", err.Error()))
 			}
 		}

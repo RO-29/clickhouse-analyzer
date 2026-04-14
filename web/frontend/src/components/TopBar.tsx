@@ -16,6 +16,7 @@ const VIEW_TITLES: Record<View, string> = {
   analyzer: 'AI Analyzer',
   logs: 'Application Logs',
   chlogs: 'ClickHouse Logs',
+  maintenance: 'Maintenance Windows',
 }
 
 const PRESETS = ['15m', '1h', '6h', '24h', '7d']

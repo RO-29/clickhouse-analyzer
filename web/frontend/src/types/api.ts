@@ -313,3 +313,27 @@ export interface AnalyzeOptions {
   mode?: 'quick' | 'deep'
   deepQueries?: string[]
 }
+
+export interface MaintenanceWindow {
+  id: string
+  instance: string      // "*" means all instances
+  reason: string
+  started_at: string    // ISO timestamp
+  ends_at: string       // ISO timestamp
+  created_by: string
+}
+
+export interface HealthInstance {
+  name: string
+  status: string        // "ok" | "degraded" | "unreachable"
+  last_poll_at?: string
+  active_alerts: number
+}
+
+export interface HealthResponse {
+  status: string        // "ok" | "degraded"
+  version: string
+  uptime: string
+  last_poll_at?: string
+  instances: HealthInstance[]
+}

@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import {
   LayoutDashboard, Bell, Search, GitCompareArrows, Lightbulb, TerminalSquare, FileText, Database,
-  Sun, Moon, ChevronsLeft, ChevronsRight, Sparkles, RefreshCw, ScanSearch, DollarSign,
+  Sun, Moon, ChevronsLeft, ChevronsRight, Sparkles, RefreshCw, ScanSearch, DollarSign, Shield,
 } from 'lucide-react'
 import { useStore, type View } from '../hooks/useStore'
 import { cn, scoreColor } from '../lib/utils'
@@ -18,6 +18,7 @@ const NAV_ITEMS: { view: View; label: string; icon: typeof LayoutDashboard }[] =
   { view: 'scanner', label: 'Table Scanner', icon: ScanSearch },
   { view: 'analyzer', label: 'AI Analyzer', icon: Sparkles },
   { view: 'cost', label: 'Cost Explorer', icon: DollarSign },
+  { view: 'maintenance', label: 'Maintenance', icon: Shield },
   { view: 'logs', label: 'App Logs', icon: FileText },
   { view: 'chlogs', label: 'CH Logs', icon: Database },
 ]

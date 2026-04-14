@@ -8,7 +8,7 @@ import { Card } from '../components/Card'
 import { Badge } from '../components/Badge'
 import { NodeCard } from '../components/NodeCard'
 import { DataTable } from '../components/DataTable'
-import type { Instance, Alert } from '../types/api'
+import type { Instance, Alert, HealthResponse } from '../types/api'
 
 /* ------------------------------------------------------------------ */
 /*  Loading skeleton                                                  */
@@ -53,6 +53,7 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null)
   const [manualRefreshTick, setManualRefreshTick] = useState(0)
   const isFirstLoad = useRef(true)
+  const [healthData, setHealthData] = useState<HealthResponse | null>(null)
 
   const doLoad = useCallback(async (isManual = false) => {
     let cancelled = false
@@ -66,6 +67,8 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
         api.overview(),
         api.alerts.active(),
       ])
+      // Health is optional — older deploys may not have it
+      api.health().then(h => { if (!cancelled) setHealthData(h) }).catch(() => {})
       if (!cancelled) {
         setLocalInstances(inst)
         setAlerts(alrt)
@@ -239,6 +242,44 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
       {freshAlerts.length > 0 && (
         <Card title={`Active Alerts · ${freshAlerts.length}${staleCount > 0 ? ` (${staleCount} stale hidden)` : ''}`}>
           <DataTable columns={alertCols} data={freshAlerts} pageSize={50} />
+        </Card>
+      )}
+
+      {/* ---- System Health (optional, hidden if /health unavailable) ---- */}
+      {healthData && (
+        <Card title="System Health">
+          <div className="flex flex-wrap items-center gap-4">
+            <div className="flex items-center gap-2">
+              <span
+                className="w-2 h-2 rounded-full shrink-0"
+                style={{ backgroundColor: healthData.status === 'ok' ? '#22c55e' : '#eab308' }}
+              />
+              <span className="text-sm font-medium capitalize">{healthData.status}</span>
+            </div>
+            <div className="text-xs text-[var(--dim)]">v{healthData.version}</div>
+            <div className="text-xs text-[var(--dim)]">up {healthData.uptime}</div>
+            {healthData.instances && healthData.instances.length > 0 && (
+              <div className="flex items-center gap-3 ml-2">
+                {healthData.instances.map(inst => (
+                  <div key={inst.name} className="flex items-center gap-1.5 text-xs">
+                    <span
+                      className="w-1.5 h-1.5 rounded-full"
+                      style={{
+                        backgroundColor:
+                          inst.status === 'ok' ? '#22c55e'
+                          : inst.status === 'degraded' ? '#eab308'
+                          : '#ef4444',
+                      }}
+                    />
+                    <span className="text-[var(--text)]">{inst.name}</span>
+                    {inst.last_poll_at && (
+                      <span className="text-[var(--dim)]">· {new Date(inst.last_poll_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </Card>
       )}
     </div>

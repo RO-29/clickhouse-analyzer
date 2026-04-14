@@ -67,6 +67,31 @@ function snoozeUntil(dedupKey: string, snoozed: Record<string, number>): number 
 }
 
 /* ------------------------------------------------------------------ */
+/*  Acknowledge — localStorage-based, no backend needed               */
+/* ------------------------------------------------------------------ */
+const ACK_LS_KEY = 'ch-acked-alerts'
+
+function loadAcked(): Record<string, { by: string; note: string; at: number }> {
+  try { return JSON.parse(localStorage.getItem(ACK_LS_KEY) ?? '{}') } catch { return {} }
+}
+
+function ackAlert(dedupKey: string, by: string, note: string) {
+  const acked = loadAcked()
+  acked[dedupKey] = { by, at: Math.floor(Date.now() / 1000), note }
+  try { localStorage.setItem(ACK_LS_KEY, JSON.stringify(acked)) } catch {}
+}
+
+function unackAlert(dedupKey: string) {
+  const acked = loadAcked()
+  delete acked[dedupKey]
+  try { localStorage.setItem(ACK_LS_KEY, JSON.stringify(acked)) } catch {}
+}
+
+function isAcked(dedupKey: string, acked: Record<string, any>): boolean {
+  return !!acked[dedupKey]
+}
+
+/* ------------------------------------------------------------------ */
 /*  Runbooks — per-category remediation steps                          */
 /* ------------------------------------------------------------------ */
 interface Runbook { title: string; steps: string[] }
@@ -355,14 +380,16 @@ function AlertMessageRenderer({ message, instance }: { message: string; instance
 /* ------------------------------------------------------------------ */
 /*  AlertRow (expandable)                                             */
 /* ------------------------------------------------------------------ */
-function AlertRow({ alert, showMeta, staleHours, snoozed, onAnalyze, onResolve, onSnoozeChange }: {
+function AlertRow({ alert, showMeta, staleHours, snoozed, acked, onAnalyze, onResolve, onSnoozeChange, onAckChange }: {
   alert: Alert
   showMeta?: boolean
   staleHours: number
   snoozed: Record<string, number>
+  acked: Record<string, any>
   onAnalyze?: (alert: Alert) => void
   onResolve?: (dedupKey: string) => void
   onSnoozeChange?: () => void
+  onAckChange?: () => void
 }) {
   const [expanded, setExpanded] = useState(false)
   const [suggestions, setSuggestions] = useState<Suggestion | null>(null)
@@ -371,6 +398,13 @@ function AlertRow({ alert, showMeta, staleHours, snoozed, onAnalyze, onResolve, 
   const stale = isStale(alert, staleHours)
   const snoozedUntil = snoozeUntil(alert.dedup_key, snoozed)
   const runbook = useMemo(() => getRunbook(alert), [alert])
+  const alertIsAcked = isAcked(alert.dedup_key, acked)
+  const ackedInfo = acked[alert.dedup_key] as { by: string; note: string; at: number } | undefined
+
+  // Inline ack form state
+  const [showAckForm, setShowAckForm] = useState(false)
+  const [ackBy, setAckBy] = useState('user')
+  const [ackNote, setAckNote] = useState('')
 
   const handleExpand = useCallback(() => {
     const next = !expanded
@@ -399,6 +433,11 @@ function AlertRow({ alert, showMeta, staleHours, snoozed, onAnalyze, onResolve, 
           <span className="inline-flex items-center gap-1 text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-1.5 py-0.5 shrink-0">
             <BellOff size={10} />
             snoozed
+          </span>
+        )}
+        {alertIsAcked && (
+          <span className="inline-flex items-center gap-1 text-xs text-green-400 bg-green-500/10 border border-green-500/20 rounded px-1.5 py-0.5 shrink-0">
+            ✓ Investigating
           </span>
         )}
         {showMeta && (
@@ -526,6 +565,62 @@ function AlertRow({ alert, showMeta, staleHours, snoozed, onAnalyze, onResolve, 
                 >
                   <Bell size={11} />
                   Unsnooze
+                </button>
+              </div>
+            )}
+            {/* Acknowledge */}
+            {!alert.resolved && !alertIsAcked && !showAckForm && (
+              <button
+                onClick={() => setShowAckForm(true)}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-green-400 hover:bg-green-500/15 border border-green-500/20 transition-colors"
+              >
+                Acknowledge
+              </button>
+            )}
+            {!alert.resolved && !alertIsAcked && showAckForm && (
+              <div className="flex items-center gap-2 flex-wrap">
+                <input
+                  type="text"
+                  value={ackBy}
+                  onChange={e => setAckBy(e.target.value)}
+                  placeholder="By"
+                  className="bg-[var(--surface)] border border-[var(--border)] rounded px-2 py-1 text-xs w-24 focus:outline-none focus:border-[var(--accent)]"
+                />
+                <input
+                  type="text"
+                  value={ackNote}
+                  onChange={e => setAckNote(e.target.value)}
+                  placeholder="Note (optional)"
+                  className="bg-[var(--surface)] border border-[var(--border)] rounded px-2 py-1 text-xs w-40 focus:outline-none focus:border-[var(--accent)]"
+                />
+                <button
+                  onClick={() => {
+                    ackAlert(alert.dedup_key, ackBy || 'user', ackNote)
+                    setShowAckForm(false)
+                    onAckChange?.()
+                  }}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-green-400 hover:bg-green-500/15 border border-green-500/20 transition-colors"
+                >
+                  Confirm
+                </button>
+                <button
+                  onClick={() => setShowAckForm(false)}
+                  className="text-xs text-[var(--dim)] hover:text-[var(--text)] transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
+            {alertIsAcked && ackedInfo && (
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs text-green-400">
+                  Acknowledged by {ackedInfo.by}{ackedInfo.note ? ` — ${ackedInfo.note}` : ''}
+                </span>
+                <button
+                  onClick={() => { unackAlert(alert.dedup_key); onAckChange?.() }}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-green-400 hover:bg-green-500/15 border border-green-500/20 transition-colors"
+                >
+                  Unacknowledge
                 </button>
               </div>
             )}
@@ -691,6 +786,11 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
   const [snoozeTick, setSnoozeTick] = useState(0)
   const snoozed = useMemo(() => loadSnoozed(), [snoozeTick]) // eslint-disable-line react-hooks/exhaustive-deps
   const handleSnoozeChange = useCallback(() => setSnoozeTick(t => t + 1), [])
+
+  // Ack state — tick forces re-reads from localStorage
+  const [ackTick, setAckTick] = useState(0)
+  const acked = useMemo(() => loadAcked(), [ackTick]) // eslint-disable-line react-hooks/exhaustive-deps
+  const handleAckChange = useCallback(() => setAckTick(t => t + 1), [])
 
   // Consume the preset once on mount, then clear it so navigating back doesn't re-apply
   useEffect(() => {
@@ -1010,7 +1110,7 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
       ) : viewMode === 'flat' ? (
         <Card className="!p-0">
           {filtered.slice(flatPage * FLAT_PAGE_SIZE, (flatPage + 1) * FLAT_PAGE_SIZE).map((alert) => (
-            <AlertRow key={alert.id} alert={alert} showMeta staleHours={staleHours} snoozed={snoozed} onAnalyze={handleAnalyzeAlert} onResolve={!alert.resolved ? handleResolveAlert : undefined} onSnoozeChange={handleSnoozeChange} />
+            <AlertRow key={alert.id} alert={alert} showMeta staleHours={staleHours} snoozed={snoozed} acked={acked} onAnalyze={handleAnalyzeAlert} onResolve={!alert.resolved ? handleResolveAlert : undefined} onSnoozeChange={handleSnoozeChange} onAckChange={handleAckChange} />
           ))}
           {filtered.length > FLAT_PAGE_SIZE && (
             <div className="flex items-center justify-between px-3 py-2 border-t border-[var(--border)]">
@@ -1074,7 +1174,7 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
                 </button>
                 {!isCollapsed && (
                   <div className="border-t border-[var(--border)]">
-                    {groupAlerts.map((alert) => <AlertRow key={alert.id} alert={alert} staleHours={staleHours} snoozed={snoozed} onAnalyze={handleAnalyzeAlert} onResolve={!alert.resolved ? handleResolveAlert : undefined} onSnoozeChange={handleSnoozeChange} />)}
+                    {groupAlerts.map((alert) => <AlertRow key={alert.id} alert={alert} staleHours={staleHours} snoozed={snoozed} acked={acked} onAnalyze={handleAnalyzeAlert} onResolve={!alert.resolved ? handleResolveAlert : undefined} onSnoozeChange={handleSnoozeChange} onAckChange={handleAckChange} />)}
                   </div>
                 )}
               </Card>

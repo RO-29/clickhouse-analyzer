@@ -14,6 +14,7 @@ import CHLogs from './views/CHLogs'
 import ChatAnalyzer from './views/ChatAnalyzer'
 import TableScanner from './views/TableScanner'
 import CostExplorer from './views/CostExplorer'
+import Maintenance from './views/Maintenance'
 import { TableDetail } from './components/TableDetail'
 import { AIAnalysisPanel } from './components/AIAnalysisPanel'
 import { NotificationToasts } from './components/NotificationToasts'
@@ -82,6 +83,7 @@ function Layout() {
     advisor: <Advisor />,
     scanner: <TableScanner refreshKey={tick} />,
     cost: <CostExplorer />,
+    maintenance: <Maintenance />,
     terminal: <Terminal />,
     logs: <AppLogs refreshKey={tick} />,
     chlogs: <CHLogs refreshKey={tick} />,
