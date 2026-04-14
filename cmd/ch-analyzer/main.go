@@ -209,9 +209,15 @@ func main() {
 	}
 
 	// Maintenance store (shared with web server).
-	// Persist windows to a JSON file alongside the config so they survive restarts.
+	// Persist windows to /var/lib/ch-analyzer/ (writable runtime state dir).
+	// Fall back to a path alongside the config if that dir isn't available.
 	maintenanceStore := alerter.NewMaintenanceStore()
-	maintFile := *configPath + ".maintenance.json"
+	maintFile := "/var/lib/ch-analyzer/maintenance.json"
+	if err := os.MkdirAll("/var/lib/ch-analyzer", 0755); err != nil {
+		// /var/lib not writable — fall back to OS temp dir
+		maintFile = os.TempDir() + "/ch-analyzer-maintenance.json"
+		slog.Warn("cannot create /var/lib/ch-analyzer, using temp dir for maintenance persistence", "path", maintFile)
+	}
 	maintenanceStore.SetPersistPath(maintFile)
 	alertMgrOpts = append(alertMgrOpts, alerter.WithMaintenance(maintenanceStore))
 
