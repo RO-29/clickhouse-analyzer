@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { RefreshCw, ChevronDown, ChevronRight, Sparkles, Search, X } from 'lucide-react'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
@@ -41,7 +41,7 @@ function fmtLogTime(raw: string): string {
   }
 }
 
-export default function AppLogs() {
+export default function AppLogs({ refreshKey }: { refreshKey?: number }) {
   const { analyze } = useAIAnalysis('')
   const [allLogs, setAllLogs] = useState<LogEntry[]>([])
   const [loading, setLoading] = useState(true)
@@ -68,7 +68,15 @@ export default function AppLogs() {
     }
   }, [])
 
+  // Initial load
   useEffect(() => { fetchLogs() }, [fetchLogs])
+
+  // Auto-refresh: re-fetch when tick fires, preserve level/search filters
+  const autoRefreshMounted = useRef(false)
+  useEffect(() => {
+    if (!autoRefreshMounted.current) { autoRefreshMounted.current = true; return }
+    fetchLogs()
+  }, [refreshKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Client-side filter — instant, no API round-trip per keystroke
   const filtered = useMemo(() => {

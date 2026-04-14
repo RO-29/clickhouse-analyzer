@@ -36,7 +36,7 @@ function highlightSearch(text: string, search: string): ReactNode {
   )
 }
 
-export default function CHLogs() {
+export default function CHLogs({ refreshKey }: { refreshKey?: number }) {
   const { instances, selectedInstance, setSelectedInstance } = useStore()
   const { analyze } = useAIAnalysis(selectedInstance)
 
@@ -79,7 +79,15 @@ export default function CHLogs() {
     }
   }, [inst, level, debouncedSearch, minutes, limit])
 
+  // Fetch when params change
   useEffect(() => { fetchLogs() }, [fetchLogs])
+
+  // Auto-refresh: re-fetch on tick without disturbing filters or instance
+  const autoRefreshMounted = useRef(false)
+  useEffect(() => {
+    if (!autoRefreshMounted.current) { autoRefreshMounted.current = true; return }
+    fetchLogs()
+  }, [refreshKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Stats by level
   const stats = useMemo(() => {

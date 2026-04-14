@@ -61,11 +61,11 @@ function Layout() {
     detail: <Detail refreshKey={tick} />,
     alerts: <Alerts refreshKey={tick} />,
     explore: <Explore refreshKey={tick} />,
-    compare: <Compare key={tick} />,
-    advisor: <Advisor key={tick} />,
+    compare: <Compare />,
+    advisor: <Advisor />,
     terminal: <Terminal />,
-    logs: <AppLogs key={tick} />,
-    chlogs: <CHLogs key={tick} />,
+    logs: <AppLogs refreshKey={tick} />,
+    chlogs: <CHLogs refreshKey={tick} />,
   }
 
   return (
