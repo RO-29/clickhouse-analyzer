@@ -229,7 +229,7 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	const maxPromptBytes = 1 << 20 // 1 MB
 	truncated := false
 	if len(prompt) > maxPromptBytes {
-		prompt = prompt[:maxPromptBytes] + "\n\n[...context truncated to fit ARG_MAX...]"
+		prompt = prompt[:maxPromptBytes] + "\n\n[...context truncated to 1 MB limit...]"
 		truncated = true
 	}
 
@@ -261,8 +261,8 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		"prompt_bytes":        len(prompt),
 		"prompt_kb":           len(prompt) / 1024,
 		"truncated":           truncated,
-		"prompt_head":         prompt[:min(800, len(prompt))],
-		"prompt_tail":         prompt[max(0, len(prompt)-400):],
+		"prompt_head":         prompt[:min(5120, len(prompt))],
+		"prompt_tail":         prompt[max(0, len(prompt)-512):],
 		"collection_errors":   ac.CollectionErrors,
 		"row_counts":          rowCounts,
 		"auth_envs_present":   authEnvs,
@@ -287,13 +287,14 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	claudeCtx, claudeCancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer claudeCancel()
 
-	claudeArgs := []string{"-p", prompt}
+	claudeArgs := []string{"-p", "-"}
 	if m := os.Getenv("CLAUDE_MODEL"); m != "" {
 		claudeArgs = append(claudeArgs, "--model", m)
 	}
 	if os.Getenv("CLAUDE_DEBUG") != "" {
 		claudeArgs = append(claudeArgs, "--verbose")
 	}
+	claudeArgs = appendClaudeFlags(claudeArgs)
 	cmd := exec.CommandContext(claudeCtx, claudeBin, claudeArgs...)
 
 	// Inherit full env + augment PATH.
@@ -318,6 +319,7 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cmd.Env = claudeEnv
+	cmd.Stdin = strings.NewReader(prompt)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -851,10 +853,11 @@ func (s *Server) handleAnalyzeElement(w http.ResponseWriter, r *http.Request) {
 	claudeCtx, claudeCancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer claudeCancel()
 
-	claudeArgs := []string{"-p", prompt}
+	claudeArgs := []string{"-p", "-"}
 	if m := os.Getenv("CLAUDE_MODEL"); m != "" {
 		claudeArgs = append(claudeArgs, "--model", m)
 	}
+	claudeArgs = appendClaudeFlags(claudeArgs)
 	cmd := exec.CommandContext(claudeCtx, claudeBin, claudeArgs...)
 
 	claudeEnv := os.Environ()
@@ -871,6 +874,7 @@ func (s *Server) handleAnalyzeElement(w http.ResponseWriter, r *http.Request) {
 		defer os.RemoveAll(tmpHome)
 	}
 	cmd.Env = claudeEnv
+	cmd.Stdin = strings.NewReader(prompt)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -923,6 +927,63 @@ func (s *Server) handleAnalyzeElement(w http.ResponseWriter, r *http.Request) {
 }
 
 // buildElementPrompt constructs a focused prompt for element-level analysis.
+// chSchemaReviewSkill is the content of ~/.claude/commands/ch-schema-review.md
+// embedded here so the server-side Claude receives it without needing local skills.
+const chSchemaReviewSkill = `
+## ClickHouse Schema Review Checklist
+
+### 1. Primary Key / ORDER BY vs Query Patterns
+
+**Rule — Index prefix check:**
+- ClickHouse's sparse index only prunes granules using a **left-prefix** of the ORDER BY.
+- A query is efficient if **the first ORDER BY column is present** in the WHERE clause.
+- A query degrades to a partial/full scan **only when the first ORDER BY column is entirely absent** from the WHERE clause.
+- Do NOT label a query as "full scan" solely because a non-prefix column appears in WHERE together with the prefix key.
+
+Flag only queries where the first ORDER BY key is missing.
+
+**Recommendation:** If multiple query patterns have different "natural" first keys, pick the one used by the highest-traffic or most critical queries as the ORDER BY prefix. Document the trade-off.
+
+### 2. PARTITION BY
+
+- Tables should have PARTITION BY toYYYYMM(time_column) or equivalent.
+- Missing PARTITION BY: no partition pruning, expensive TTL drops, slow mutations.
+- Verify partition key expression is derivable from ORDER BY columns (ClickHouse requirement).
+
+### 3. Skip Indexes for Non-Key Filter Columns
+
+Choose index type based on cardinality:
+- Low cardinality (< ~100 distinct values): TYPE set(N) — deterministic, best skip rate
+- High cardinality or unknown: TYPE bloom_filter — probabilistic
+- Numeric ranges: TYPE minmax
+- Do NOT recommend skip indexes for columns already in the ORDER BY prefix — redundant.
+
+**Effectiveness rule:** Skip indexes only work when values are clustered within granules (i.e. the column is in ORDER BY or has low cardinality). High-cardinality columns not in ORDER BY will have near-100% false positive rate — every granule matches. Fix: add the column to ORDER BY instead.
+
+### 4. ReplacingMergeTree Version Column
+
+- ReplacingMergeTree without an explicit version column: deduplication is non-deterministic.
+- Flag any ReplacingMergeTree/SharedReplacingMergeTree that omits the version argument.
+- Recommend using updatedAt or equivalent as the version column.
+
+### 5. Schema Drift
+
+When both primary and backup/mirror tables are present:
+- Flag missing columns in backup vs primary.
+- Check DateTime vs DateTime64(3) precision — backup tables using DateTime lose sub-second precision.
+- Check that ReplacingMergeTree version columns are consistent.
+
+### 6. Output Format
+
+Produce:
+1. **Per-table verdict** (ORDER BY assessment, PARTITION BY, skip index gaps, version column)
+2. **Schema drift table** (only if backup/mirror tables present)
+3. **Prioritized action list** — P0 / P1 / P2
+   - P0 = correctness/full-scan risk on top queries
+   - P1 = significant performance gap
+   - P2 = schema hygiene / future-proofing
+`
+
 func buildElementPrompt(req analyzeElementRequest, instance string, deepResults []map[string]interface{}) string {
 	fmtJSON := func(v interface{}) string {
 		if v == nil {
@@ -950,7 +1011,25 @@ func buildElementPrompt(req analyzeElementRequest, instance string, deepResults 
 	switch req.ContextType {
 	case "tab":
 		sb.WriteString("## Visible Tab Data\n```json\n" + fmtJSON(req.VisibleData) + "\n```\n\n")
-		sb.WriteString(fmt.Sprintf(`## Instructions
+
+		isSchemaAnalysis := strings.Contains(strings.ToLower(req.ContextLabel), "schema")
+		if isSchemaAnalysis {
+			sb.WriteString("## Schema Review Guidelines\n")
+			sb.WriteString(chSchemaReviewSkill)
+			sb.WriteString("\n")
+			sb.WriteString(`## Instructions
+Apply the schema review checklist above to the data provided. For each table:
+1. Check ORDER BY / primary key vs query patterns — flag full-scan risks
+2. Check PARTITION BY — flag if missing or suboptimal
+3. Recommend skip indexes only where effective (respect cardinality rules)
+4. Flag ReplacingMergeTree without version column
+5. Note any schema drift between primary and mirror tables
+
+Produce the structured output format: per-table verdict, drift table if applicable, and prioritized P0/P1/P2 action list.
+Use 🔴 CRITICAL, 🟠 WARNING, 🟡 INFO severity markers.
+`)
+		} else {
+			sb.WriteString(fmt.Sprintf(`## Instructions
 Analyze the %s data above. Provide:
 1. Key observations and notable patterns
 2. Anomalies, warning signs, or concerning values
@@ -959,6 +1038,7 @@ Analyze the %s data above. Provide:
 Use severity markers: 🔴 CRITICAL, 🟠 WARNING, 🟡 INFO
 Be concise and focus on what matters most.
 `, tabLabel))
+		}
 
 	case "row":
 		if req.Mode == "deep" && len(deepResults) > 0 {

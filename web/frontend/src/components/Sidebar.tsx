@@ -32,8 +32,12 @@ export function Sidebar() {
   const {
     view, setView, sidebarCollapsed, setSidebarCollapsed,
     theme, toggleTheme, refreshInterval, setRefreshInterval,
-    navToDetail,
+    navToDetail, chatSessions,
   } = useStore()
+
+  const hasActiveAnalysis = chatSessions.some(s =>
+    s.messages.some(m => m.status === 'streaming')
+  )
 
   const [instances, setInstances] = useState<Instance[]>([])
   const [refreshing, setRefreshing] = useState(false)
@@ -107,7 +111,12 @@ export function Sidebar() {
                 )}
                 title={collapsed ? item.label : undefined}
               >
-                <Icon size={18} className="shrink-0" />
+                <span className="relative shrink-0">
+                  <Icon size={18} />
+                  {item.view === 'analyzer' && hasActiveAnalysis && (
+                    <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-orange-400 animate-pulse" />
+                  )}
+                </span>
                 {!collapsed && <span>{item.label}</span>}
               </a>
             )

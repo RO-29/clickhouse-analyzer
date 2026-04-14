@@ -137,6 +137,16 @@ export interface ChatMessage {
   phase?: 'planning' | 'collecting' | 'streaming' | 'done' | 'error'
   thinkingLines?: ThinkingLine[]
   steps?: StepInfo[]
+  evidence?: {
+    promptBytes: number
+    promptKb: number
+    truncated: boolean
+    promptHead: string
+    rowCounts: Record<string, number>
+    collectionErrors: string[]
+    mode: string
+    instance: string
+  }
 }
 
 export interface ThinkingLine {

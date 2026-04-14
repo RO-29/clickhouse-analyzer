@@ -19,6 +19,7 @@ async function readStream(
   onChunk: (text: string) => void,
   onError: (msg: string) => void,
   onDone: () => void,
+  onDebug?: (payload: any) => void,
 ): Promise<void> {
   const reader = resp.body!.getReader()
   const decoder = new TextDecoder()
@@ -36,6 +37,8 @@ async function readStream(
         const s = JSON.parse(currentData) as { phase: string }
         if (s.phase === 'done') onDone()
       } catch {}
+    } else if (currentEvent === 'debug' && currentData && onDebug) {
+      try { onDebug(JSON.parse(currentData)) } catch {}
     }
     currentEvent = ''
     currentData = ''
@@ -170,6 +173,21 @@ export function useAIAnalysis(instance: string) {
           doneSignaled = true
           updateMessage(sessionId!, assistantMsgId, m => ({ ...m, status: 'done', phase: 'done' }))
         },
+        (dbg: any) => {
+          updateMessage(sessionId!, assistantMsgId, m => ({
+            ...m,
+            evidence: {
+              promptBytes: dbg.prompt_bytes ?? 0,
+              promptKb: dbg.prompt_kb ?? 0,
+              truncated: dbg.truncated ?? false,
+              promptHead: dbg.prompt_head ?? '',
+              rowCounts: dbg.row_counts ?? {},
+              collectionErrors: dbg.collection_errors ?? [],
+              mode: dbg.mode ?? '',
+              instance: dbg.instance ?? '',
+            },
+          }))
+        },
       )
       if (!doneSignaled) updateMessage(sessionId!, assistantMsgId, m => m.status === 'streaming' ? { ...m, status: 'done', phase: 'done' } : m)
       fireNotifyDone()
@@ -265,6 +283,21 @@ export function useAIAnalysis(instance: string) {
         () => {
           doneSignaled = true
           updateMessage(activeChatId, assistantMsgId, m => ({ ...m, status: 'done', phase: 'done' }))
+        },
+        (dbg: any) => {
+          updateMessage(activeChatId, assistantMsgId, m => ({
+            ...m,
+            evidence: {
+              promptBytes: dbg.prompt_bytes ?? 0,
+              promptKb: dbg.prompt_kb ?? 0,
+              truncated: dbg.truncated ?? false,
+              promptHead: dbg.prompt_head ?? '',
+              rowCounts: dbg.row_counts ?? {},
+              collectionErrors: dbg.collection_errors ?? [],
+              mode: dbg.mode ?? '',
+              instance: dbg.instance ?? '',
+            },
+          }))
         },
       )
       if (!doneSignaled) updateMessage(activeChatId, assistantMsgId, m => m.status === 'streaming' ? { ...m, status: 'done', phase: 'done' } : m)

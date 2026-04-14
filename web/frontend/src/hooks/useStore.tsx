@@ -93,7 +93,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [chatSessions, setChatSessionsState] = useState<ChatSession[]>(() => {
     try {
       const saved = localStorage.getItem('ch-chat-sessions')
-      return saved ? JSON.parse(saved) : []
+      if (!saved) return []
+      const sessions = JSON.parse(saved) as ChatSession[]
+      // Any message still marked 'streaming' at load time lost its SSE connection on
+      // the previous page unload — mark it done so the UI doesn't spin forever.
+      return sessions.map(s => ({
+        ...s,
+        messages: s.messages.map(m =>
+          m.status === 'streaming'
+            ? { ...m, status: 'done' as const, phase: 'done' as const, content: m.content || '_(Analysis interrupted by page reload)_' }
+            : m
+        ),
+      }))
     } catch { return [] }
   })
   const setChatSessions = useCallback((updater: ChatSession[] | ((prev: ChatSession[]) => ChatSession[])) => {

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { StoreProvider, useStore } from './hooks/useStore'
 import { Sidebar } from './components/Sidebar'
 import { TopBar } from './components/TopBar'
@@ -14,6 +14,7 @@ import CHLogs from './views/CHLogs'
 import ChatAnalyzer from './views/ChatAnalyzer'
 import { TableDetail } from './components/TableDetail'
 import { AIAnalysisPanel } from './components/AIAnalysisPanel'
+import { NotificationToasts } from './components/NotificationToasts'
 import { useAIAnalysis, PANEL_EXPANDED_HEIGHT, PANEL_COLLAPSED_HEIGHT } from './hooks/useAIAnalysis'
 import { cn } from './lib/utils'
 import { api } from './lib/api'
@@ -36,6 +37,19 @@ function Layout() {
     deleteSession: aiDeleteSession,
   } = useAIAnalysis(selectedInstance)
   const aiSpacerHeight = aiOpen ? PANEL_EXPANDED_HEIGHT : PANEL_COLLAPSED_HEIGHT
+
+  // Warn before unload/refresh if any analysis is actively streaming
+  const hasActiveAnalysis = aiSessions.some(s => s.messages.some(m => m.status === 'streaming'))
+  const handleBeforeUnload = useCallback((e: BeforeUnloadEvent) => {
+    if (hasActiveAnalysis) {
+      e.preventDefault()
+      e.returnValue = 'An analysis is still running — refreshing will abort it.'
+    }
+  }, [hasActiveAnalysis])
+  useEffect(() => {
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [handleBeforeUnload])
 
   // Load instances on mount
   useEffect(() => {
@@ -123,6 +137,7 @@ export default function App() {
   return (
     <StoreProvider>
       <Layout />
+      <NotificationToasts />
     </StoreProvider>
   )
 }

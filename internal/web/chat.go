@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/rohitjain/ch-analyzer/internal/chclient"
 )
 
 // ---------------------------------------------------------------------------
@@ -218,7 +220,17 @@ func (s *Server) executeTool(
 	if client == nil {
 		return toolExecResult{Error: "instance not found: " + instance}
 	}
+	return runToolOnClient(ctx, client, toolName, input)
+}
 
+// runToolOnClient executes a named tool against a CH client directly.
+// Used by both the Server (Mode A/B) and the MCP stdio server subprocess.
+func runToolOnClient(
+	ctx context.Context,
+	client *chclient.Client,
+	toolName string,
+	input map[string]interface{},
+) toolExecResult {
 	getInt := func(key string, def int) int {
 		if v, ok := input[key]; ok {
 			switch n := v.(type) {
@@ -763,9 +775,14 @@ func (s *Server) handleChatCLI(
 		return
 	}
 
-	client := s.manager.Get(instance)
-	if client == nil {
+	if s.manager.Get(instance) == nil {
 		sendEvent("error", jsonStr("instance not found: "+instance))
+		return
+	}
+
+	// ── Try MCP-backed single-pass if we have a config path ──────────────────
+	if s.configPath != "" {
+		s.handleChatCLIWithMCP(ctx, claudeBin, instance, req, sendEvent)
 		return
 	}
 
@@ -781,14 +798,16 @@ func (s *Server) handleChatCLI(
 	planCtx, planCancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer planCancel()
 
-	planArgs := []string{"-p", planPrompt}
+	planArgs := []string{"-p", "-"}
 	model := os.Getenv("CLAUDE_MODEL")
 	if model != "" {
 		planArgs = append(planArgs, "--model", model)
 	}
+	planArgs = appendClaudeFlags(planArgs)
 
 	planCmd := exec.CommandContext(planCtx, claudeBin, planArgs...)
 	planCmd.Env = buildClaudeEnv()
+	planCmd.Stdin = strings.NewReader(planPrompt)
 
 	planOutput, err := planCmd.Output()
 	if err != nil {
@@ -922,16 +941,18 @@ Provide specific SQL recommendations where applicable.
 		finalPrompt = finalPrompt[:maxPromptBytes] + "\n\n[...context truncated...]"
 	}
 
-	streamArgs := []string{"-p", finalPrompt}
+	streamArgs := []string{"-p", "-"}
 	if model != "" {
 		streamArgs = append(streamArgs, "--model", model)
 	}
+	streamArgs = appendClaudeFlags(streamArgs)
 
 	streamCtx, streamCancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer streamCancel()
 
 	streamCmd := exec.CommandContext(streamCtx, claudeBin, streamArgs...)
 	streamCmd.Env = buildClaudeEnv()
+	streamCmd.Stdin = strings.NewReader(finalPrompt)
 
 	stdout, err := streamCmd.StdoutPipe()
 	if err != nil {
@@ -990,6 +1011,8 @@ Provide specific SQL recommendations where applicable.
 }
 
 // buildClaudeEnv returns the environment for the claude CLI process.
+// Inherits all env vars from the parent (including any MCP tokens / secrets),
+// augments PATH, and pins HOME to wherever the claude auth config lives.
 func buildClaudeEnv() []string {
 	env := os.Environ()
 	env = setEnv(env,
@@ -1001,6 +1024,20 @@ func buildClaudeEnv() []string {
 		env = setEnv(env, "HOME", claudeCfgHome)
 	}
 	return env
+}
+
+// appendClaudeFlags appends optional env-driven flags to a claude CLI arg slice.
+//
+//	CLAUDE_ALLOWED_TOOLS  – comma-separated tool patterns  (e.g. "mcp__your-server__*,Bash")
+//	CLAUDE_ADD_DIR        – project dir whose CLAUDE.md / skills should be loaded
+func appendClaudeFlags(args []string) []string {
+	if tools := os.Getenv("CLAUDE_ALLOWED_TOOLS"); tools != "" {
+		args = append(args, "--allowedTools", tools)
+	}
+	if dir := os.Getenv("CLAUDE_ADD_DIR"); dir != "" {
+		args = append(args, "--add-dir", dir)
+	}
+	return args
 }
 
 // extractJSON attempts to extract a JSON object from a string that may contain
@@ -1104,4 +1141,124 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		slog.Info("chat: using claude CLI fallback", "instance", instance)
 		s.handleChatCLI(ctx, instance, req, sendEvent)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Mode B with MCP: single-pass claude CLI with ch-tools MCP server
+// ---------------------------------------------------------------------------
+
+func (s *Server) handleChatCLIWithMCP(
+	ctx context.Context,
+	claudeBin string,
+	instance string,
+	req chatRequest,
+	sendEvent func(event, data string),
+) {
+	// Write temp MCP config pointing to this binary.
+	binaryPath, err := os.Executable()
+	if err != nil {
+		slog.Warn("chat: could not get executable path, falling back to two-pass", "err", err)
+		sendEvent("status", `{"phase":"planning"}`)
+		// fall through to two-pass — handled by the caller already returning early,
+		// so we should not reach here if configPath == "". Defensive:
+		return
+	}
+
+	mcpConfig := map[string]interface{}{
+		"mcpServers": map[string]interface{}{
+			"ch-tools": map[string]interface{}{
+				"command": binaryPath,
+				"args":    []string{"--mcp-server", "--mcp-instance", instance, "--config", s.configPath},
+			},
+		},
+	}
+	mcpJSON, _ := json.Marshal(mcpConfig)
+
+	tmpFile, err := os.CreateTemp("", "ch-mcp-*.json")
+	if err != nil {
+		slog.Warn("chat: could not write MCP config", "err", err)
+		return
+	}
+	defer os.Remove(tmpFile.Name())
+	tmpFile.Write(mcpJSON)
+	tmpFile.Close()
+
+	sendEvent("status", `{"phase":"planning"}`)
+
+	// Build prompt: include conversation history + current question.
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf(
+		"You are an expert ClickHouse DBA assistant. The instance is %s.\n"+
+			"Use your tools to query ClickHouse system tables and get real data before answering.\n"+
+			"Format your response in clear markdown with sections and tables where useful.\n"+
+			"Severity levels: 🔴 CRITICAL | 🟠 WARNING | 🟡 INFO\n\n",
+		instance,
+	))
+	if len(req.History) > 0 {
+		sb.WriteString("## Conversation History\n")
+		for _, h := range req.History {
+			sb.WriteString(fmt.Sprintf("**%s**: %s\n\n", h.Role, h.Content))
+		}
+	}
+	sb.WriteString("## Question\n" + req.Question + "\n")
+	prompt := sb.String()
+
+	streamCtx, streamCancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer streamCancel()
+
+	streamArgs := []string{
+		"-p", "-",
+		"--mcp-config", tmpFile.Name(),
+		"--allowedTools", "mcp__ch-tools__*",
+	}
+	streamArgs = appendClaudeFlags(streamArgs)
+	if model := os.Getenv("CLAUDE_MODEL"); model != "" {
+		streamArgs = append(streamArgs, "--model", model)
+	}
+
+	cmd := exec.CommandContext(streamCtx, claudeBin, streamArgs...)
+	cmd.Env = buildClaudeEnv()
+	cmd.Stdin = strings.NewReader(prompt)
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		sendEvent("error", jsonStr("Failed to create stdout pipe: "+err.Error()))
+		return
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		sendEvent("error", jsonStr("Failed to create stderr pipe: "+err.Error()))
+		return
+	}
+	if err := cmd.Start(); err != nil {
+		slog.Warn("chat: claude CLI MCP start failed", "err", err)
+		sendEvent("error", jsonStr("Claude CLI failed to start: "+err.Error()))
+		return
+	}
+
+	sendEvent("status", `{"phase":"streaming"}`)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		scanner := bufio.NewScanner(stdout)
+		scanner.Buffer(make([]byte, 128*1024), 128*1024)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.TrimSpace(line) != "" {
+				sendEvent("chunk", jsonStr(line+"\n"))
+			}
+		}
+	}()
+	go func() {
+		scanner := bufio.NewScanner(stderrPipe)
+		for scanner.Scan() {
+			slog.Debug("chat: claude CLI MCP stderr", "line", scanner.Text())
+		}
+	}()
+
+	wg.Wait()
+	_ = cmd.Wait()
+	sendEvent("status", `{"phase":"done"}`)
 }

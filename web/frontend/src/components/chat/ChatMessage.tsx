@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { ClipboardCopy, AlertCircle, Check } from 'lucide-react'
+import { ClipboardCopy, AlertCircle, Check, ChevronDown, ChevronRight, FlaskConical } from 'lucide-react'
 import { marked } from 'marked'
 import { cn } from '../../lib/utils'
 import type { ChatMessage as ChatMessageType } from '../../types/api'
@@ -63,6 +63,69 @@ function renderMarkdown(content: string, isStreaming: boolean): string {
     .replace(/🟡 INFO(?!<)/g,     '<span class="sev-info">🟡 INFO</span>')
   if (isStreaming) out += '<span class="streaming-cursor"></span>'
   return out
+}
+
+/* ─── Evidence panel ─────────────────────────────────────────────────────── */
+
+function EvidencePanel({ evidence }: { evidence: NonNullable<ChatMessageType['evidence']> }) {
+  const [open, setOpen] = useState(false)
+
+  const rowEntries = Object.entries(evidence.rowCounts).filter(([, v]) => v > 0)
+
+  return (
+    <div className="mt-1 border border-[var(--border)] rounded-lg text-xs overflow-hidden">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-1.5 px-3 py-1.5 text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)] transition-colors text-left"
+      >
+        <FlaskConical size={11} />
+        <span className="font-medium">Evidence sent to Claude</span>
+        <span className="ml-1 text-[var(--dim)]">
+          {evidence.promptKb} KB{evidence.truncated ? ' (truncated)' : ''}
+          {rowEntries.length > 0 && ` · ${rowEntries.length} data sources`}
+        </span>
+        {open ? <ChevronDown size={11} className="ml-auto" /> : <ChevronRight size={11} className="ml-auto" />}
+      </button>
+
+      {open && (
+        <div className="px-3 pb-3 space-y-2 border-t border-[var(--border)] bg-[var(--surface)]/40">
+          {/* Row counts */}
+          {rowEntries.length > 0 && (
+            <div className="pt-2">
+              <p className="text-[10px] uppercase tracking-widest text-[var(--dim)] mb-1">Data collected</p>
+              <div className="flex flex-wrap gap-1">
+                {rowEntries.map(([k, v]) => (
+                  <span key={k} className="px-1.5 py-0.5 rounded bg-[var(--hover)] border border-[var(--border)] font-mono">
+                    {k}: {v}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Collection errors */}
+          {evidence.collectionErrors.length > 0 && (
+            <div>
+              <p className="text-[10px] uppercase tracking-widest text-[var(--dim)] mb-1">Collection errors</p>
+              <ul className="space-y-0.5 text-red-400">
+                {evidence.collectionErrors.map((e, i) => <li key={i}>{e}</li>)}
+              </ul>
+            </div>
+          )}
+
+          {/* Prompt head */}
+          {evidence.promptHead && (
+            <div>
+              <p className="text-[10px] uppercase tracking-widest text-[var(--dim)] mb-1">Prompt (first 5 KB)</p>
+              <pre className="whitespace-pre-wrap break-all font-mono text-[10px] bg-[var(--hover)] border border-[var(--border)] rounded p-2 max-h-48 overflow-y-auto leading-relaxed">
+                {evidence.promptHead}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
 }
 
 /* ─── Props ──────────────────────────────────────────────────────────────── */
@@ -187,6 +250,11 @@ function AssistantBubble({ message, isLast }: { message: ChatMessageType; isLast
             </button>
           )}
         </div>
+      )}
+
+      {/* Evidence panel — shown when done */}
+      {isDone && message.evidence && (
+        <EvidencePanel evidence={message.evidence} />
       )}
 
       {/* Timestamp */}

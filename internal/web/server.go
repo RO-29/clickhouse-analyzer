@@ -10,6 +10,7 @@ import (
 	"sort"
 	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -28,6 +29,7 @@ type Server struct {
 	analyzer     *analyzer.Analyzer
 	manager      *chclient.Manager
 	addr         string
+	configPath   string // path to ch-analyzer.yaml, passed to MCP subprocess
 	srv          *http.Server
 	logs         *LogBuffer
 	queryHistory *QueryHistory
@@ -40,6 +42,7 @@ func New(addr string, store *store.Store, analyzer *analyzer.Analyzer, manager *
 		analyzer:     analyzer,
 		manager:      manager,
 		addr:         addr,
+		configPath:   os.Getenv("CH_ANALYZER_CONFIG"),
 		logs:         logs,
 		queryHistory: NewQueryHistory(100),
 	}

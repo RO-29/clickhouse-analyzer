@@ -29,12 +29,59 @@ var (
 func main() {
 	configPath := flag.String("config", "configs/ch-analyzer.yaml", "Path to config file")
 	showVersion := flag.Bool("version", false, "Show version and exit")
+	mcpServer := flag.Bool("mcp-server", false, "Run as MCP stdio server (used by Claude CLI subprocess)")
+	mcpInstance := flag.String("mcp-instance", "", "ClickHouse instance name for MCP server mode")
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Printf("ch-analyzer %s (built %s)\n", version, buildTime)
 		os.Exit(0)
 	}
+
+	// ── MCP stdio server mode ─────────────────────────────────────────────────
+	// Started as a subprocess by the Claude CLI via --mcp-config.
+	// Connects to one CH instance and handles JSON-RPC tool calls on stdin/stdout.
+	if *mcpServer {
+		if *mcpInstance == "" {
+			fmt.Fprintln(os.Stderr, "ch-analyzer --mcp-server requires --mcp-instance <name>")
+			os.Exit(1)
+		}
+		cfg, err := config.Load(*configPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "mcp-server: failed to load config: %v\n", err)
+			os.Exit(1)
+		}
+		var instCfg *chclient.InstanceConfig
+		for _, ic := range cfg.Instances {
+			if ic.Name == *mcpInstance {
+				instCfg = &chclient.InstanceConfig{
+					Name:     ic.Name,
+					Host:     ic.Host,
+					Port:     ic.Port,
+					Username: ic.Username,
+					Password: ic.Password,
+					Secure:   ic.Secure,
+					Database: ic.Database,
+				}
+				break
+			}
+		}
+		if instCfg == nil {
+			fmt.Fprintf(os.Stderr, "mcp-server: instance %q not found in config\n", *mcpInstance)
+			os.Exit(1)
+		}
+		client := chclient.NewClient(*instCfg, chclient.ClientOptions{
+			ConnectTimeout: 10 * time.Second,
+			QueryTimeout:   30 * time.Second,
+			InsecureSkipVerify: true,
+		})
+		ctx := context.Background()
+		web.RunMCPServer(ctx, client)
+		os.Exit(0)
+	}
+
+	// Expose config path so the web server can pass it to MCP subprocesses.
+	os.Setenv("CH_ANALYZER_CONFIG", *configPath)
 
 	// Setup structured logging with capture buffer for dashboard
 	logBuffer := web.NewLogBuffer(5000)
