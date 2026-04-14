@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, type ChangeEvent } from 'react'
-import { Sparkles, X, Copy, Play } from 'lucide-react'
+import { Sparkles, X, Copy, Play, Maximize2 } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
@@ -210,12 +210,19 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
       format: (v: any) => {
         const q = String(v ?? '')
         return (
-          <span
-            className="text-[var(--dim)] hover:text-[var(--accent)] cursor-pointer transition-colors"
-            title="Click to view full query"
-            onClick={(e) => { e.stopPropagation(); if (q) onShowQuery(q) }}
-          >
-            {q.length > 80 ? q.slice(0, 80) + '…' : q}
+          <span className="flex items-center gap-1.5 group/q min-w-0">
+            <span className="text-[var(--dim)] text-xs font-mono truncate">
+              {q.length > 70 ? q.slice(0, 70) + '…' : q}
+            </span>
+            {q && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onShowQuery(q) }}
+                className="shrink-0 p-0.5 rounded text-[var(--dim)] hover:text-[var(--accent)] hover:bg-[var(--hover)] opacity-60 group-hover/q:opacity-100 transition-all"
+                title="View full query"
+              >
+                <Maximize2 size={11} />
+              </button>
+            )}
           </span>
         )
       },
@@ -579,12 +586,19 @@ function S3Tab({ instance, from, to, refreshKey, onAnalyze, onShowQuery }: TabPr
                 format: (v: any) => {
                   const q = String(v ?? '')
                   return (
-                    <span
-                      className="text-[var(--dim)] hover:text-[var(--accent)] cursor-pointer transition-colors"
-                      title="Click to view full query"
-                      onClick={(e) => { e.stopPropagation(); if (q) onShowQuery(q) }}
-                    >
-                      {q.length > 60 ? q.slice(0, 60) + '…' : q}
+                    <span className="flex items-center gap-1.5 group/q min-w-0">
+                      <span className="text-[var(--dim)] text-xs font-mono truncate">
+                        {q.length > 60 ? q.slice(0, 60) + '…' : q}
+                      </span>
+                      {q && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); onShowQuery(q) }}
+                          className="shrink-0 p-0.5 rounded text-[var(--dim)] hover:text-[var(--accent)] hover:bg-[var(--hover)] opacity-60 group-hover/q:opacity-100 transition-all"
+                          title="View full query"
+                        >
+                          <Maximize2 size={11} />
+                        </button>
+                      )}
                     </span>
                   )
                 },

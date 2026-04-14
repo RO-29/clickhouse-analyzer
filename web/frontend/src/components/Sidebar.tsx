@@ -71,10 +71,20 @@ export function Sidebar() {
         collapsed ? 'w-14' : 'w-[220px]',
       )}
     >
-      {/* Logo */}
+      {/* Logo + collapse toggle */}
       <div className={cn('flex items-center gap-2 px-4 h-14 shrink-0 border-b border-[var(--border)]', collapsed && 'justify-center px-0')}>
         <Database size={20} className="text-[var(--accent)] shrink-0" />
-        {!collapsed && <span className="font-semibold text-sm tracking-tight">CH Analyzer</span>}
+        {!collapsed && <span className="font-semibold text-sm tracking-tight flex-1">CH Analyzer</span>}
+        <button
+          onClick={() => setSidebarCollapsed(!collapsed)}
+          className={cn(
+            'rounded-lg p-1.5 text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)] transition-colors shrink-0',
+            collapsed && 'mt-0',
+          )}
+          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        >
+          {collapsed ? <ChevronsRight size={15} /> : <ChevronsLeft size={15} />}
+        </button>
       </div>
 
       {/* Nav */}
@@ -193,24 +203,6 @@ export function Sidebar() {
           </button>
         )}
 
-        {/* Collapse / expand button */}
-        {!collapsed ? (
-          <button
-            onClick={() => setSidebarCollapsed(true)}
-            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)] transition-colors"
-          >
-            <ChevronsLeft size={16} className="shrink-0" />
-            <span className="text-xs">Collapse sidebar</span>
-          </button>
-        ) : (
-          <button
-            onClick={() => setSidebarCollapsed(false)}
-            className="p-2 rounded-lg text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)] transition-colors"
-            title="Expand sidebar"
-          >
-            <ChevronsRight size={16} />
-          </button>
-        )}
       </div>
     </aside>
   )
