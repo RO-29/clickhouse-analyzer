@@ -5,6 +5,7 @@ package alerter
 import (
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -12,18 +13,16 @@ import (
 	"github.com/slack-go/slack"
 )
 
-// DigestMessage holds the data needed to render a daily or weekly summary
-// message in Slack.
+// DigestMessage holds the data needed to render a daily or weekly summary.
 type DigestMessage struct {
-	Period       string           // "daily" or "weekly"
-	HealthScores map[string]int   // instance -> score (0-100)
+	Period       string
+	HealthScores map[string]int
 	TopIssues    []string
-	Stats        map[string]string // key metrics
+	Stats        map[string]string
 	DashboardURL string
 }
 
 // SlackNotifier sends alert messages to a Slack channel using the Block Kit API.
-// It supports updating messages in-place via Slack's chat.update API.
 type SlackNotifier struct {
 	client    *slack.Client
 	channelID string
@@ -41,18 +40,20 @@ func NewSlackNotifier(botToken, channelID string) *SlackNotifier {
 	}
 }
 
-// UpdateOrPostInstanceMessage builds a single grouped Slack message containing
-// all currently-active alerts for the given instance, then updates the existing
-// message (slackTS) in-place or posts a new one. Returns the message timestamp.
-//
-// All severities (critical + warn) appear in one message, sorted critical-first.
-// Color reflects the highest severity present.
+// ---------------------------------------------------------------------------
+// Instance alert message — one per instance, updated in-place
+// ---------------------------------------------------------------------------
+
+// UpdateOrPostInstanceMessage builds a rich grouped Slack message for all
+// active alerts on the given instance, then updates or posts it.
 func (s *SlackNotifier) UpdateOrPostInstanceMessage(instance string, slackTS string, alerts []*ActiveAlert) (string, error) {
 	if len(alerts) == 0 {
 		return slackTS, nil
 	}
 
 	var critCount, warnCount int
+	var categories []string
+	catSeen := map[string]bool{}
 	for _, a := range alerts {
 		switch a.Alert.Severity {
 		case collector.SeverityCritical:
@@ -60,97 +61,141 @@ func (s *SlackNotifier) UpdateOrPostInstanceMessage(instance string, slackTS str
 		case collector.SeverityWarn:
 			warnCount++
 		}
+		cat := a.Alert.Category
+		if !catSeen[cat] {
+			catSeen[cat] = true
+			categories = append(categories, cat)
+		}
 	}
+	sort.Strings(categories)
 
+	// Sidebar color and top-level status indicators.
 	color := colorOrange
-	emoji := ":warning:"
+	statusEmoji := "🟠"
+	severityLabel := "WARNING"
 	if critCount > 0 {
 		color = colorRed
-		emoji = ":rotating_light:"
+		statusEmoji = "🔴"
+		severityLabel = "CRITICAL"
 	}
 
+	// How long has this instance been firing?
+	oldestAlert := alerts[0]
+	for _, a := range alerts {
+		if a.FirstSeen.Before(oldestAlert.FirstSeen) {
+			oldestAlert = a
+		}
+	}
+	firingSince := oldestAlert.FirstSeen.UTC().Format("15:04 UTC")
+	firingDur := formatDuration(time.Since(oldestAlert.FirstSeen).Round(time.Minute))
+
+	// ── Header ──────────────────────────────────────────────────────────────
+	// Bold instance name + status — the most important thing to see at a glance.
 	var countParts []string
 	if critCount > 0 {
 		countParts = append(countParts, fmt.Sprintf("*%d critical*", critCount))
 	}
 	if warnCount > 0 {
-		countParts = append(countParts, fmt.Sprintf("*%d warn*", warnCount))
+		countParts = append(countParts, fmt.Sprintf("*%d warning*", warnCount))
 	}
 
-	headerText := fmt.Sprintf("%s *%s* — %s", emoji, escapeMarkdown(instance), strings.Join(countParts, " · "))
+	headerMd := fmt.Sprintf("%s  *%s*  ·  %s",
+		statusEmoji,
+		escapeMarkdown(instance),
+		strings.Join(countParts, "  ·  "),
+	)
 
 	blocks := []slack.Block{
 		slack.NewSectionBlock(
-			slack.NewTextBlockObject(slack.MarkdownType, headerText, false, false),
+			slack.NewTextBlockObject(slack.MarkdownType, headerMd, false, false),
 			nil, nil,
 		),
-		slack.NewDividerBlock(),
 	}
 
-	// Critical alerts section.
+	// ── Metadata fields (2-column) ───────────────────────────────────────────
+	catEmojis := make([]string, 0, len(categories))
+	for _, c := range categories {
+		catEmojis = append(catEmojis, categoryEmoji(c)+" "+c)
+	}
+	fields := []*slack.TextBlockObject{
+		slack.NewTextBlockObject(slack.MarkdownType,
+			fmt.Sprintf("*Severity*\n%s  %s", statusEmoji, severityLabel), false, false),
+		slack.NewTextBlockObject(slack.MarkdownType,
+			fmt.Sprintf("*Firing Since*\n🕐  %s  (%s)", firingSince, firingDur), false, false),
+		slack.NewTextBlockObject(slack.MarkdownType,
+			fmt.Sprintf("*Alert Count*\n🔔  %d total", critCount+warnCount), false, false),
+		slack.NewTextBlockObject(slack.MarkdownType,
+			fmt.Sprintf("*Categories*\n%s", strings.Join(catEmojis, "  ·  ")), false, false),
+	}
+	blocks = append(blocks,
+		slack.NewSectionBlock(nil, fields, nil),
+		slack.NewDividerBlock(),
+	)
+
+	// ── Critical alerts ──────────────────────────────────────────────────────
 	if critCount > 0 {
 		var lines []string
 		for _, a := range alerts {
 			if a.Alert.Severity != collector.SeverityCritical {
 				continue
 			}
-			dur := time.Since(a.FirstSeen).Round(time.Minute)
-			line := fmt.Sprintf("• *%s* — firing %s", escapeMarkdown(a.Alert.Title), formatDuration(dur))
-			if a.Count > 1 {
-				line += fmt.Sprintf(" (×%d)", a.Count)
-			}
-			lines = append(lines, line)
+			lines = append(lines, formatAlertLine(a))
 		}
 		blocks = append(blocks, slack.NewSectionBlock(
 			slack.NewTextBlockObject(slack.MarkdownType,
-				fmt.Sprintf(":rotating_light: *Critical (%d)*\n%s", critCount, strings.Join(lines, "\n")),
+				fmt.Sprintf("🚨  *Critical  —  %d alert(s)*\n\n%s", critCount, strings.Join(lines, "\n")),
 				false, false),
 			nil, nil,
 		))
 	}
 
-	// Warn alerts section.
+	// ── Warn alerts ──────────────────────────────────────────────────────────
 	if warnCount > 0 {
 		var lines []string
 		for _, a := range alerts {
 			if a.Alert.Severity != collector.SeverityWarn {
 				continue
 			}
-			dur := time.Since(a.FirstSeen).Round(time.Minute)
-			line := fmt.Sprintf("• *%s* — firing %s", escapeMarkdown(a.Alert.Title), formatDuration(dur))
-			if a.Count > 1 {
-				line += fmt.Sprintf(" (×%d)", a.Count)
-			}
-			lines = append(lines, line)
+			lines = append(lines, formatAlertLine(a))
+		}
+		sep := ""
+		if critCount > 0 {
+			sep = "\n"
 		}
 		blocks = append(blocks, slack.NewSectionBlock(
 			slack.NewTextBlockObject(slack.MarkdownType,
-				fmt.Sprintf(":warning: *Warn (%d)*\n%s", warnCount, strings.Join(lines, "\n")),
+				fmt.Sprintf("%s⚠️  *Warning  —  %d alert(s)*\n\n%s", sep, warnCount, strings.Join(lines, "\n")),
 				false, false),
 			nil, nil,
 		))
 	}
 
-	// Expanded detail for the most-severe single alert (avoids flooding with
-	// all messages; gives the on-call engineer the most important context).
-	if len(alerts) > 0 && alerts[0].Alert.Message != "" {
-		msg := alerts[0].Alert.Message
-		if len(msg) > 400 {
-			msg = msg[:400] + "…"
+	// ── Top alert detail (most critical/oldest) ──────────────────────────────
+	if alerts[0].Alert.Message != "" {
+		msg := stripSlackMarkup(alerts[0].Alert.Message)
+		if len(msg) > 600 {
+			msg = msg[:600] + "…"
 		}
+		topTitle := alerts[0].Alert.Title
 		blocks = append(blocks,
 			slack.NewDividerBlock(),
 			slack.NewSectionBlock(
 				slack.NewTextBlockObject(slack.MarkdownType,
-					fmt.Sprintf("*Top alert detail:*\n%s", msg), false, false),
+					fmt.Sprintf("📋  *%s — Details*\n\n%s",
+						escapeMarkdown(topTitle), msg),
+					false, false),
 				nil, nil,
 			),
 		)
 	}
 
+	// ── Footer ───────────────────────────────────────────────────────────────
 	blocks = append(blocks, slack.NewContextBlock("",
 		slack.NewTextBlockObject(slack.MarkdownType,
-			fmt.Sprintf("Updated: %s", time.Now().Format("02 Jan 15:04 MST")), false, false),
+			fmt.Sprintf("🕐  *Updated* %s  ·  ch-analyzer  ·  `%s`",
+				time.Now().UTC().Format("15:04:05 UTC"),
+				instance),
+			false, false),
 	))
 
 	attachment := slack.Attachment{
@@ -158,23 +203,28 @@ func (s *SlackNotifier) UpdateOrPostInstanceMessage(instance string, slackTS str
 		Blocks: slack.Blocks{BlockSet: blocks},
 	}
 
-	fallbackText := fmt.Sprintf("%s %s — %s", emoji, instance, strings.Join(countParts, ", "))
+	fallbackText := fmt.Sprintf("[%s] %s — %s", severityLabel, instance, strings.Join(countParts, ", "))
 	return s.updateOrPost(slackTS, fallbackText, attachment)
 }
 
-// PostInstanceAllClear updates the instance's existing Slack message to show
-// all alerts resolved (green). If no existing message, posts a new one.
+// ---------------------------------------------------------------------------
+// All-clear message
+// ---------------------------------------------------------------------------
+
 func (s *SlackNotifier) PostInstanceAllClear(instance string, slackTS string) (string, error) {
-	headerText := fmt.Sprintf(":white_check_mark: *%s* — All clear", escapeMarkdown(instance))
+	now := time.Now().UTC()
 
 	blocks := []slack.Block{
 		slack.NewSectionBlock(
-			slack.NewTextBlockObject(slack.MarkdownType, headerText, false, false),
+			slack.NewTextBlockObject(slack.MarkdownType,
+				fmt.Sprintf("✅  *%s*  ·  All Clear", escapeMarkdown(instance)),
+				false, false),
 			nil, nil,
 		),
 		slack.NewContextBlock("",
 			slack.NewTextBlockObject(slack.MarkdownType,
-				fmt.Sprintf("All alerts resolved at %s", time.Now().Format("02 Jan 15:04 MST")),
+				fmt.Sprintf("🕐  Resolved at %s  ·  ch-analyzer  ·  `%s`",
+					now.Format("15:04:05 UTC"), instance),
 				false, false),
 		),
 	}
@@ -184,39 +234,85 @@ func (s *SlackNotifier) PostInstanceAllClear(instance string, slackTS string) (s
 		Blocks: slack.Blocks{BlockSet: blocks},
 	}
 
-	fallbackText := fmt.Sprintf(":white_check_mark: %s — All clear", instance)
-	return s.updateOrPost(slackTS, fallbackText, attachment)
+	return s.updateOrPost(slackTS,
+		fmt.Sprintf("[RESOLVED] %s — All Clear", instance),
+		attachment)
 }
 
-// SendDigest posts a daily or weekly summary with health scores, top issues,
-// and key stats.
+// ---------------------------------------------------------------------------
+// Escalation notice
+// ---------------------------------------------------------------------------
+
+func (s *SlackNotifier) PostEscalationNotice(instance string, firingMinutes int) error {
+	blocks := []slack.Block{
+		slack.NewSectionBlock(
+			slack.NewTextBlockObject(slack.MarkdownType,
+				fmt.Sprintf("🚨  *Escalation* — `%s` has been firing for *%d minutes* with no response.\n"+
+					"Please acknowledge or snooze in the ch-analyzer dashboard.",
+					escapeMarkdown(instance), firingMinutes),
+				false, false),
+			nil, nil,
+		),
+		slack.NewContextBlock("",
+			slack.NewTextBlockObject(slack.MarkdownType,
+				fmt.Sprintf("⏱  Escalated at %s  ·  ch-analyzer", time.Now().UTC().Format("15:04 UTC")),
+				false, false),
+		),
+	}
+
+	attachment := slack.Attachment{
+		Color:  colorRed,
+		Blocks: slack.Blocks{BlockSet: blocks},
+	}
+
+	return s.postMessage(
+		slack.MsgOptionAttachments(attachment),
+		slack.MsgOptionText(fmt.Sprintf("[ESCALATION] %s — firing %dm", instance, firingMinutes), false),
+	)
+}
+
+// ---------------------------------------------------------------------------
+// Daily / weekly digest
+// ---------------------------------------------------------------------------
+
 func (s *SlackNotifier) SendDigest(digest DigestMessage) error {
 	periodTitle := capitalizeFirst(digest.Period)
-	headerText := fmt.Sprintf(":bar_chart: *%s ClickHouse Health Digest*", periodTitle)
 
 	blocks := []slack.Block{
 		slack.NewSectionBlock(
-			slack.NewTextBlockObject(slack.MarkdownType, headerText, false, false),
+			slack.NewTextBlockObject(slack.MarkdownType,
+				fmt.Sprintf("📊  *%s ClickHouse Health Digest*", periodTitle),
+				false, false),
 			nil, nil,
 		),
 		slack.NewDividerBlock(),
 	}
 
-	// Health scores per instance.
+	// Health scores — use emoji circles + score bar.
 	if len(digest.HealthScores) > 0 {
-		var sb strings.Builder
-		sb.WriteString("*Health Scores:*\n")
-		for instance, score := range digest.HealthScores {
-			icon := ":large_green_circle:"
+		var lines []string
+		// Sort instances for stable output.
+		instances := make([]string, 0, len(digest.HealthScores))
+		for inst := range digest.HealthScores {
+			instances = append(instances, inst)
+		}
+		sort.Strings(instances)
+
+		for _, inst := range instances {
+			score := digest.HealthScores[inst]
+			icon := "🟢"
 			if score < 70 {
-				icon = ":red_circle:"
+				icon = "🔴"
 			} else if score < 90 {
-				icon = ":large_yellow_circle:"
+				icon = "🟡"
 			}
-			sb.WriteString(fmt.Sprintf("%s  `%s`: *%d/100*\n", icon, instance, score))
+			bar := scoreBar(score)
+			lines = append(lines, fmt.Sprintf("%s  `%-24s`  %s  *%d/100*", icon, inst, bar, score))
 		}
 		blocks = append(blocks, slack.NewSectionBlock(
-			slack.NewTextBlockObject(slack.MarkdownType, sb.String(), false, false),
+			slack.NewTextBlockObject(slack.MarkdownType,
+				"*Instance Health Scores*\n\n"+strings.Join(lines, "\n"),
+				false, false),
 			nil, nil,
 		))
 	}
@@ -224,26 +320,32 @@ func (s *SlackNotifier) SendDigest(digest DigestMessage) error {
 	// Top issues.
 	if len(digest.TopIssues) > 0 {
 		var sb strings.Builder
-		sb.WriteString("*Top Issues:*\n")
 		for i, issue := range digest.TopIssues {
-			sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, issue))
+			sb.WriteString(fmt.Sprintf("%d.  %s\n", i+1, issue))
 		}
 		blocks = append(blocks,
 			slack.NewDividerBlock(),
 			slack.NewSectionBlock(
-				slack.NewTextBlockObject(slack.MarkdownType, sb.String(), false, false),
+				slack.NewTextBlockObject(slack.MarkdownType,
+					"*Top Issues*\n\n"+sb.String(),
+					false, false),
 				nil, nil,
 			),
 		)
 	}
 
-	// Key stats.
+	// Key stats as fields.
 	if len(digest.Stats) > 0 {
 		var fields []*slack.TextBlockObject
-		for k, v := range digest.Stats {
+		keys := make([]string, 0, len(digest.Stats))
+		for k := range digest.Stats {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
 			fields = append(fields,
 				slack.NewTextBlockObject(slack.MarkdownType,
-					fmt.Sprintf("*%s:*\n%s", k, v), false, false),
+					fmt.Sprintf("*%s*\n%s", k, digest.Stats[k]), false, false),
 			)
 		}
 		blocks = append(blocks,
@@ -258,7 +360,7 @@ func (s *SlackNotifier) SendDigest(digest DigestMessage) error {
 			slack.NewDividerBlock(),
 			slack.NewSectionBlock(
 				slack.NewTextBlockObject(slack.MarkdownType,
-					fmt.Sprintf(":chart_with_upwards_trend: <%s|Open Dashboard>", digest.DashboardURL),
+					fmt.Sprintf("🔗  <%s|Open ch-analyzer Dashboard>", digest.DashboardURL),
 					false, false),
 				nil, nil,
 			),
@@ -267,7 +369,8 @@ func (s *SlackNotifier) SendDigest(digest DigestMessage) error {
 
 	blocks = append(blocks, slack.NewContextBlock("",
 		slack.NewTextBlockObject(slack.MarkdownType,
-			fmt.Sprintf("Generated %s", time.Now().Format(time.RFC1123)), false, false),
+			fmt.Sprintf("📅  Generated %s  ·  ch-analyzer", time.Now().UTC().Format("Mon 02 Jan 2006 15:04 UTC")),
+			false, false),
 	))
 
 	attachment := slack.Attachment{
@@ -277,8 +380,99 @@ func (s *SlackNotifier) SendDigest(digest DigestMessage) error {
 
 	return s.postMessage(
 		slack.MsgOptionAttachments(attachment),
-		slack.MsgOptionText(fmt.Sprintf("%s ClickHouse Health Digest", periodTitle), false),
+		slack.MsgOptionText(fmt.Sprintf("[DIGEST] %s ClickHouse Health", periodTitle), false),
 	)
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+// formatAlertLine renders a single alert as a readable bullet row.
+//
+//	💾  *Memory limit exceeded*   `15m`  `×8`
+func formatAlertLine(a *ActiveAlert) string {
+	icon := categoryEmoji(a.Alert.Category)
+	dur := time.Since(a.FirstSeen).Round(time.Minute)
+	line := fmt.Sprintf("%s  *%s*   `%s`", icon, escapeMarkdown(a.Alert.Title), formatDuration(dur))
+	if a.Count > 1 {
+		line += fmt.Sprintf("  `×%d`", a.Count)
+	}
+	return line
+}
+
+// categoryEmoji maps an alert category to a descriptive emoji.
+func categoryEmoji(category string) string {
+	cat := strings.ToLower(category)
+	switch {
+	case strings.Contains(cat, "memory"):
+		return "💾"
+	case strings.Contains(cat, "cpu"):
+		return "⚡"
+	case strings.Contains(cat, "queries"), strings.Contains(cat, "query"):
+		return "🔍"
+	case strings.Contains(cat, "replication"):
+		return "🔁"
+	case strings.Contains(cat, "storage"):
+		return "💿"
+	case strings.Contains(cat, "inserts"), strings.Contains(cat, "insert"):
+		return "📥"
+	case strings.Contains(cat, "mvs"), strings.Contains(cat, "mv"):
+		return "🔄"
+	case strings.Contains(cat, "tables"), strings.Contains(cat, "table"):
+		return "📊"
+	case strings.Contains(cat, "dictionar"):
+		return "📚"
+	case strings.Contains(cat, "errors"), strings.Contains(cat, "error"):
+		return "❌"
+	case strings.Contains(cat, "k8s"):
+		return "☸️"
+	case strings.Contains(cat, "freshness"):
+		return "⏰"
+	case strings.Contains(cat, "connectivity"):
+		return "🔌"
+	case strings.Contains(cat, "cache"):
+		return "⚡"
+	case strings.Contains(cat, "background"), strings.Contains(cat, "pool"):
+		return "🏊"
+	case strings.Contains(cat, "schema"):
+		return "🗂️"
+	case strings.Contains(cat, "projection"):
+		return "📐"
+	default:
+		return "🔔"
+	}
+}
+
+// scoreBar renders a compact 10-char progress bar for a health score 0-100.
+// e.g. score=75 → "███████░░░"
+func scoreBar(score int) string {
+	filled := score / 10
+	if filled > 10 {
+		filled = 10
+	}
+	return strings.Repeat("█", filled) + strings.Repeat("░", 10-filled)
+}
+
+// stripSlackMarkup removes common Slack mrkdwn that would double-render badly
+// when re-inserted inside another block (e.g. nested bold).
+func stripSlackMarkup(s string) string {
+	// Collapse runs of blank lines to at most one.
+	lines := strings.Split(s, "\n")
+	var out []string
+	blank := 0
+	for _, l := range lines {
+		if strings.TrimSpace(l) == "" {
+			blank++
+			if blank <= 1 {
+				out = append(out, "")
+			}
+		} else {
+			blank = 0
+			out = append(out, l)
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -292,8 +486,6 @@ const (
 	colorBlue   = "#36C5F0"
 )
 
-// updateOrPost updates an existing Slack message by TS, or posts a new one.
-// Returns the (possibly new) message timestamp.
 func (s *SlackNotifier) updateOrPost(slackTS, fallbackText string, attachment slack.Attachment) (string, error) {
 	if slackTS != "" {
 		_, _, _, err := s.client.UpdateMessage(
@@ -307,7 +499,6 @@ func (s *SlackNotifier) updateOrPost(slackTS, fallbackText string, attachment sl
 		}
 		s.logger.Warn("failed to update slack message, posting new",
 			slog.String("ts", slackTS), slog.String("error", err.Error()))
-		// Fall through to post a new message.
 	}
 
 	_, ts, err := s.client.PostMessage(s.channelID,
@@ -322,13 +513,12 @@ func (s *SlackNotifier) updateOrPost(slackTS, fallbackText string, attachment sl
 	return ts, nil
 }
 
-// postMessage wraps the Slack API call with logging and rate-limit handling.
 func (s *SlackNotifier) postMessage(opts ...slack.MsgOption) error {
 	opts = append(opts, slack.MsgOptionDisableLinkUnfurl())
 	_, _, err := s.client.PostMessage(s.channelID, opts...)
 	if err != nil {
 		if rlErr, ok := err.(*slack.RateLimitedError); ok {
-			s.logger.Warn("slack rate limited, message dropped",
+			s.logger.Warn("slack rate limited",
 				slog.Duration("retry_after", rlErr.RetryAfter))
 			return fmt.Errorf("slack rate limited (retry after %s): %w", rlErr.RetryAfter, err)
 		}
@@ -336,11 +526,9 @@ func (s *SlackNotifier) postMessage(opts ...slack.MsgOption) error {
 			slog.String("channel", s.channelID), slog.String("error", err.Error()))
 		return fmt.Errorf("slack post message: %w", err)
 	}
-	s.logger.Debug("slack message sent", slog.String("channel", s.channelID))
 	return nil
 }
 
-// escapeMarkdown does a minimal escape of characters that could break Slack mrkdwn.
 func escapeMarkdown(s string) string {
 	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
 	return r.Replace(s)
@@ -353,7 +541,6 @@ func capitalizeFirst(s string) string {
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 
-// formatDuration returns a human-friendly representation, e.g. "2h 15m".
 func formatDuration(d time.Duration) string {
 	if d < time.Minute {
 		return d.Round(time.Second).String()
