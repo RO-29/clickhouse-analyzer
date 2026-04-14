@@ -15,10 +15,12 @@ import (
 // ---------------------------------------------------------------------------
 
 type tableScanResult struct {
-	Tables    []tableScanEntry `json:"tables"`
-	ScannedAt string           `json:"scanned_at"`
-	TimeFrom  string           `json:"time_from"`
-	TimeTo    string           `json:"time_to"`
+	Tables       []tableScanEntry `json:"tables"`
+	ScannedAt    string           `json:"scanned_at"`
+	TimeFrom     string           `json:"time_from"`
+	TimeTo       string           `json:"time_to"`
+	Warnings     []string         `json:"warnings,omitempty"`
+	ActivityRows int              `json:"activity_rows"` // qlog rows matched
 }
 
 type tableScanEntry struct {
@@ -144,26 +146,33 @@ ORDER BY database, table, bytes DESC
 	}()
 
 	// 3. Query activity from query_log.
-	// Avoid query_kind (added in CH 21.5) — detect SELECT/INSERT from the query text.
+	// Use ARRAY JOIN on `tables` to unnest per-table rows, then parse db.table from
+	// the qualified name (e.g. "mydb.events"). Avoids query_kind (CH 21.5+) and
+	// avoids the databases[1]/tables[1] pairing bug (those arrays don't correspond).
+	// ltrim() trims leading whitespace portably; trimBoth() is less available.
 	go func() {
 		defer wg.Done()
 		qlogRows, qlogErr = client.Query(ctx, fmt.Sprintf(`
 SELECT
-  databases[1] AS db,
-  tables[1]    AS tbl,
-  countIf(upper(left(trimBoth(query), 6)) = 'SELECT' OR upper(left(trimBoth(query), 4)) = 'WITH') AS select_count,
-  countIf(upper(left(trimBoth(query), 6)) = 'INSERT') AS insert_count,
-  maxIf(event_time, upper(left(trimBoth(query), 6)) = 'SELECT' OR upper(left(trimBoth(query), 4)) = 'WITH') AS last_select,
-  maxIf(event_time, upper(left(trimBoth(query), 6)) = 'INSERT') AS last_insert
+  if(position(t, '.') > 0,
+     substring(t, 1, position(t, '.') - 1),
+     '') AS db,
+  if(position(t, '.') > 0,
+     substring(t, position(t, '.') + 1),
+     t) AS tbl,
+  countIf(upper(left(ltrim(query), 6)) = 'SELECT' OR upper(left(ltrim(query), 4)) = 'WITH') AS select_count,
+  countIf(upper(left(ltrim(query), 6)) = 'INSERT') AS insert_count,
+  maxIf(event_time, upper(left(ltrim(query), 6)) = 'SELECT' OR upper(left(ltrim(query), 4)) = 'WITH') AS last_select,
+  maxIf(event_time, upper(left(ltrim(query), 6)) = 'INSERT') AS last_insert
 FROM system.query_log
+ARRAY JOIN tables AS t
 WHERE type = 'QueryFinish'
   AND is_initial_query = 1
-  AND length(databases) > 0
   AND length(tables) > 0
-  AND databases[1] NOT IN ('system', 'information_schema', '')
-  AND tables[1] != ''
   AND event_time BETWEEN '%s' AND '%s'
 GROUP BY db, tbl
+HAVING db NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA', '_temporary_and_external_tables', '')
+  AND tbl != ''
 `, fromStr, toStr))
 	}()
 
@@ -174,13 +183,14 @@ GROUP BY db, tbl
 		writeErr(w, http.StatusInternalServerError, "failed to query system.tables: "+tableErr.Error())
 		return
 	}
+	var warnings []string
 	if diskErr != nil {
 		slog.Warn("table-scan: disk query failed", "err", diskErr)
-		// Non-fatal — continue without disk data.
+		warnings = append(warnings, "disk query failed: "+diskErr.Error())
 	}
 	if qlogErr != nil {
 		slog.Warn("table-scan: query_log query failed", "err", qlogErr)
-		// Non-fatal — continue without activity data.
+		warnings = append(warnings, "activity query failed: "+qlogErr.Error())
 	}
 
 	// ── Fetch disk types from system.disks ────────────────────────────────────
@@ -273,13 +283,85 @@ GROUP BY db, tbl
 	})
 
 	result := tableScanResult{
-		Tables:    entries,
-		ScannedAt: now.Format(time.RFC3339),
-		TimeFrom:  fromStr,
-		TimeTo:    toStr,
+		Tables:       entries,
+		ScannedAt:    now.Format(time.RFC3339),
+		TimeFrom:     fromStr,
+		TimeTo:       toStr,
+		Warnings:     warnings,
+		ActivityRows: len(qlogRows),
 	}
 
 	writeJSON(w, http.StatusOK, result)
+}
+
+// handleTableScanDebug runs diagnostic queries so you can see what the
+// query_log tables/databases columns actually look like on this instance.
+// GET /api/instances/{name}/table-scan-debug
+func (s *Server) handleTableScanDebug(w http.ResponseWriter, r *http.Request) {
+	instance := r.PathValue("name")
+	client := s.manager.Get(instance)
+	if client == nil {
+		writeErr(w, http.StatusNotFound, "instance not found: "+instance)
+		return
+	}
+	ctx := r.Context()
+
+	type debugResult struct {
+		SampleRows  []map[string]interface{} `json:"sample_rows"`
+		SampleErr   string                   `json:"sample_err,omitempty"`
+		AggRows     []map[string]interface{} `json:"agg_rows"`
+		AggErr      string                   `json:"agg_err,omitempty"`
+	}
+
+	out := debugResult{}
+
+	// Raw sample: show what tables/databases columns look like
+	sampleRows, sampleErr := client.Query(ctx, `
+SELECT
+  tables,
+  databases,
+  left(query, 80) AS query_head,
+  type,
+  event_time
+FROM system.query_log
+WHERE type = 'QueryFinish'
+  AND is_initial_query = 1
+  AND length(tables) > 0
+ORDER BY event_time DESC
+LIMIT 10
+`)
+	if sampleErr != nil {
+		out.SampleErr = sampleErr.Error()
+	} else {
+		out.SampleRows = sampleRows
+	}
+
+	// Aggregated: show what the fixed query returns
+	aggRows, aggErr := client.Query(ctx, `
+SELECT
+  if(position(t, '.') > 0, substring(t, 1, position(t, '.') - 1), '') AS db,
+  if(position(t, '.') > 0, substring(t, position(t, '.') + 1), t) AS tbl,
+  countIf(upper(left(ltrim(query), 6)) = 'SELECT' OR upper(left(ltrim(query), 4)) = 'WITH') AS select_count,
+  countIf(upper(left(ltrim(query), 6)) = 'INSERT') AS insert_count
+FROM system.query_log
+ARRAY JOIN tables AS t
+WHERE type = 'QueryFinish'
+  AND is_initial_query = 1
+  AND length(tables) > 0
+  AND event_time > now() - 86400
+GROUP BY db, tbl
+HAVING db NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA', '_temporary_and_external_tables', '')
+  AND tbl != ''
+ORDER BY (select_count + insert_count) DESC
+LIMIT 20
+`)
+	if aggErr != nil {
+		out.AggErr = aggErr.Error()
+	} else {
+		out.AggRows = aggRows
+	}
+
+	writeJSON(w, http.StatusOK, out)
 }
 
 // ---------------------------------------------------------------------------

@@ -217,6 +217,8 @@ export interface TableScanResult {
   scanned_at: string
   time_from: string
   time_to: string
+  warnings?: string[]
+  activity_rows: number
 }
 
 // Keep AnalyzeOptions for inline Analyze buttons on other tabs

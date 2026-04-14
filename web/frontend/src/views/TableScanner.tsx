@@ -296,6 +296,7 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
           {result && (
             <p className="text-xs text-[var(--dim)] mt-0.5">
               {tables.length} tables · {fmtBytes(totalBytes)} total · {activeTables} active
+              · {result.activity_rows} qlog rows matched
               · scanned {new Date(result.scanned_at).toLocaleTimeString()}
             </p>
           )}
@@ -384,6 +385,14 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
       {error && (
         <div className="px-4 py-3 rounded-lg border border-red-500/30 bg-red-500/10 text-sm text-red-400">
           {error}
+        </div>
+      )}
+
+      {/* Warnings from backend (e.g. activity query failed) */}
+      {result?.warnings && result.warnings.length > 0 && (
+        <div className="px-4 py-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 text-xs text-yellow-300 space-y-1">
+          <p className="font-semibold">Scan warnings (activity data may be incomplete):</p>
+          {result.warnings.map((w, i) => <p key={i} className="font-mono">{w}</p>)}
         </div>
       )}
 

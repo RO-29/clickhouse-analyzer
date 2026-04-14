@@ -143,8 +143,9 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Agentic chat endpoint (from chat.go).
 	mux.HandleFunc("POST /api/instances/{name}/chat", s.handleChat)
 
-	// Table scanner endpoint (from table_scanner.go).
+	// Table scanner endpoints (from table_scanner.go).
 	mux.HandleFunc("GET /api/instances/{name}/table-scan", s.handleTableScan)
+	mux.HandleFunc("GET /api/instances/{name}/table-scan-debug", s.handleTableScanDebug)
 
 	// Advisor endpoints (from advisor.go).
 	mux.HandleFunc("GET /api/instances/{name}/advisor/compression", s.handleAdvisorCompression)
