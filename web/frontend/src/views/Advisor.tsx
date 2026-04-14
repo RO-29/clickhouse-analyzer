@@ -215,7 +215,7 @@ export default function Advisor() {
 
   // Summary tiles
   const tiles = [
-    { label: 'Compression', count: count(compression) },
+    { label: 'Compression', count: compression.data !== null ? compression.data.filter((r: any) => r.recommendations?.length > 0).length : null },
     { label: 'Index Memory', count: indexMemoryIssues ? indexMemoryIssues.length : null },
     { label: 'Query Regression', count: count(queryRegression) },
     { label: 'New Patterns', count: count(newPatterns) },
@@ -292,7 +292,7 @@ export default function Advisor() {
       {hasRun && (
         <Section
           title="Compression Analysis"
-          count={count(compression)}
+          count={compression.data !== null ? compression.data.filter((r: any) => r.recommendations?.length > 0).length : null}
           collapsed={!!collapsed['compression']}
           onToggle={() => toggle('compression')}
           loading={compression.loading}

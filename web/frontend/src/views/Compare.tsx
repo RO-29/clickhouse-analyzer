@@ -233,6 +233,12 @@ function TablesView({ data, instances }: { data: TablesData; instances: string[]
   const filtered = useMemo(() => {
     let rows = data.tables
 
+    // Only show tables that exist on at least one selected node.
+    // Tables present only on unselected nodes are irrelevant to the current comparison.
+    rows = rows.filter((t) =>
+      activeNodes.some((n) => !(t.missing_on ?? []).includes(n)),
+    )
+
     if (search.trim()) {
       const q = search.toLowerCase()
       rows = rows.filter(

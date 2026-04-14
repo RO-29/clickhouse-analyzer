@@ -47,11 +47,14 @@ func (s *Server) handleCompareTables(w http.ResponseWriter, r *http.Request) {
 	errs := s.manager.ForEachParallel(ctx, func(ctx context.Context, name string, client *chclient.Client) error {
 		// Query 1: table metadata.
 		tableRows, err := client.Query(ctx, `
-			SELECT database, name as table_name, engine, total_rows, total_bytes,
-				formatReadableSize(total_bytes) as size_readable
+			SELECT database, name as table_name, engine,
+				COALESCE(total_rows, 0) as total_rows,
+				COALESCE(total_bytes, 0) as total_bytes,
+				formatReadableSize(COALESCE(total_bytes, 0)) as size_readable
 			FROM system.tables
 			WHERE database NOT IN ('system','INFORMATION_SCHEMA','information_schema','ch_analyzer')
-				AND total_bytes IS NOT NULL AND total_bytes > 0
+				AND engine NOT IN ('Dictionary','LiveView','WindowView')
+				AND (COALESCE(total_bytes, 0) > 0 OR engine IN ('MaterializedView','View'))
 			ORDER BY database, name
 		`)
 		if err != nil {
