@@ -41,6 +41,20 @@ type Config struct {
 	Storage    StorageConfig    `yaml:"storage"`
 	Prometheus PrometheusConfig `yaml:"prometheus"`
 	K8s        K8sConfig        `yaml:"k8s"`
+	Altinity   AltinityConfig   `yaml:"altinity"`
+}
+
+// AltinityConfig controls cost estimation for the Altinity Cloud Cost Explorer.
+type AltinityConfig struct {
+	// PricingModel selects the Altinity pricing tier:
+	//   byoc_aws | byoc_gcp | byoc_azure | byoc_hetzner | managed
+	PricingModel string `yaml:"pricing_model"`
+	// VCPUOverride manually sets the vCPU count (0 = auto-detect from K8s metrics).
+	VCPUOverride int `yaml:"vcpu_override"`
+	// EBSGBMonthlyUSD is the cost per GB/month for block storage (default: $0.08 for AWS gp3).
+	EBSGBMonthlyUSD float64 `yaml:"ebs_gb_monthly_usd"`
+	// S3GBMonthlyUSD is the cost per GB/month for S3 object storage (default: $0.023 AWS standard).
+	S3GBMonthlyUSD float64 `yaml:"s3_gb_monthly_usd"`
 }
 
 // Instance describes a single ClickHouse connection target.
@@ -275,6 +289,11 @@ func Defaults() *Config {
 		},
 		K8s: K8sConfig{
 			Enabled: true,
+		},
+		Altinity: AltinityConfig{
+			PricingModel:    "byoc_aws",
+			EBSGBMonthlyUSD: 0.08,
+			S3GBMonthlyUSD:  0.023,
 		},
 	}
 }

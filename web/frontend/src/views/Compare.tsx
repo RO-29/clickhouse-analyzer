@@ -207,7 +207,7 @@ type RowFilter = 'all' | 'missing' | 'divergent'
 
 const NODES_KEY = 'compare-selected-nodes'
 
-function TablesView({ data, instances }: { data: TablesData; instances: string[] }) {
+function TablesView({ data, instances, onAnalyze }: { data: TablesData; instances: string[]; onAnalyze: (data: Record<string, any>) => void }) {
   const [selectedNodes, setSelectedNodes] = useState<string[]>(() => {
     try {
       const stored = JSON.parse(localStorage.getItem(NODES_KEY) ?? '[]') as string[]
@@ -430,6 +430,7 @@ function TablesView({ data, instances }: { data: TablesData; instances: string[]
                     </button>
                   </th>
                 )}
+                <th className="w-8 px-2" />
               </tr>
             </thead>
             <tbody>
@@ -452,7 +453,7 @@ function TablesView({ data, instances }: { data: TablesData; instances: string[]
                     <tr
                       key={idx}
                       className={cn(
-                        'border-b border-[var(--border)] last:border-0 transition-colors',
+                        'border-b border-[var(--border)] last:border-0 transition-colors group',
                         missing
                           ? 'bg-red-500/5 hover:bg-red-500/[0.08]'
                           : diverging
@@ -515,6 +516,15 @@ function TablesView({ data, instances }: { data: TablesData; instances: string[]
                           )}
                         </td>
                       )}
+                      <td className="px-2 w-8">
+                        <button
+                          onClick={() => onAnalyze({ table: `${t.database}.${t.table}`, engine: t.engine, nodes: t.nodes, missing_on: t.missing_on, drift: (drift * 100).toFixed(1) + '%' })}
+                          className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-purple-400 hover:bg-purple-500/15"
+                          title="Analyze with AI"
+                        >
+                          <Sparkles size={11} />
+                        </button>
+                      </td>
                     </tr>
                   )
                 })
@@ -531,11 +541,12 @@ function TablesView({ data, instances }: { data: TablesData; instances: string[]
 /*  Settings view — baseline column + delta for others               */
 /* ------------------------------------------------------------------ */
 function SettingsView({
-  data, baseline, instances,
+  data, baseline, instances, onAnalyze,
 }: {
   data: SettingsData
   baseline: string
   instances: string[]
+  onAnalyze: (data: Record<string, any>) => void
 }) {
   const [diffsOnly, setDiffsOnly] = useState(true)
   const others = instances.filter((i) => i !== baseline)
@@ -582,6 +593,7 @@ function SettingsView({
                     {inst}
                   </th>
                 ))}
+                <th className="w-8 px-2" />
               </tr>
             </thead>
             <tbody>
@@ -594,7 +606,7 @@ function SettingsView({
               ) : settings.map((s, i) => (
                 <tr
                   key={i}
-                  className={cn('border-b border-[var(--border)] last:border-0', s.important && 'border-l-2 border-l-blue-500')}
+                  className={cn('border-b border-[var(--border)] last:border-0 group', s.important && 'border-l-2 border-l-blue-500')}
                 >
                   <td className="py-2 px-3 font-mono text-xs font-medium">{s.name}</td>
                   <td className="py-2 px-3 font-mono text-xs">{String(s.values?.[baseline] ?? '—')}</td>
@@ -607,6 +619,15 @@ function SettingsView({
                       </td>
                     )
                   })}
+                  <td className="px-2 w-8">
+                    <button
+                      onClick={() => onAnalyze({ setting: s.name, baseline_value: s.values?.[baseline], values: s.values, important: s.important })}
+                      className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-purple-400 hover:bg-purple-500/15"
+                      title="Analyze with AI"
+                    >
+                      <Sparkles size={11} />
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -624,7 +645,7 @@ const BAR_COLORS = [
   '#3b82f6', '#22c55e', '#eab308', '#ef4444', '#a855f7', '#14b8a6', '#f97316', '#ec4899',
 ]
 
-function MetricsView({ baseline, instances }: { baseline: string; instances: string[] }) {
+function MetricsView({ baseline, instances, onAnalyze }: { baseline: string; instances: string[]; onAnalyze: (data: Record<string, any>) => void }) {
   const [data, setData] = useState<MetricsData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -657,13 +678,14 @@ function MetricsView({ baseline, instances }: { baseline: string; instances: str
                 {others.map((inst) => (
                   <th key={inst} className="text-left py-2 px-3 text-xs font-medium uppercase tracking-wider text-[var(--dim)]">{inst}</th>
                 ))}
+                <th className="w-8 px-2" />
               </tr>
             </thead>
             <tbody>
               {data.metrics.map((m, i) => {
                 const bVal = m.values?.[baseline] ?? 0
                 return (
-                  <tr key={i} className="border-b border-[var(--border)] last:border-0">
+                  <tr key={i} className="border-b border-[var(--border)] last:border-0 group">
                     <td className="py-2 px-3 font-mono text-xs">{m.name}</td>
                     <td className="py-2 px-3 font-mono text-xs">
                       {m.unit === 'bytes' ? fmtBytes(bVal) : fmtNum(bVal)}
@@ -685,6 +707,15 @@ function MetricsView({ baseline, instances }: { baseline: string; instances: str
                         </td>
                       )
                     })}
+                    <td className="px-2 w-8">
+                      <button
+                        onClick={() => onAnalyze({ metric: m.name, unit: m.unit, baseline_value: bVal, values: m.values })}
+                        className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-purple-400 hover:bg-purple-500/15"
+                        title="Analyze with AI"
+                      >
+                        <Sparkles size={11} />
+                      </button>
+                    </td>
                   </tr>
                 )
               })}
@@ -857,6 +888,9 @@ export default function Compare() {
   const handleAnalyze = useCallback((data: Record<string, any>) => {
     analyze('Instance Comparison', data, { contextType: 'tab', tab: 'compare' })
   }, [analyze])
+  const makeElementAnalyzer = useCallback((labelFn: (d: Record<string, any>) => string) =>
+    (data: Record<string, any>) => analyze(labelFn(data), data, { contextType: 'row', tab: 'compare' }),
+  [analyze])
 
   const [tablesData, setTablesData] = useState<TablesData | null>(null)
   const [settingsData, setSettingsData] = useState<SettingsData | null>(null)
@@ -959,18 +993,18 @@ export default function Compare() {
         tablesLoading
           ? <LoadingSkeleton />
           : tablesData
-            ? <TablesView data={tablesData} instances={instances} />
+            ? <TablesView data={tablesData} instances={instances} onAnalyze={makeElementAnalyzer(d => `Compare table: ${d.table}`)} />
             : <EmptyMsg msg="Failed to load table data" />
       )}
       {tab === 'settings' && (
         settingsLoading
           ? <LoadingSkeleton />
           : settingsData
-            ? <SettingsView data={settingsData} baseline={effectiveBaseline} instances={instances} />
+            ? <SettingsView data={settingsData} baseline={effectiveBaseline} instances={instances} onAnalyze={makeElementAnalyzer(d => `Setting: ${d.setting}`)} />
             : <EmptyMsg msg="Failed to load settings data" />
       )}
       {tab === 'metrics' && (
-        <MetricsView baseline={effectiveBaseline} instances={instances} />
+        <MetricsView baseline={effectiveBaseline} instances={instances} onAnalyze={makeElementAnalyzer(d => `Metric: ${d.metric}`)} />
       )}
       {tab === 'memory' && (
         <MemoryView baseline={effectiveBaseline} instances={instances} />

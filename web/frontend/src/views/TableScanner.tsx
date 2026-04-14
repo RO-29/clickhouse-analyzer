@@ -2,8 +2,10 @@ import { useState, useEffect, useCallback } from 'react'
 import {
   Search, RefreshCw, ChevronDown, ChevronRight,
   Database, HardDrive, Activity, Code, AlertTriangle,
+  Sparkles, X,
 } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
+import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
 import { cn } from '../lib/utils'
 import type { TableScanResult, TableScanEntry, DiskUsageEntry } from '../types/api'
@@ -82,88 +84,176 @@ const RANGE_PRESETS = [
 type SortCol = 'table' | 'engine' | 'rows' | 'bytes' | 'parts' | 'selects' | 'inserts'
 type SortDir = 'asc' | 'desc'
 
-/* ─── Expanded detail panel ───────────────────────────────────────────────── */
+/* ─── Full detail modal ───────────────────────────────────────────────────── */
 
-function TableDetail({ entry }: { entry: TableScanEntry }) {
+function TableDetailModal({
+  entry,
+  onClose,
+  onAnalyze,
+}: {
+  entry: TableScanEntry
+  onClose: () => void
+  onAnalyze: (entry: TableScanEntry) => void
+}) {
   const [showQuery, setShowQuery] = useState(false)
   const act = entry.query_activity
   const lastSel = fmtActivityTs(act.last_select)
   const lastIns = fmtActivityTs(act.last_insert)
 
   const keys = [
-    ['Sort',      entry.sorting_key],
-    ['Partition', entry.partition_key],
-    ['Primary',   entry.primary_key],
-    ['Sampling',  entry.sampling_key],
-    ['Policy',    entry.storage_policy],
+    ['Sort Key',      entry.sorting_key],
+    ['Partition Key', entry.partition_key],
+    ['Primary Key',   entry.primary_key],
+    ['Sampling Key',  entry.sampling_key],
+    ['Storage Policy',entry.storage_policy],
   ].filter(([, v]) => v) as [string, string][]
 
+  // Close on Escape
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onClose])
+
   return (
-    <div className="px-3 py-2 border-t border-[var(--border)] bg-[var(--surface)]/30 text-[10px]">
-      <div className="flex gap-4 flex-wrap">
-        {/* Keys in a tight single-line list */}
-        {keys.length > 0 && (
-          <div className="flex flex-wrap gap-x-4 gap-y-1 flex-1 min-w-0">
-            {keys.map(([label, value]) => (
-              <div key={label} className="flex items-baseline gap-1 min-w-0">
-                <span className="text-[var(--dim)] shrink-0">{label}:</span>
-                <span className="font-mono text-[var(--fg)] truncate max-w-[240px]" title={value}>{value}</span>
-              </div>
-            ))}
-          </div>
-        )}
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      {/* Backdrop */}
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
 
-        {/* Activity */}
-        <div className="flex gap-3 shrink-0">
-          <div className="flex items-center gap-1">
-            <span className="text-blue-400 font-mono font-semibold">{fmtCount(act.select_count)}</span>
-            <span className="text-[var(--dim)]">SEL</span>
-            {lastSel && act.select_count > 0 && <span className="text-[var(--dim)]">· {lastSel} ago</span>}
+      {/* Modal */}
+      <div
+        className="relative z-10 w-full max-w-4xl max-h-[90vh] flex flex-col rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-start gap-3 px-5 py-4 border-b border-[var(--border)] shrink-0">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-baseline gap-1.5 flex-wrap">
+              <span className="text-sm text-[var(--dim)]">{entry.database}.</span>
+              <span className="text-base font-semibold text-[var(--fg)]">{entry.table}</span>
+            </div>
+            <div className="flex items-center gap-3 mt-1 flex-wrap text-xs text-[var(--dim)]">
+              <span className="font-mono">{entry.engine}</span>
+              <span className="text-[var(--border)]">·</span>
+              <span>{fmtRows(entry.total_rows)} rows</span>
+              <span className="text-[var(--border)]">·</span>
+              <span>{fmtBytes(entry.total_bytes)}</span>
+              <span className="text-[var(--border)]">·</span>
+              <span>{entry.parts_count.toLocaleString()} parts</span>
+              {act.is_active && (
+                <>
+                  <span className="text-[var(--border)]">·</span>
+                  <span className="flex items-center gap-1 text-green-400">
+                    <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+                    active
+                  </span>
+                </>
+              )}
+            </div>
           </div>
-          <div className="flex items-center gap-1">
-            <span className="text-green-400 font-mono font-semibold">{fmtCount(act.insert_count)}</span>
-            <span className="text-[var(--dim)]">INS</span>
-            {lastIns && act.insert_count > 0 && <span className="text-[var(--dim)]">· {lastIns} ago</span>}
-          </div>
-        </div>
-      </div>
 
-      {/* Disk breakdown — compact chips */}
-      {entry.disk_usage && entry.disk_usage.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 mt-1.5">
-          {entry.disk_usage.map((d: DiskUsageEntry) => (
-            <span key={d.disk_name}
-              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-[var(--border)] bg-[var(--hover)]"
+          {/* Actions */}
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => onAnalyze(entry)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-purple-400 hover:bg-purple-500/15 border border-purple-500/20 transition-colors"
             >
-              <HardDrive size={8} className="text-[var(--dim)]" />
-              <span className="font-mono text-[var(--fg)]">{d.disk_name}</span>
-              <span className={cn(DISK_TYPE_COLORS[d.disk_type?.toLowerCase()] ?? 'text-[var(--dim)]')}>
-                {d.disk_type || 'local'}
-              </span>
-              <span className="text-[var(--dim)]">{d.readable_size}</span>
-            </span>
-          ))}
+              <Sparkles size={12} />
+              Analyze with AI
+            </button>
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-lg text-[var(--dim)] hover:text-[var(--fg)] hover:bg-[var(--hover)] transition-colors"
+            >
+              <X size={16} />
+            </button>
+          </div>
         </div>
-      )}
 
-      {/* CREATE TABLE */}
-      {entry.create_query && (
-        <div className="mt-1.5">
-          <button
-            onClick={() => setShowQuery(v => !v)}
-            className="inline-flex items-center gap-1 text-[var(--dim)] hover:text-[var(--fg)] transition-colors"
-          >
-            <Code size={9} />
-            {showQuery ? 'Hide' : 'Show'} DDL
-            {showQuery ? <ChevronDown size={9} /> : <ChevronRight size={9} />}
-          </button>
-          {showQuery && (
-            <pre className="mt-1 font-mono bg-[var(--code-bg,var(--hover))] border border-[var(--border)] rounded p-2 overflow-x-auto whitespace-pre-wrap break-all leading-relaxed max-h-40">
-              {entry.create_query}
-            </pre>
+        {/* Body — scrollable */}
+        <div className="flex-1 overflow-auto p-5 space-y-5">
+
+          {/* Keys — full text, no truncation */}
+          {keys.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs font-semibold uppercase tracking-wider text-[var(--dim)]">Table Definition</div>
+              <div className="grid gap-2">
+                {keys.map(([label, value]) => (
+                  <div key={label} className="flex gap-3 rounded-lg bg-[var(--surface)] px-3 py-2">
+                    <span className="text-xs text-[var(--dim)] shrink-0 w-28">{label}</span>
+                    <span className="font-mono text-xs text-[var(--fg)] break-all leading-relaxed">{value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Activity */}
+          <div className="space-y-2">
+            <div className="text-xs font-semibold uppercase tracking-wider text-[var(--dim)]">Query Activity</div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="rounded-lg bg-[var(--surface)] px-4 py-3 space-y-0.5">
+                <div className="text-xs text-[var(--dim)]">SELECTs</div>
+                <div className="text-lg font-mono font-semibold text-blue-400">{fmtCount(act.select_count)}</div>
+                {lastSel && act.select_count > 0 && (
+                  <div className="text-xs text-[var(--dim)]">Last: {lastSel} ago</div>
+                )}
+              </div>
+              <div className="rounded-lg bg-[var(--surface)] px-4 py-3 space-y-0.5">
+                <div className="text-xs text-[var(--dim)]">INSERTs</div>
+                <div className="text-lg font-mono font-semibold text-green-400">{fmtCount(act.insert_count)}</div>
+                {lastIns && act.insert_count > 0 && (
+                  <div className="text-xs text-[var(--dim)]">Last: {lastIns} ago</div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Disk breakdown */}
+          {entry.disk_usage && entry.disk_usage.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs font-semibold uppercase tracking-wider text-[var(--dim)]">Storage</div>
+              <div className="flex flex-wrap gap-2">
+                {entry.disk_usage.map((d: DiskUsageEntry) => (
+                  <div
+                    key={d.disk_name}
+                    className="flex items-center gap-2 px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--surface)]"
+                  >
+                    <HardDrive size={12} className="text-[var(--dim)]" />
+                    <span className="font-mono text-xs font-medium">{d.disk_name}</span>
+                    <span className={cn('text-xs', DISK_TYPE_COLORS[d.disk_type?.toLowerCase()] ?? 'text-[var(--dim)]')}>
+                      {d.disk_type || 'local'}
+                    </span>
+                    <span className="text-xs text-[var(--dim)]">{d.readable_size}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* CREATE TABLE DDL — full, no height limit */}
+          {entry.create_query && (
+            <div className="space-y-2">
+              <button
+                onClick={() => setShowQuery(v => !v)}
+                className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-[var(--dim)] hover:text-[var(--fg)] transition-colors"
+              >
+                <Code size={12} />
+                DDL
+                {showQuery ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+              </button>
+              {showQuery && (
+                <pre className="font-mono text-xs bg-[var(--code-bg,var(--hover))] border border-[var(--border)] rounded-lg p-4 overflow-x-auto whitespace-pre-wrap break-words leading-relaxed">
+                  {entry.create_query}
+                </pre>
+              )}
+            </div>
           )}
         </div>
-      )}
+      </div>
     </div>
   )
 }
@@ -204,12 +294,16 @@ function ColHeader({
 /* ─── Table row ───────────────────────────────────────────────────────────── */
 
 function TableRow({
-  entry, sortCol,
+  entry,
+  sortCol,
+  onOpenModal,
+  onAnalyze,
 }: {
   entry: TableScanEntry
   sortCol: SortCol
+  onOpenModal: (entry: TableScanEntry) => void
+  onAnalyze: (entry: TableScanEntry) => void
 }) {
-  const [expanded, setExpanded] = useState(false)
   const act = entry.query_activity
   const lastSel = fmtActivityTs(act.last_select)
   const lastIns = fmtActivityTs(act.last_insert)
@@ -217,95 +311,90 @@ function TableRow({
   const hl = (col: SortCol) => col === sortCol ? 'bg-[var(--accent)]/5' : ''
 
   return (
-    <>
-      <tr
-        className={cn(
-          'border-b border-[var(--border)] cursor-pointer group transition-colors',
-          expanded ? 'bg-[var(--surface)]' : 'hover:bg-[var(--hover)]',
+    <tr
+      className="border-b border-[var(--border)] cursor-pointer group transition-colors hover:bg-[var(--hover)]"
+      onClick={() => onOpenModal(entry)}
+    >
+      {/* Expand chevron → opens modal */}
+      <td className="w-6 pl-2">
+        <ChevronRight size={10} className="text-[var(--dim)] opacity-0 group-hover:opacity-60 transition-opacity" />
+      </td>
+
+      {/* Table name */}
+      <td className={cn('px-2 py-1.5 text-xs max-w-[200px]', hl('table'))}>
+        <div className="flex items-baseline gap-0.5 min-w-0">
+          <span className="text-[var(--dim)] text-[10px] shrink-0">{entry.database}.</span>
+          <span className="font-medium text-[var(--fg)] truncate">{entry.table}</span>
+        </div>
+      </td>
+
+      {/* Engine */}
+      <td className={cn('px-2 py-1.5 text-[10px] font-mono text-[var(--dim)] max-w-[120px] truncate', hl('engine'))}>
+        {abbrevEngine(entry.engine)}
+      </td>
+
+      {/* Rows */}
+      <td className={cn('px-2 py-1.5 text-[11px] font-mono text-right tabular-nums', hl('rows'),
+        entry.total_rows > 0 ? 'text-[var(--fg)]' : 'text-[var(--dim)]')}>
+        {fmtRows(entry.total_rows)}
+      </td>
+
+      {/* Size */}
+      <td className={cn('px-2 py-1.5 text-[11px] font-mono text-right tabular-nums', hl('bytes'),
+        entry.total_bytes > 0 ? 'text-[var(--fg)]' : 'text-[var(--dim)]')}>
+        {fmtBytes(entry.total_bytes)}
+      </td>
+
+      {/* Parts */}
+      <td className={cn('px-2 py-1.5 text-[11px] font-mono text-right tabular-nums text-[var(--dim)]', hl('parts'))}>
+        {entry.parts_count > 0 ? entry.parts_count.toLocaleString() : '—'}
+      </td>
+
+      {/* Status */}
+      <td className="px-2 py-1.5 text-center">
+        {act.is_active ? (
+          <span className="inline-flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded-full bg-green-500/15 text-green-400 border border-green-500/20 whitespace-nowrap">
+            <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+            active
+          </span>
+        ) : (
+          <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-[var(--surface)] text-[var(--dim)] border border-[var(--border)]">
+            idle
+          </span>
         )}
-        onClick={() => setExpanded(v => !v)}
-      >
-        {/* Expand chevron */}
-        <td className="w-6 pl-2">
-          {expanded
-            ? <ChevronDown size={10} className="text-[var(--dim)]" />
-            : <ChevronRight size={10} className="text-[var(--dim)] opacity-0 group-hover:opacity-60 transition-opacity" />
-          }
-        </td>
+      </td>
 
-        {/* Table name */}
-        <td className={cn('px-2 py-1.5 text-xs max-w-[200px]', hl('table'))}>
-          <div className="flex items-baseline gap-0.5 min-w-0">
-            <span className="text-[var(--dim)] text-[10px] shrink-0">{entry.database}.</span>
-            <span className="font-medium text-[var(--fg)] truncate">{entry.table}</span>
+      {/* SELECTs */}
+      <td className={cn('px-2 py-1.5 text-right', hl('selects'))}>
+        {act.select_count > 0 ? (
+          <div>
+            <span className="text-[11px] font-mono text-blue-400 tabular-nums">{fmtCount(act.select_count)}</span>
+            {lastSel && <div className="text-[9px] text-[var(--dim)]">{lastSel} ago</div>}
           </div>
-        </td>
+        ) : <span className="text-[10px] text-[var(--dim)]">—</span>}
+      </td>
 
-        {/* Engine */}
-        <td className={cn('px-2 py-1.5 text-[10px] font-mono text-[var(--dim)] max-w-[120px] truncate', hl('engine'))}>
-          {abbrevEngine(entry.engine)}
-        </td>
+      {/* INSERTs */}
+      <td className={cn('px-2 py-1.5 text-right', hl('inserts'))}>
+        {act.insert_count > 0 ? (
+          <div>
+            <span className="text-[11px] font-mono text-green-400 tabular-nums">{fmtCount(act.insert_count)}</span>
+            {lastIns && <div className="text-[9px] text-[var(--dim)]">{lastIns} ago</div>}
+          </div>
+        ) : <span className="text-[10px] text-[var(--dim)]">—</span>}
+      </td>
 
-        {/* Rows */}
-        <td className={cn('px-2 py-1.5 text-[11px] font-mono text-right tabular-nums', hl('rows'),
-          entry.total_rows > 0 ? 'text-[var(--fg)]' : 'text-[var(--dim)]')}>
-          {fmtRows(entry.total_rows)}
-        </td>
-
-        {/* Size */}
-        <td className={cn('px-2 py-1.5 text-[11px] font-mono text-right tabular-nums', hl('bytes'),
-          entry.total_bytes > 0 ? 'text-[var(--fg)]' : 'text-[var(--dim)]')}>
-          {fmtBytes(entry.total_bytes)}
-        </td>
-
-        {/* Parts */}
-        <td className={cn('px-2 py-1.5 text-[11px] font-mono text-right tabular-nums text-[var(--dim)]', hl('parts'))}>
-          {entry.parts_count > 0 ? entry.parts_count.toLocaleString() : '—'}
-        </td>
-
-        {/* Status */}
-        <td className="px-2 py-1.5 text-center">
-          {act.is_active ? (
-            <span className="inline-flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded-full bg-green-500/15 text-green-400 border border-green-500/20 whitespace-nowrap">
-              <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
-              active
-            </span>
-          ) : (
-            <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-[var(--surface)] text-[var(--dim)] border border-[var(--border)]">
-              idle
-            </span>
-          )}
-        </td>
-
-        {/* SELECTs */}
-        <td className={cn('px-2 py-1.5 text-right', hl('selects'))}>
-          {act.select_count > 0 ? (
-            <div>
-              <span className="text-[11px] font-mono text-blue-400 tabular-nums">{fmtCount(act.select_count)}</span>
-              {lastSel && <div className="text-[9px] text-[var(--dim)]">{lastSel} ago</div>}
-            </div>
-          ) : <span className="text-[10px] text-[var(--dim)]">—</span>}
-        </td>
-
-        {/* INSERTs */}
-        <td className={cn('px-2 py-1.5 text-right', hl('inserts'))}>
-          {act.insert_count > 0 ? (
-            <div>
-              <span className="text-[11px] font-mono text-green-400 tabular-nums">{fmtCount(act.insert_count)}</span>
-              {lastIns && <div className="text-[9px] text-[var(--dim)]">{lastIns} ago</div>}
-            </div>
-          ) : <span className="text-[10px] text-[var(--dim)]">—</span>}
-        </td>
-      </tr>
-
-      {expanded && (
-        <tr className="border-b border-[var(--border)]">
-          <td colSpan={9} className="p-0">
-            <TableDetail entry={entry} />
-          </td>
-        </tr>
-      )}
-    </>
+      {/* AI Analyze — visible on row hover */}
+      <td className="w-8 pr-2">
+        <button
+          onClick={(e) => { e.stopPropagation(); onAnalyze(entry) }}
+          className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-purple-400 hover:bg-purple-500/15"
+          title="Analyze with AI"
+        >
+          <Sparkles size={11} />
+        </button>
+      </td>
+    </tr>
   )
 }
 
@@ -326,6 +415,32 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
   const [sortCol, setSortCol] = useState<SortCol>('bytes')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
   const [activityFilter, setActivityFilter] = useState<'all' | 'active' | 'idle'>('all')
+  const [modalEntry, setModalEntry] = useState<TableScanEntry | null>(null)
+
+  const { analyze } = useAIAnalysis(instance)
+
+  const handleAnalyze = useCallback((entry: TableScanEntry) => {
+    const label = `Analyze table: ${entry.database}.${entry.table}`
+    analyze(label, {
+      database: entry.database,
+      table: entry.table,
+      engine: entry.engine,
+      total_rows: entry.total_rows,
+      total_bytes: entry.total_bytes,
+      parts_count: entry.parts_count,
+      sorting_key: entry.sorting_key,
+      partition_key: entry.partition_key,
+      primary_key: entry.primary_key,
+      sampling_key: entry.sampling_key,
+      storage_policy: entry.storage_policy,
+      disk_usage: entry.disk_usage,
+      select_count: entry.query_activity?.select_count,
+      insert_count: entry.query_activity?.insert_count,
+      is_active: entry.query_activity?.is_active,
+      create_query: entry.create_query,
+    }, { contextType: 'row', tab: 'scanner' })
+    setModalEntry(null)
+  }, [analyze])
 
   useEffect(() => {
     if (!instance) {
@@ -513,6 +628,7 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
                   <th className="px-2 py-2 text-[10px] font-semibold text-[var(--dim)] uppercase tracking-wider text-center">Status</th>
                   <ColHeader label="SELECTs" col="selects" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} className="text-blue-400/70" />
                   <ColHeader label="INSERTs" col="inserts" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} className="text-green-400/70" />
+                  <th className="w-8" title="AI Analyze" />
                 </tr>
               </thead>
               <tbody>
@@ -521,6 +637,8 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
                     key={`${t.database}.${t.table}`}
                     entry={t}
                     sortCol={sortCol}
+                    onOpenModal={setModalEntry}
+                    onAnalyze={handleAnalyze}
                   />
                 ))}
               </tbody>
@@ -534,6 +652,15 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
           <Activity size={20} className="opacity-40" />
           <p className="text-xs">{filter || activityFilter !== 'all' ? 'No tables match your filters' : 'No tables found'}</p>
         </div>
+      )}
+
+      {/* ── Full detail modal ── */}
+      {modalEntry && (
+        <TableDetailModal
+          entry={modalEntry}
+          onClose={() => setModalEntry(null)}
+          onAnalyze={handleAnalyze}
+        />
       )}
     </div>
   )
