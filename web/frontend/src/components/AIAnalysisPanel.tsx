@@ -264,10 +264,13 @@ export function AIAnalysisPanel({
     }
   }, [isOpen, activeSession?.messages])
 
-  const handleGoDeeper = async (msg: ChatMessage) => {
-    // Go Deeper requires an elementId — stored in message metadata isn't available
-    // in the new model, so this is a no-op placeholder kept for compatibility
-    void msg
+  const handleGoDeeper = (msg: ChatMessage) => {
+    void msg // msg context not needed — follow-up inherits the full session history
+    onFollowUp(
+      'Go deeper. Run additional diagnostic queries to find root causes, ' +
+      'identify the specific tables, queries, or configuration settings driving these issues, ' +
+      'and provide concrete step-by-step remediation with exact SQL or config changes where applicable.',
+    )
   }
 
   const handleConfirmDeep = (info: DeepQueryInfo) => {
