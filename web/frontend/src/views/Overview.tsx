@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { RefreshCw, Sparkles } from 'lucide-react'
+import { RefreshCw, Sparkles, Zap } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
@@ -52,6 +52,25 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
   const [refreshing, setRefreshing] = useState(false)
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null)
   const [manualRefreshTick, setManualRefreshTick] = useState(0)
+  const [forcingPoll, setForcingPoll] = useState(false)
+  const [forcePollMsg, setForcePollMsg] = useState('')
+
+  const handleForcePoll = useCallback(async () => {
+    setForcingPoll(true)
+    setForcePollMsg('')
+    try {
+      await api.forcePoll()
+      setForcePollMsg('Polling now…')
+      // auto-refresh UI after a short delay so results appear
+      setTimeout(() => setManualRefreshTick(t => t + 1), 3000)
+      setTimeout(() => setForcePollMsg(''), 5000)
+    } catch {
+      setForcePollMsg('Failed')
+      setTimeout(() => setForcePollMsg(''), 3000)
+    } finally {
+      setForcingPoll(false)
+    }
+  }, [])
   const isFirstLoad = useRef(true)
   const [healthData, setHealthData] = useState<HealthResponse | null>(null)
 
@@ -156,10 +175,20 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
         <button
           onClick={() => setManualRefreshTick(t => t + 1)}
           disabled={refreshing}
+          title="Re-fetches data from the database. Does NOT run collectors."
           className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-[var(--dim)] hover:bg-[var(--hover)] border border-[var(--border)] transition-colors disabled:opacity-50"
         >
           <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
-          Refresh
+          Refresh UI
+        </button>
+        <button
+          onClick={handleForcePoll}
+          disabled={forcingPoll}
+          title="Runs all collectors immediately and updates Alerts + Slack. Use this to see results right now without waiting for the next poll cycle."
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-orange-400 hover:bg-orange-500/15 border border-orange-500/25 transition-colors disabled:opacity-50"
+        >
+          <Zap size={11} className={forcingPoll ? 'animate-pulse' : ''} />
+          {forcingPoll ? 'Polling…' : forcePollMsg || 'Force Poll'}
         </button>
         <button
           onClick={() => handleAnalyze({ instances, alerts, avgHealth, critFiring, warnFiring, infoFiring, staleCount, runningQueries, activeMerges })}

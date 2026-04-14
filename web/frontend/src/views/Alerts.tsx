@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
-import { Bell, BellOff, BookOpen, Brain, ChevronDown, ChevronLeft, ChevronRight, Clock, RefreshCw, Sparkles, Table2, Trash2, Wrench } from 'lucide-react'
+import { Bell, BellOff, BookOpen, Brain, ChevronDown, ChevronLeft, ChevronRight, Clock, RefreshCw, Sparkles, Table2, Trash2, Wrench, Zap } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
@@ -765,6 +765,23 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
   const [historyAlerts, setHistoryAlerts] = useState<Alert[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
+  const [forcingPoll, setForcingPoll] = useState(false)
+  const [forcePollMsg, setForcePollMsg] = useState('')
+
+  const handleForcePoll = useCallback(async () => {
+    setForcingPoll(true)
+    setForcePollMsg('')
+    try {
+      await api.forcePoll()
+      setForcePollMsg('Polling now — refresh in a few seconds')
+      setTimeout(() => setForcePollMsg(''), 5000)
+    } catch {
+      setForcePollMsg('Failed to trigger poll')
+      setTimeout(() => setForcePollMsg(''), 3000)
+    } finally {
+      setForcingPoll(false)
+    }
+  }, [])
   const [resolving, setResolving] = useState(false)
   const resolvingRef = useRef(false)
   const isFirstLoad = useRef(true)
@@ -1040,6 +1057,18 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
 
         {/* Action buttons */}
         <div className="flex flex-col gap-2 shrink-0 pt-1">
+          <button
+            onClick={handleForcePoll}
+            disabled={forcingPoll}
+            title="Runs all collectors immediately through the full pipeline — stores to DB, sends to Slack, updates this page. Different from Refresh which only re-reads the database."
+            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-orange-400 hover:bg-orange-500/15 border border-orange-500/25 transition-colors disabled:opacity-50"
+          >
+            <Zap size={14} className={forcingPoll ? 'animate-pulse' : ''} />
+            {forcingPoll ? 'Polling…' : 'Force Poll Now'}
+          </button>
+          {forcePollMsg && (
+            <p className="text-xs text-green-400">{forcePollMsg}</p>
+          )}
           <button
             onClick={() => setView('analyzer')}
             className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium bg-[var(--accent)]/15 text-[var(--accent)] hover:bg-[var(--accent)]/25 transition-colors"
