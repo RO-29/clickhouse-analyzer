@@ -228,10 +228,13 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
   const [sortCol, setSortCol] = useState<'bytes' | 'rows' | 'parts' | 'selects' | 'inserts'>('bytes')
   const [activityFilter, setActivityFilter] = useState<'all' | 'active' | 'idle'>('all')
 
-  // Keep local instance in sync when global selection changes
+  // Auto-select: prefer global selectedInstance, fall back to first available instance
   useEffect(() => {
-    if (selectedInstance && !instance) setInstance(selectedInstance)
-  }, [selectedInstance]) // eslint-disable-line react-hooks/exhaustive-deps
+    if (!instance) {
+      const target = selectedInstance || instances[0] || ''
+      if (target) setInstance(target)
+    }
+  }, [selectedInstance, instances]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const load = useCallback(async () => {
     if (!instance) return

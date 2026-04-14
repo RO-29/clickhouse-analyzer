@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -144,16 +143,18 @@ ORDER BY database, table, bytes DESC
 `)
 	}()
 
-	// 3. Query activity from query_log
+	// 3. Query activity from query_log.
+	// Avoid query_kind (added in CH 21.5) — detect SELECT/INSERT from the query text.
 	go func() {
 		defer wg.Done()
 		qlogRows, qlogErr = client.Query(ctx, fmt.Sprintf(`
 SELECT
   databases[1] AS db,
   tables[1]    AS tbl,
-  query_kind,
-  count()       AS cnt,
-  max(event_time) AS last_seen
+  countIf(upper(left(trimBoth(query), 6)) = 'SELECT' OR upper(left(trimBoth(query), 4)) = 'WITH') AS select_count,
+  countIf(upper(left(trimBoth(query), 6)) = 'INSERT') AS insert_count,
+  maxIf(event_time, upper(left(trimBoth(query), 6)) = 'SELECT' OR upper(left(trimBoth(query), 4)) = 'WITH') AS last_select,
+  maxIf(event_time, upper(left(trimBoth(query), 6)) = 'INSERT') AS last_insert
 FROM system.query_log
 WHERE type = 'QueryFinish'
   AND is_initial_query = 1
@@ -162,7 +163,7 @@ WHERE type = 'QueryFinish'
   AND databases[1] NOT IN ('system', 'information_schema', '')
   AND tables[1] != ''
   AND event_time BETWEEN '%s' AND '%s'
-GROUP BY db, tbl, query_kind
+GROUP BY db, tbl
 `, fromStr, toStr))
 	}()
 
@@ -211,17 +212,25 @@ GROUP BY db, tbl, query_kind
 		})
 	}
 
-	// ── Index query activity by database.table.kind ───────────────────────────
-	type actKey struct{ db, tbl, kind string }
-	actCount := map[actKey]int64{}
-	actLast  := map[actKey]string{}
+	// ── Index query activity by database.table ───────────────────────────────
+	type actKey struct{ db, tbl string }
+	type actVal struct {
+		selectCount int64
+		insertCount int64
+		lastSelect  string
+		lastInsert  string
+	}
+	actMap := map[actKey]actVal{}
 	for _, row := range qlogRows {
 		db := strVal(row["db"])
 		tbl := strVal(row["tbl"])
-		kind := strings.ToUpper(strVal(row["query_kind"]))
-		key := actKey{db, tbl, kind}
-		actCount[key] = int64Val(row["cnt"])
-		actLast[key] = strVal(row["last_seen"])
+		key := actKey{db, tbl}
+		actMap[key] = actVal{
+			selectCount: int64Val(row["select_count"]),
+			insertCount: int64Val(row["insert_count"]),
+			lastSelect:  strVal(row["last_select"]),
+			lastInsert:  strVal(row["last_insert"]),
+		}
 	}
 
 	// ── Assemble results ──────────────────────────────────────────────────────
@@ -231,15 +240,13 @@ GROUP BY db, tbl, query_kind
 		tbl := strVal(row["table"])
 		key := diskKey{db, tbl}
 
-		selectKey := actKey{db, tbl, "SELECT"}
-		insertKey := actKey{db, tbl, "INSERT"}
-
+		av := actMap[actKey{db, tbl}]
 		activity := tableQueryActivity{
-			SelectCount: actCount[selectKey],
-			InsertCount: actCount[insertKey],
-			LastSelect:  actLast[selectKey],
-			LastInsert:  actLast[insertKey],
-			IsActive:    actCount[selectKey]+actCount[insertKey] > 0,
+			SelectCount: av.selectCount,
+			InsertCount: av.insertCount,
+			LastSelect:  av.lastSelect,
+			LastInsert:  av.lastInsert,
+			IsActive:    av.selectCount+av.insertCount > 0,
 		}
 
 		entries = append(entries, tableScanEntry{
