@@ -1,0 +1,23 @@
+# Prometheus scrape configuration for CH Analyzer
+#
+# In docker-compose, ch-analyzer exposes its /metrics endpoint on port 9090
+# of the internal docker network (service name = "ch-analyzer").
+#
+# For a bare-metal / systemd setup, replace "ch-analyzer:9090" with
+# "localhost:9090" (or the host/IP where ch-analyzer runs).
+
+global:
+  scrape_interval:     60s   # Match ch-analyzer's poll interval (no point scraping faster)
+  evaluation_interval: 60s
+  scrape_timeout:      15s
+
+scrape_configs:
+  - job_name: ch-analyzer
+    static_configs:
+      - targets:
+          - ch-analyzer:9090   # docker-compose service name + prometheus listen_addr
+    # Keep only ch_analyzer_* metrics — drop anything unexpected
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'ch_analyzer_.+'
+        action: keep

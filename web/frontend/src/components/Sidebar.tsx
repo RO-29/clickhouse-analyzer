@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import {
   LayoutDashboard, Bell, Search, GitCompareArrows, Lightbulb, TerminalSquare, FileText, Database,
-  Sun, Moon, ChevronsLeft, ChevronsRight, Sparkles,
+  Sun, Moon, ChevronsLeft, ChevronsRight, Sparkles, RefreshCw,
 } from 'lucide-react'
 import { useStore, type View } from '../hooks/useStore'
 import { cn, scoreColor } from '../lib/utils'
@@ -36,12 +36,32 @@ export function Sidebar() {
   } = useStore()
 
   const [instances, setInstances] = useState<Instance[]>([])
+  const [refreshing, setRefreshing] = useState(false)
 
-  useEffect(() => {
-    api.overview()
-      .then(setInstances)
-      .catch(() => setInstances([]))
+  const fetchInstances = useCallback(async () => {
+    try {
+      const data = await api.overview()
+      setInstances(data)
+    } catch {
+      setInstances([])
+    }
   }, [])
+
+  // Initial load
+  useEffect(() => { fetchInstances() }, [fetchInstances])
+
+  // Auto-refresh health scores using the same interval as the rest of the app
+  useEffect(() => {
+    if (refreshInterval <= 0) return
+    const id = setInterval(fetchInstances, refreshInterval * 1000)
+    return () => clearInterval(id)
+  }, [refreshInterval, fetchInstances])
+
+  const manualRefresh = useCallback(async () => {
+    setRefreshing(true)
+    await fetchInstances()
+    setRefreshing(false)
+  }, [fetchInstances])
 
   const collapsed = sidebarCollapsed
 
@@ -88,9 +108,16 @@ export function Sidebar() {
         {instances.length > 0 && (
           <div className="mt-4 px-2">
             {!collapsed && (
-              <div className="px-3 pb-1.5 flex items-center justify-between">
+              <div className="px-3 pb-1.5 flex items-center gap-1">
                 <span className="text-[10px] font-semibold uppercase tracking-widest text-[var(--dim)]">Instances</span>
-                <span className="text-[10px] text-[var(--dim)]">health</span>
+                <button
+                  onClick={manualRefresh}
+                  className="ml-1 text-[var(--dim)] hover:text-[var(--fg)] transition-colors"
+                  title="Refresh health scores"
+                >
+                  <RefreshCw size={9} className={refreshing ? 'animate-spin' : ''} />
+                </button>
+                <span className="text-[10px] text-[var(--dim)] ml-auto">health</span>
               </div>
             )}
             <div className="space-y-0.5">

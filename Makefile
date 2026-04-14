@@ -6,7 +6,8 @@ LDFLAGS=-ldflags "-X main.version=$(VERSION) -X main.buildTime=$(BUILD_TIME)"
 DOCKER_IMAGE=ch-analyzer
 DOCKER_TAG=$(VERSION)
 
-.PHONY: build clean install run test lint docker docker-push k8s-deploy frontend
+.PHONY: build clean install run test lint docker docker-push k8s-deploy frontend \
+        compose-up compose-down compose-logs compose-restart compose-ps
 
 # Frontend (React + Tailwind)
 frontend:
@@ -80,3 +81,28 @@ k8s-deploy:
 	@echo "2. Run: kubectl apply -f deploy/k8s.yaml"
 	@echo "3. Port-forward: kubectl -n ch-analyzer port-forward svc/ch-analyzer 8080:8080"
 	kubectl apply -f deploy/k8s.yaml
+
+# ── Docker Compose (full stack: ch-analyzer + Prometheus + Grafana) ──────────
+# Prerequisites:
+#   cp .env.example .env  &&  fill in ANTHROPIC_API_KEY
+#   set prometheus.enabled: true in configs/ch-analyzer.yaml
+
+compose-up:
+	@[ -f .env ] || (echo "Missing .env — run: cp .env.example .env" && exit 1)
+	docker compose up -d --build
+	@echo ""
+	@echo "  Dashboard  → http://localhost:8080"
+	@echo "  Prometheus → http://localhost:9091"
+	@echo "  Grafana    → http://localhost:3000  (admin / \$${GRAFANA_PASSWORD:-admin})"
+
+compose-down:
+	docker compose down
+
+compose-restart:
+	docker compose restart ch-analyzer
+
+compose-logs:
+	docker compose logs -f ch-analyzer
+
+compose-ps:
+	docker compose ps

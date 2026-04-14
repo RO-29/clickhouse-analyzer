@@ -1,0 +1,13 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: DS_PROMETHEUS      # must match the __inputs uid in grafana-dashboard.json
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: '60s'   # matches ch-analyzer poll interval
+      httpMethod: POST

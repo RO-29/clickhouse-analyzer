@@ -1,0 +1,87 @@
+# CH Analyzer — full monitoring stack
+#
+# Services:
+#   ch-analyzer  → dashboard  http://localhost:8080
+#   prometheus   → metrics UI http://localhost:9091
+#   grafana      → dashboards http://localhost:3000  (admin / $GRAFANA_PASSWORD)
+#
+# Quick start:
+#   1. cp .env.example .env  &&  fill in ANTHROPIC_API_KEY
+#   2. Edit configs/ch-analyzer.yaml  — set your CH instances + enable prometheus
+#   3. docker compose up -d --build
+#
+# To enable Prometheus metrics in ch-analyzer.yaml:
+#   prometheus:
+#     enabled: true
+#     listen_addr: ":9090"
+
+services:
+
+  # ── ch-analyzer ─────────────────────────────────────────────────────────
+  ch-analyzer:
+    build: .
+    image: ch-analyzer:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"   # Dashboard
+      # Port 9090 (Prometheus metrics) is intentionally NOT published externally.
+      # prometheus below scrapes it via the internal docker network.
+    volumes:
+      - ./configs/ch-analyzer.yaml:/etc/ch-analyzer/config.yaml:ro
+      # Persist Claude OAuth tokens across restarts.
+      # Alternatively, just set ANTHROPIC_API_KEY below (simpler).
+      - claude-config:/root/.config/claude
+    environment:
+      # Set your Anthropic API key here (or in .env) to enable AI analysis.
+      # If you prefer OAuth, run `docker compose exec ch-analyzer claude auth login`
+      # once, then leave this blank — the volume above persists the session.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/instances"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # ── Prometheus ───────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    restart: unless-stopped
+    ports:
+      - "9091:9090"   # Prometheus UI (9091 externally to avoid clash with ch-analyzer)
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=90d"
+      - "--web.enable-lifecycle"
+    depends_on:
+      ch-analyzer:
+        condition: service_healthy
+
+  # ── Grafana ──────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:11.1.0
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      # Open the CH Analyzer dashboard by default
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/ch-analyzer.json
+    volumes:
+      - grafana-data:/var/lib/grafana
+      # Provisioning: auto-configure Prometheus datasource + import dashboard
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana-dashboard.json:/var/lib/grafana/dashboards/ch-analyzer.json:ro
+    depends_on:
+      - prometheus
+
+volumes:
+  prometheus-data:
+  grafana-data:
+  claude-config:

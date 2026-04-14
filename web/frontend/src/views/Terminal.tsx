@@ -254,7 +254,7 @@ export default function Terminal() {
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Enter SQL query..."
           rows={8}
-          className="w-full rounded-lg border border-[var(--border)] bg-[#0a0c10] p-4 font-mono text-sm text-[var(--fg)] resize-y focus:outline-none focus:border-[var(--accent)] placeholder:text-[var(--dim)]"
+          className="w-full rounded-lg border border-[var(--border)] bg-[var(--code-bg)] p-4 font-mono text-sm text-[var(--fg)] resize-y focus:outline-none focus:border-[var(--accent)] placeholder:text-[var(--dim)]"
         />
 
         {/* Controls row */}
