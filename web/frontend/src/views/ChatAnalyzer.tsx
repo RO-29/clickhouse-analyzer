@@ -5,6 +5,7 @@ import { ChatSessionList } from '../components/chat/ChatSessionList'
 import { ChatWelcome } from '../components/chat/ChatWelcome'
 import { ChatMessage } from '../components/chat/ChatMessage'
 import { ChatInput } from '../components/chat/ChatInput'
+import { notifyDone, notifyError, requestNotifPermission } from '../lib/notify'
 import type { ChatSession, ChatMessage as ChatMessageType, StepInfo, ThinkingLine } from '../types/api'
 
 /* ─── Helpers ────────────────────────────────────────────────────────────── */
@@ -116,6 +117,9 @@ export default function ChatAnalyzer() {
   const handleSend = useCallback(
     (text: string) => {
       if (!text.trim() || !instance) return
+
+      // Request browser notification permission when user sends a message
+      requestNotifPermission()
 
       // Abort any running stream
       abortRef.current?.abort()
@@ -238,6 +242,19 @@ export default function ChatAnalyzer() {
                     // eslint-disable-next-line no-console
                     console.log('[CH-CHAT] ── Prompt sent to Claude (first 5 KB) ──\n' + dbg.prompt_head)
                   }
+                  // Store evidence in the message so EvidencePanel can show it
+                  updateAssistantMsg(sessionId, assistantMsgId, {
+                    evidence: {
+                      promptBytes: dbg.prompt_bytes ?? 0,
+                      promptKb: dbg.prompt_kb ?? 0,
+                      truncated: dbg.truncated ?? false,
+                      promptHead: dbg.prompt_head ?? '',
+                      rowCounts: dbg.row_counts ?? {},
+                      collectionErrors: dbg.collection_errors ?? [],
+                      mode: dbg.mode ?? '',
+                      instance: dbg.instance ?? '',
+                    },
+                  })
                 } catch { /* ignore */ }
 
               } else if (currentEvent === 'status') {
@@ -408,6 +425,7 @@ export default function ChatAnalyzer() {
             status: 'done',
             phase: 'done',
           })
+          notifyDone(text.trim().slice(0, 60))
           setIsRunning(false)
         })
         .catch((err: unknown) => {
@@ -418,6 +436,7 @@ export default function ChatAnalyzer() {
             phase: 'error',
             content: msg,
           })
+          notifyError(text.trim().slice(0, 60))
           setIsRunning(false)
         })
     },

@@ -4,7 +4,6 @@ import { marked } from 'marked'
 import { cn } from '../../lib/utils'
 import type { ChatMessage as ChatMessageType } from '../../types/api'
 import { CollapsibleProgress } from './CollapsibleProgress'
-import { ThinkingSpinner } from '../ThinkingSpinner'
 
 marked.use({ gfm: true, breaks: false })
 
@@ -196,22 +195,12 @@ function AssistantBubble({ message, isLast }: { message: ChatMessageType; isLast
 
   return (
     <div className="flex flex-col gap-2 w-full">
-      {/* Streaming with no visible content yet — covers planning/collecting/streaming phases */}
-      {isStreaming && !message.content && !hasProgress && (
-        <div className="flex items-center gap-2 text-sm text-[var(--dim)]">
-          <ThinkingSpinner size={16} className="text-orange-400" />
-          <span>
-            {message.phase === 'collecting' ? 'Collecting data…'
-              : message.phase === 'streaming' ? 'Writing response…'
-              : 'Thinking…'}
-          </span>
-        </div>
-      )}
-
-      {/* CollapsibleProgress */}
-      {hasProgress && (
+      {/* CollapsibleProgress — always visible while streaming (all phases), and as a
+          collapsed summary when done if there were steps. This is the primary loading
+          indicator; it replaces the old separate "Thinking…" spinner. */}
+      {(isStreaming || (isDone && hasProgress)) && (
         <CollapsibleProgress
-          phase={message.phase ?? 'collecting'}
+          phase={message.phase ?? 'planning'}
           steps={message.steps ?? []}
           thinkingLines={message.thinkingLines ?? []}
           elapsedSecs={elapsedSecs}

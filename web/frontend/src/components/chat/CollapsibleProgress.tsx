@@ -47,18 +47,23 @@ export function CollapsibleProgress({
   const isDone  = phase === 'done'
   const isError = phase === 'error'
 
-  // Start expanded while planning/collecting; auto-collapse when streaming starts
+  // Expanded during planning/collecting; auto-collapse to a summary bar when streaming/done
   const [expanded, setExpanded] = useState<boolean>(
     phase === 'planning' || phase === 'collecting',
   )
 
   useEffect(() => {
-    if (phase === 'streaming') setExpanded(false)
+    if (phase === 'streaming' || phase === 'done') setExpanded(false)
     if (phase === 'planning' || phase === 'collecting') setExpanded(true)
   }, [phase])
 
   const elapsedLabel = fmtElapsed(elapsedSecs)
-  const headerLabel  = isDone ? `Done in ${elapsedLabel}` : `Analyzing… ${elapsedLabel}`
+  const headerLabel = isDone
+    ? `Done in ${elapsedLabel}`
+    : phase === 'planning'    ? `Planning… ${elapsedLabel}`
+    : phase === 'collecting'  ? `Collecting data… ${elapsedLabel}`
+    : phase === 'streaming'   ? `Writing response… ${elapsedLabel}`
+    : `Analyzing… ${elapsedLabel}`
 
   const borderColor = isError
     ? 'border-l-red-500'
@@ -93,6 +98,12 @@ export function CollapsibleProgress({
         <span className={cn('text-xs font-medium flex-1', headerIconColor)}>
           {headerLabel}
         </span>
+        {/* Step count badge when collapsed and there are steps */}
+        {!expanded && steps.length > 0 && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--hover)] border border-[var(--border)] text-[var(--dim)] shrink-0">
+            {steps.length} {steps.length === 1 ? 'query' : 'queries'}
+          </span>
+        )}
         {!isDone && !isError && (
           <Loader2 size={12} className="text-purple-400 animate-spin shrink-0" />
         )}
