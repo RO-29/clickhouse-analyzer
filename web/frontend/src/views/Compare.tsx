@@ -7,7 +7,7 @@ import {
   Tooltip as ChartTooltip,
 } from 'chart.js'
 import { Bar } from 'react-chartjs-2'
-import { Check, AlertTriangle, XCircle, ChevronDown, ChevronRight, Sparkles } from 'lucide-react'
+import { Check, AlertTriangle, XCircle, Sparkles, Search } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
@@ -20,7 +20,7 @@ ChartJS.register(CategoryScale, LinearScale, BarElement, ChartTooltip)
 /* ------------------------------------------------------------------ */
 /*  Types                                                             */
 /* ------------------------------------------------------------------ */
-interface NodeData { rows: number; size: string; parts: number }
+interface NodeData { rows: number; bytes: number; size: string; parts: number }
 
 interface TableRow {
   database: string
@@ -42,7 +42,7 @@ interface MetricsData {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Node status vs baseline                                           */
+/*  computeStatus — for node pill status badges (non-Tables tabs)     */
 /* ------------------------------------------------------------------ */
 function computeStatus(
   inst: string,
@@ -78,7 +78,7 @@ function computeStatus(
 }
 
 /* ------------------------------------------------------------------ */
-/*  Node Pill — click to set as baseline                             */
+/*  Node Pill — click to set as baseline (Settings / Metrics / Memory)*/
 /* ------------------------------------------------------------------ */
 function NodePill({
   inst, isBaseline, status, onClick,
@@ -130,251 +130,348 @@ function NodePill({
 }
 
 /* ------------------------------------------------------------------ */
-/*  Tables view — diff-first, baseline-relative                      */
+/*  Node Selector — multi-select checkboxes for Tables tab            */
 /* ------------------------------------------------------------------ */
-type ClassifiedTable = TableRow & {
-  missingNodes: string[]
-  isDiverging: boolean
-  maxDivPct: number
-  isMissing: boolean
-}
-
-function TableDetailRow({
-  t, baseline, others,
+function NodeSelector({
+  instances,
+  selected,
+  onChange,
 }: {
-  t: ClassifiedTable
-  baseline: string
-  others: string[]
+  instances: string[]
+  selected: string[]
+  onChange: (nodes: string[]) => void
 }) {
-  const [expanded, setExpanded] = useState(false)
-  const key = `${t.database}.${t.table}`
-  const baseNode = t.nodes?.[baseline]
+  const toggle = (inst: string) => {
+    if (selected.includes(inst)) {
+      if (selected.length > 1) onChange(selected.filter((i) => i !== inst))
+    } else {
+      onChange([...selected, inst])
+    }
+  }
 
   return (
-    <div className="border-b border-[var(--border)] last:border-0">
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-3 px-4 py-2.5 text-left text-sm hover:bg-[var(--hover)] transition-colors"
-      >
-        {expanded
-          ? <ChevronDown size={13} className="shrink-0 text-[var(--dim)]" />
-          : <ChevronRight size={13} className="shrink-0 text-[var(--dim)]" />
-        }
-        <span className="font-mono text-xs font-medium flex-1">{key}</span>
-        <span className="text-xs text-[var(--dim)]">{t.engine}</span>
-        {t.isDiverging && (
-          <span className={cn(
-            'text-xs font-medium tabular-nums',
-            Math.abs(t.maxDivPct) > 0.1 ? 'text-red-400' : 'text-yellow-400',
-          )}>
-            {t.maxDivPct > 0 ? '+' : ''}{(t.maxDivPct * 100).toFixed(1)}% max drift
-          </span>
-        )}
-        {t.missingNodes.length > 0 && (
-          <span className="text-xs text-red-400">
-            missing on {t.missingNodes.join(', ')}
-          </span>
-        )}
-      </button>
-
-      {expanded && (
-        <div className="px-8 pb-3 space-y-1 bg-[var(--hover)]/30">
-          {/* Baseline */}
-          <div className="flex items-center gap-4 text-xs py-1.5">
-            <span className="w-36 truncate font-semibold text-[var(--accent)] shrink-0">
-              {baseline} (baseline)
+    <div className="flex items-center gap-2 flex-wrap">
+      <span className="text-xs text-[var(--dim)] uppercase tracking-wider font-medium shrink-0 mr-1">
+        Nodes
+      </span>
+      {instances.map((inst) => {
+        const active = selected.includes(inst)
+        return (
+          <button
+            key={inst}
+            onClick={() => toggle(inst)}
+            className={cn(
+              'flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-medium transition-all select-none',
+              active
+                ? 'border-[var(--accent)]/60 bg-[var(--accent)]/10 text-[var(--text)]'
+                : 'border-[var(--border)] text-[var(--dim)] hover:border-[var(--accent)]/30 hover:text-[var(--text)]',
+            )}
+          >
+            <span
+              className={cn(
+                'w-3.5 h-3.5 rounded-sm border flex items-center justify-center shrink-0 transition-colors',
+                active ? 'border-[var(--accent)] bg-[var(--accent)]' : 'border-current opacity-40',
+              )}
+            >
+              {active && <Check size={9} className="text-white" strokeWidth={3} />}
             </span>
-            {baseNode
-              ? <>
-                  <span className="tabular-nums">{fmtNum(baseNode.rows)} rows</span>
-                  <span className="text-[var(--dim)]">{baseNode.size}</span>
-                  <span className="text-[var(--dim)]">{fmtNum(baseNode.parts)} parts</span>
-                </>
-              : <span className="text-red-400">MISSING on baseline</span>
-            }
-          </div>
-          {/* Other nodes */}
-          {others.map((inst) => {
-            const isMissing = t.missing_on?.includes(inst)
-            const node = t.nodes?.[inst]
-            const bRows = baseNode?.rows ?? 0
-            const iRows = node?.rows ?? 0
-            const pct = bRows > 0 && !isMissing ? (iRows - bRows) / bRows : null
-
-            return (
-              <div key={inst} className="flex items-center gap-4 text-xs py-1.5">
-                <span className="w-36 truncate text-[var(--dim)] shrink-0">{inst}</span>
-                {isMissing ? (
-                  <span className="text-red-400 font-semibold">MISSING</span>
-                ) : node ? (
-                  <>
-                    <span className="tabular-nums">{fmtNum(node.rows)} rows</span>
-                    <span className="text-[var(--dim)]">{node.size}</span>
-                    <span className="text-[var(--dim)]">{fmtNum(node.parts)} parts</span>
-                    {pct !== null && (
-                      Math.abs(pct) < 0.001
-                        ? <span className="text-green-400">✓</span>
-                        : <span className={cn(
-                            'font-medium tabular-nums',
-                            Math.abs(pct) > 0.1 ? 'text-red-400' : 'text-yellow-400',
-                          )}>
-                            {pct > 0 ? '+' : ''}{(pct * 100).toFixed(2)}%
-                          </span>
-                    )}
-                  </>
-                ) : (
-                  <span className="text-[var(--dim)]">no data</span>
-                )}
-              </div>
-            )
-          })}
-        </div>
-      )}
+            {inst}
+          </button>
+        )
+      })}
+      <div className="flex items-center gap-3 ml-auto text-xs">
+        <button
+          onClick={() => onChange([...instances])}
+          className="text-[var(--dim)] hover:text-[var(--text)] transition-colors"
+        >
+          All
+        </button>
+        <span className="text-[var(--dim)]">·</span>
+        <button
+          onClick={() => onChange(instances.slice(0, 1))}
+          className="text-[var(--dim)] hover:text-[var(--text)] transition-colors disabled:opacity-30"
+          disabled={instances.length <= 1}
+        >
+          Reset
+        </button>
+      </div>
     </div>
   )
 }
 
-function SyncedSection({ tables, baseline, others }: { tables: ClassifiedTable[]; baseline: string; others: string[] }) {
-  const [expanded, setExpanded] = useState(false)
+/* ------------------------------------------------------------------ */
+/*  Tables view — flat sortable grid + node selector + live search    */
+/* ------------------------------------------------------------------ */
+type SortKey = 'name' | 'rows' | 'bytes' | 'drift'
 
-  return (
-    <Card className="!p-0">
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-[var(--hover)] transition-colors"
-      >
-        {expanded ? <ChevronDown size={14} className="text-[var(--dim)]" /> : <ChevronRight size={14} className="text-[var(--dim)]" />}
-        <Check size={13} className="text-green-400 shrink-0" />
-        <span className="text-xs font-semibold uppercase tracking-wider text-green-400">
-          {tables.length} tables in sync
-        </span>
-      </button>
-      {expanded && (
-        <div className="border-t border-[var(--border)]">
-          {tables.map((t) => <TableDetailRow key={`${t.database}.${t.table}`} t={t} baseline={baseline} others={others} />)}
-        </div>
-      )}
-    </Card>
-  )
-}
+function TablesView({ data, instances }: { data: TablesData; instances: string[] }) {
+  const [selectedNodes, setSelectedNodes] = useState<string[]>(() => [...instances])
+  const [search, setSearch] = useState('')
+  const [sortKey, setSortKey] = useState<SortKey>('name')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
 
-function TablesView({
-  data, baseline, instances,
-}: {
-  data: TablesData
-  baseline: string
-  instances: string[]
-}) {
-  const [diffsOnly, setDiffsOnly] = useState(true)
-  const others = instances.filter((i) => i !== baseline)
+  // Active nodes: intersection of user selection + current instances
+  const activeNodes = useMemo(() => {
+    const valid = selectedNodes.filter((n) => instances.includes(n))
+    return valid.length > 0 ? valid : instances
+  }, [selectedNodes, instances])
 
-  const classified = useMemo<ClassifiedTable[]>(() => {
-    return data.tables.map((t) => {
-      const bPresent = !t.missing_on?.includes(baseline)
-      const missingNodes = others.filter((i) => t.missing_on?.includes(i))
-      const isMissing = !bPresent || missingNodes.length > 0
+  // Per-row derived helpers
+  const rowDrift = useCallback((t: TableRow, nodes: string[]): number => {
+    const present = nodes.filter((n) => !t.missing_on?.includes(n))
+    if (present.length < 2) return 0
+    const vals = present.map((n) => t.nodes?.[n]?.rows ?? 0)
+    const max = Math.max(...vals)
+    const min = Math.min(...vals)
+    return max > 0 ? (max - min) / max : 0
+  }, [])
 
-      let maxDivPct = 0
-      let isDiverging = false
-      if (bPresent && t.nodes?.[baseline]) {
-        const bRows = t.nodes[baseline]?.rows ?? 0
-        for (const inst of others) {
-          if (!t.missing_on?.includes(inst) && t.nodes?.[inst]) {
-            const pct = bRows > 0 ? (t.nodes[inst].rows - bRows) / bRows : 0
-            if (Math.abs(pct) > 0.01) isDiverging = true
-            if (Math.abs(pct) > Math.abs(maxDivPct)) maxDivPct = pct
-          }
-        }
+  const isRowMissing = useCallback((t: TableRow, nodes: string[]) =>
+    nodes.some((n) => t.missing_on?.includes(n)),
+  [])
+
+  const filtered = useMemo(() => {
+    let rows = data.tables
+
+    if (search.trim()) {
+      const q = search.toLowerCase()
+      rows = rows.filter(
+        (t) =>
+          t.table.toLowerCase().includes(q) ||
+          t.database.toLowerCase().includes(q),
+      )
+    }
+
+    return [...rows].sort((a, b) => {
+      let cmp = 0
+      if (sortKey === 'name') {
+        cmp = `${a.database}.${a.table}`.localeCompare(`${b.database}.${b.table}`)
+      } else if (sortKey === 'rows') {
+        const aMax = Math.max(0, ...activeNodes.map((n) => a.nodes?.[n]?.rows ?? 0))
+        const bMax = Math.max(0, ...activeNodes.map((n) => b.nodes?.[n]?.rows ?? 0))
+        cmp = aMax - bMax
+      } else if (sortKey === 'bytes') {
+        const aMax = Math.max(0, ...activeNodes.map((n) => a.nodes?.[n]?.bytes ?? 0))
+        const bMax = Math.max(0, ...activeNodes.map((n) => b.nodes?.[n]?.bytes ?? 0))
+        cmp = aMax - bMax
+      } else if (sortKey === 'drift') {
+        cmp = rowDrift(a, activeNodes) - rowDrift(b, activeNodes)
       }
-
-      return { ...t, missingNodes, isDiverging, maxDivPct, isMissing }
+      return sortDir === 'asc' ? cmp : -cmp
     })
-  }, [data, baseline, others])
+  }, [data.tables, search, sortKey, sortDir, activeNodes, rowDrift])
 
-  const missing = classified.filter((t) => t.isMissing)
-  const diverging = classified.filter((t) => !t.isMissing && t.isDiverging)
-    .sort((a, b) => Math.abs(b.maxDivPct) - Math.abs(a.maxDivPct))
-  const synced = classified.filter((t) => !t.isMissing && !t.isDiverging)
+  const handleSort = (key: SortKey) => {
+    if (sortKey === key) {
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setSortKey(key)
+      setSortDir(key === 'name' ? 'asc' : 'desc')
+    }
+  }
 
-  const allGood = missing.length === 0 && diverging.length === 0
+  function SortIndicator({ k }: { k: SortKey }) {
+    if (sortKey !== k)
+      return <span className="opacity-25 text-[var(--dim)] ml-0.5">↕</span>
+    return (
+      <span className="text-[var(--accent)] ml-0.5">
+        {sortDir === 'asc' ? '↑' : '↓'}
+      </span>
+    )
+  }
+
+  const missingCount = useMemo(
+    () => filtered.filter((t) => isRowMissing(t, activeNodes)).length,
+    [filtered, activeNodes, isRowMissing],
+  )
+  const diffCount = useMemo(
+    () =>
+      filtered.filter(
+        (t) => !isRowMissing(t, activeNodes) && rowDrift(t, activeNodes) > 0.01,
+      ).length,
+    [filtered, activeNodes, isRowMissing, rowDrift],
+  )
 
   return (
     <div className="space-y-4">
-      {/* Summary bar */}
-      <div className="flex items-center gap-4 text-sm">
-        {missing.length > 0 && (
-          <span className="flex items-center gap-1.5 text-red-400">
-            <XCircle size={13} /> {missing.length} missing
-          </span>
-        )}
-        {diverging.length > 0 && (
-          <span className="flex items-center gap-1.5 text-yellow-400">
-            <AlertTriangle size={13} /> {diverging.length} diverging
-          </span>
-        )}
-        {synced.length > 0 && (
-          <span className="flex items-center gap-1.5 text-green-400">
-            <Check size={13} /> {synced.length} in sync
-          </span>
-        )}
-        <label className="ml-auto flex items-center gap-2 text-sm cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={diffsOnly}
-            onChange={(e) => setDiffsOnly(e.target.checked)}
-            className="rounded border-[var(--border)] bg-[var(--surface)] accent-[var(--accent)]"
-          />
-          <span className="text-[var(--dim)]">Diffs only</span>
-        </label>
+      {/* Node selector */}
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl px-4 py-3">
+        <NodeSelector instances={instances} selected={activeNodes} onChange={setSelectedNodes} />
       </div>
 
-      {allGood && (
-        <div className="flex items-center justify-center gap-2 text-green-400 py-12">
-          <Check size={20} />
-          <span className="text-base font-medium">All tables in sync with baseline</span>
+      {/* Search + summary row */}
+      <div className="flex items-center gap-3">
+        <div className="relative max-w-sm flex-1">
+          <Search
+            size={13}
+            className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--dim)] pointer-events-none"
+          />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Filter tables…"
+            className="w-full pl-8 pr-3 py-1.5 text-sm rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] placeholder-[var(--dim)] outline-none focus:border-[var(--accent)]/50 transition-colors"
+          />
         </div>
-      )}
-
-      {/* Missing tables */}
-      {missing.length > 0 && (
-        <Card className="!p-0">
-          <div className="flex items-center gap-2 px-4 py-2.5 border-b border-[var(--border)] bg-red-500/5">
-            <XCircle size={13} className="text-red-400 shrink-0" />
-            <span className="text-xs font-semibold uppercase tracking-wider text-red-400">
-              Missing on some nodes
+        <div className="flex items-center gap-4 text-xs ml-auto">
+          {missingCount > 0 && (
+            <span className="flex items-center gap-1 text-red-400">
+              <XCircle size={11} />
+              {missingCount} missing
             </span>
-          </div>
-          {missing.map((t) => (
-            <TableDetailRow key={`${t.database}.${t.table}`} t={t} baseline={baseline} others={others} />
-          ))}
-        </Card>
-      )}
-
-      {/* Diverging tables */}
-      {diverging.length > 0 && (
-        <Card className="!p-0">
-          <div className="flex items-center gap-2 px-4 py-2.5 border-b border-[var(--border)] bg-yellow-500/5">
-            <AlertTriangle size={13} className="text-yellow-400 shrink-0" />
-            <span className="text-xs font-semibold uppercase tracking-wider text-yellow-400">
-              Row count divergence — sorted by worst drift
+          )}
+          {diffCount > 0 && (
+            <span className="flex items-center gap-1 text-yellow-400">
+              <AlertTriangle size={11} />
+              {diffCount} diverging
             </span>
-          </div>
-          {diverging.map((t) => (
-            <TableDetailRow key={`${t.database}.${t.table}`} t={t} baseline={baseline} others={others} />
-          ))}
-        </Card>
-      )}
-
-      {/* In-sync tables */}
-      {!diffsOnly && synced.length > 0 && (
-        <SyncedSection tables={synced} baseline={baseline} others={others} />
-      )}
-
-      {diffsOnly && !allGood && synced.length > 0 && (
-        <div className="text-xs text-[var(--dim)] text-center py-2">
-          {synced.length} matching tables hidden — uncheck "Diffs only" to show all
+          )}
+          <span className="text-[var(--dim)]">{filtered.length} tables</span>
         </div>
-      )}
+      </div>
+
+      {/* Table grid */}
+      <div className="border border-[var(--border)] rounded-xl overflow-hidden">
+        <div className="max-h-[65vh] overflow-auto">
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 bg-[var(--surface)] z-10 border-b border-[var(--border)]">
+              <tr>
+                <th className="text-left py-2.5 px-4 w-[260px]">
+                  <button
+                    onClick={() => handleSort('name')}
+                    className="flex items-center text-xs font-medium uppercase tracking-wider text-[var(--dim)] hover:text-[var(--text)] transition-colors"
+                  >
+                    Table
+                    <SortIndicator k="name" />
+                  </button>
+                </th>
+                {activeNodes.map((inst) => (
+                  <th key={inst} className="text-left py-2 px-4">
+                    <div className="text-xs font-medium text-[var(--text)] truncate max-w-[150px] mb-0.5">
+                      {inst}
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={() => handleSort('bytes')}
+                        className="text-[10px] text-[var(--dim)] hover:text-[var(--accent)] transition-colors flex items-center"
+                      >
+                        size
+                        {sortKey === 'bytes' && <SortIndicator k="bytes" />}
+                      </button>
+                      <button
+                        onClick={() => handleSort('rows')}
+                        className="text-[10px] text-[var(--dim)] hover:text-[var(--accent)] transition-colors flex items-center"
+                      >
+                        rows
+                        {sortKey === 'rows' && <SortIndicator k="rows" />}
+                      </button>
+                    </div>
+                  </th>
+                ))}
+                {activeNodes.length > 1 && (
+                  <th className="text-right py-2.5 px-4 w-20">
+                    <button
+                      onClick={() => handleSort('drift')}
+                      className="flex items-center justify-end text-xs font-medium uppercase tracking-wider text-[var(--dim)] hover:text-[var(--text)] transition-colors ml-auto"
+                    >
+                      Drift
+                      <SortIndicator k="drift" />
+                    </button>
+                  </th>
+                )}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={activeNodes.length + 2}
+                    className="py-12 text-center text-[var(--dim)] text-sm"
+                  >
+                    {search ? `No tables matching "${search}"` : 'No tables'}
+                  </td>
+                </tr>
+              ) : (
+                filtered.map((t, idx) => {
+                  const missing = isRowMissing(t, activeNodes)
+                  const drift = rowDrift(t, activeNodes)
+                  const diverging = !missing && drift > 0.01
+
+                  return (
+                    <tr
+                      key={idx}
+                      className={cn(
+                        'border-b border-[var(--border)] last:border-0 transition-colors',
+                        missing
+                          ? 'bg-red-500/5 hover:bg-red-500/[0.08]'
+                          : diverging
+                            ? 'bg-yellow-500/5 hover:bg-yellow-500/[0.08]'
+                            : 'hover:bg-[var(--hover)]/50',
+                      )}
+                    >
+                      <td className="py-2.5 px-4">
+                        <div className="font-mono text-xs leading-snug">
+                          <span className="text-[var(--dim)]">{t.database}.</span>
+                          <span className="font-medium">{t.table}</span>
+                        </div>
+                        <div className="text-[10px] text-[var(--dim)] font-mono mt-0.5">
+                          {t.engine}
+                        </div>
+                      </td>
+                      {activeNodes.map((inst) => {
+                        const nodeMissing = t.missing_on?.includes(inst)
+                        const node = t.nodes?.[inst]
+                        return (
+                          <td key={inst} className="py-2.5 px-4">
+                            {nodeMissing ? (
+                              <span className="inline-flex text-xs font-medium text-red-400 bg-red-500/10 border border-red-500/20 px-1.5 py-0.5 rounded">
+                                missing
+                              </span>
+                            ) : node ? (
+                              <div className="text-xs space-y-0.5">
+                                <div className="text-[var(--text)] font-medium tabular-nums">
+                                  {node.size}
+                                </div>
+                                <div className="text-[var(--dim)] tabular-nums">
+                                  {fmtNum(node.rows)} rows
+                                </div>
+                              </div>
+                            ) : (
+                              <span className="text-xs text-[var(--dim)]">—</span>
+                            )}
+                          </td>
+                        )
+                      })}
+                      {activeNodes.length > 1 && (
+                        <td className="py-2.5 px-4 text-right">
+                          {missing ? (
+                            <XCircle size={13} className="text-red-400 inline" />
+                          ) : drift > 0.001 ? (
+                            <span
+                              className={cn(
+                                'text-xs font-medium tabular-nums',
+                                drift > 0.1
+                                  ? 'text-red-400'
+                                  : drift > 0.01
+                                    ? 'text-yellow-400'
+                                    : 'text-[var(--dim)]',
+                              )}
+                            >
+                              {(drift * 100).toFixed(1)}%
+                            </span>
+                          ) : (
+                            <Check size={13} className="text-green-400 inline" />
+                          )}
+                        </td>
+                      )}
+                    </tr>
+                  )
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   )
 }
@@ -736,12 +833,12 @@ export default function Compare() {
       .finally(() => setSettingsLoading(false))
   }, [])
 
-  // Prefer store instances (populated by overview); fall back to API response
+  // Prefer store instances; fall back to API response
   const instances = storeInstances.length > 0
     ? storeInstances
     : tablesData?.instances ?? []
 
-  // Effective baseline: use stored, or first available instance
+  // Effective baseline for Settings / Metrics / Memory tabs
   const effectiveBaseline = (baseline && instances.includes(baseline))
     ? baseline
     : instances[0] ?? ''
@@ -771,45 +868,47 @@ export default function Compare() {
 
   return (
     <div className="space-y-6">
-      {/* ---- Node pills — click to pivot baseline ---- */}
-      <div>
-        <div className="text-xs text-[var(--dim)] mb-2">Click any node to set as comparison baseline</div>
-        <div className="flex flex-wrap gap-3">
-          {instances.map((inst) => (
-            <NodePill
-              key={inst}
-              inst={inst}
-              isBaseline={inst === effectiveBaseline}
-              status={nodeStatuses[inst] ?? { missing: 0, diverging: 0, settingsDiff: 0 }}
-              onClick={() => handleSetBaseline(inst)}
-            />
-          ))}
+      {/* ---- Tab bar + Analyze ---- */}
+      <div className="flex items-center gap-3">
+        <div className="flex gap-1 bg-[var(--surface)] border border-[var(--border)] rounded-lg p-1 w-fit">
+          <TabButton active={tab === 'tables'} label="Tables" onClick={() => setTab('tables')} />
+          <TabButton active={tab === 'settings'} label="Settings" onClick={() => setTab('settings')} />
+          <TabButton active={tab === 'metrics'} label="Metrics" onClick={() => setTab('metrics')} />
+          <TabButton active={tab === 'memory'} label="Memory" onClick={() => setTab('memory')} />
         </div>
+        <button
+          onClick={() => handleAnalyze({ baseline: effectiveBaseline, instances, tab, tablesData, settingsData })}
+          className="ml-auto flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-purple-400 hover:bg-purple-500/15 border border-purple-500/20 transition-colors"
+        >
+          <Sparkles size={11} />
+          Analyze
+        </button>
       </div>
 
-      {/* ---- Tab bar + analyze ---- */}
-      <div className="flex items-center gap-3">
-      <div className="flex gap-1 bg-[var(--surface)] border border-[var(--border)] rounded-lg p-1 w-fit">
-        <TabButton active={tab === 'tables'} label="Tables" onClick={() => setTab('tables')} />
-        <TabButton active={tab === 'settings'} label="Settings" onClick={() => setTab('settings')} />
-        <TabButton active={tab === 'metrics'} label="Metrics" onClick={() => setTab('metrics')} />
-        <TabButton active={tab === 'memory'} label="Memory" onClick={() => setTab('memory')} />
-      </div>
-      <button
-        onClick={() => handleAnalyze({ baseline: effectiveBaseline, instances, tab, tablesData, settingsData })}
-        className="ml-auto flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-purple-400 hover:bg-purple-500/15 border border-purple-500/20 transition-colors"
-      >
-        <Sparkles size={11} />
-        Analyze
-      </button>
-      </div>
+      {/* ---- Node pills (baseline selector) — only for non-Tables tabs ---- */}
+      {tab !== 'tables' && (
+        <div>
+          <div className="text-xs text-[var(--dim)] mb-2">Click any node to set as comparison baseline</div>
+          <div className="flex flex-wrap gap-3">
+            {instances.map((inst) => (
+              <NodePill
+                key={inst}
+                inst={inst}
+                isBaseline={inst === effectiveBaseline}
+                status={nodeStatuses[inst] ?? { missing: 0, diverging: 0, settingsDiff: 0 }}
+                onClick={() => handleSetBaseline(inst)}
+              />
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* ---- Tab content ---- */}
       {tab === 'tables' && (
         tablesLoading
           ? <LoadingSkeleton />
           : tablesData
-            ? <TablesView data={tablesData} baseline={effectiveBaseline} instances={instances} />
+            ? <TablesView data={tablesData} instances={instances} />
             : <EmptyMsg msg="Failed to load table data" />
       )}
       {tab === 'settings' && (

@@ -379,7 +379,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
           <DataTable
             columns={alertCols}
             data={(showActiveOnly ? rangeAlerts.filter(a => !a.resolved) : rangeAlerts).sort((a, b) => b.created_at - a.created_at)}
-            maxHeight="320px"
+            pageSize={50}
           />
         )}
       </Card>

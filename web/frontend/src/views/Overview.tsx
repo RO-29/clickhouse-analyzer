@@ -238,7 +238,7 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
       {/* ---- Active alerts table (fresh only) ---- */}
       {freshAlerts.length > 0 && (
         <Card title={`Active Alerts · ${freshAlerts.length}${staleCount > 0 ? ` (${staleCount} stale hidden)` : ''}`}>
-          <DataTable columns={alertCols} data={freshAlerts} maxRows={30} />
+          <DataTable columns={alertCols} data={freshAlerts} pageSize={50} />
         </Card>
       )}
     </div>

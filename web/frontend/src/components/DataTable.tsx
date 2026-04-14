@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { ChevronUp, ChevronDown, Sparkles } from 'lucide-react'
+import { ChevronUp, ChevronDown, ChevronLeft, ChevronRight as ChevronRightIcon, Sparkles } from 'lucide-react'
 import { cn } from '../lib/utils'
 
 interface Column {
@@ -18,6 +18,7 @@ interface DataTableProps {
   /** @deprecated use data instead */
   rows?: Record<string, any>[]
   maxRows?: number
+  pageSize?: number
   emptyText?: string
 }
 
@@ -29,15 +30,18 @@ export function DataTable({
   onRowAnalyze,
   rows,
   maxRows,
+  pageSize,
   emptyText = 'No data',
 }: DataTableProps) {
   const [sortKey, setSortKey] = useState<string | null>(null)
   const [sortAsc, setSortAsc] = useState(true)
   const [hoveredRow, setHoveredRow] = useState<number | null>(null)
+  const [page, setPage] = useState(0)
 
   const source = Array.isArray(data) ? data : Array.isArray(rows) ? rows : []
 
   const handleSort = (key: string) => {
+    setPage(0)
     if (sortKey === key) {
       setSortAsc(!sortAsc)
     } else {
@@ -61,7 +65,11 @@ export function DataTable({
     })
   }
 
-  const visible = maxRows ? sorted.slice(0, maxRows) : sorted
+  const totalPages = pageSize ? Math.ceil(sorted.length / pageSize) : 1
+  const clampedPage = Math.min(page, Math.max(0, totalPages - 1))
+  const visible = pageSize
+    ? sorted.slice(clampedPage * pageSize, (clampedPage + 1) * pageSize)
+    : maxRows ? sorted.slice(0, maxRows) : sorted
 
   if (source.length === 0) {
     return <div className="text-sm text-[var(--dim)] py-6 text-center">{emptyText}</div>
@@ -131,7 +139,31 @@ export function DataTable({
           ))}
         </tbody>
       </table>
-      {maxRows && source.length > maxRows && (
+      {pageSize && totalPages > 1 && (
+        <div className="flex items-center justify-between px-3 py-2 border-t border-[var(--border)]">
+          <span className="text-xs text-[var(--dim)]">
+            {clampedPage * pageSize + 1}–{Math.min((clampedPage + 1) * pageSize, sorted.length)} of {sorted.length}
+          </span>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setPage(p => Math.max(0, p - 1))}
+              disabled={clampedPage === 0}
+              className="p-1 rounded hover:bg-[var(--hover)] disabled:opacity-30 transition-colors"
+            >
+              <ChevronLeft size={14} />
+            </button>
+            <span className="text-xs text-[var(--dim)] px-1">{clampedPage + 1} / {totalPages}</span>
+            <button
+              onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
+              disabled={clampedPage >= totalPages - 1}
+              className="p-1 rounded hover:bg-[var(--hover)] disabled:opacity-30 transition-colors"
+            >
+              <ChevronRightIcon size={14} />
+            </button>
+          </div>
+        </div>
+      )}
+      {maxRows && !pageSize && source.length > maxRows && (
         <div className="text-xs text-[var(--dim)] py-2 text-center">
           Showing {maxRows} of {source.length} rows
         </div>

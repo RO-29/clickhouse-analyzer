@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
-import { Brain, ChevronDown, ChevronRight, Clock, RefreshCw, Sparkles, Table2, Trash2 } from 'lucide-react'
+import { Brain, ChevronDown, ChevronLeft, ChevronRight, Clock, RefreshCw, Sparkles, Table2, Trash2 } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
@@ -445,6 +445,8 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
   const [filterStatus, setFilterStatus] = useState('all')
 
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set())
+  const [flatPage, setFlatPage] = useState(0)
+  const FLAT_PAGE_SIZE = 50
 
   // Consume the preset once on mount, then clear it so navigating back doesn't re-apply
   useEffect(() => {
@@ -494,6 +496,14 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
   const categories = useMemo(() => [...new Set(allAlerts.map((a) => a.category))].sort(), [allAlerts])
   const alertTypes = useMemo(() => [...new Set(allAlerts.map((a) => a.title))].sort(), [allAlerts])
   const instanceNames = useMemo(() => [...new Set([...cachedInstances, ...allAlerts.map((a) => a.instance)])].sort(), [cachedInstances, allAlerts])
+
+  // Reset flat page when filters change
+  const prevFilterKey = `${filterInstance}${filterSeverity}${filterCategory}${filterType}${filterStatus}`
+  const [lastFilterKey, setLastFilterKey] = useState(prevFilterKey)
+  if (prevFilterKey !== lastFilterKey) {
+    setLastFilterKey(prevFilterKey)
+    setFlatPage(0)
+  }
 
   const filtered = useMemo(() => {
     return allAlerts.filter((a) => {
@@ -740,7 +750,33 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
         <TimelineView alerts={filtered} staleHours={staleHours} />
       ) : viewMode === 'flat' ? (
         <Card className="!p-0">
-          {filtered.map((alert) => <AlertRow key={alert.id} alert={alert} showMeta staleHours={staleHours} onAnalyze={handleAnalyzeAlert} onResolve={!alert.resolved ? handleResolveAlert : undefined} />)}
+          {filtered.slice(flatPage * FLAT_PAGE_SIZE, (flatPage + 1) * FLAT_PAGE_SIZE).map((alert) => (
+            <AlertRow key={alert.id} alert={alert} showMeta staleHours={staleHours} onAnalyze={handleAnalyzeAlert} onResolve={!alert.resolved ? handleResolveAlert : undefined} />
+          ))}
+          {filtered.length > FLAT_PAGE_SIZE && (
+            <div className="flex items-center justify-between px-3 py-2 border-t border-[var(--border)]">
+              <span className="text-xs text-[var(--dim)]">
+                {flatPage * FLAT_PAGE_SIZE + 1}–{Math.min((flatPage + 1) * FLAT_PAGE_SIZE, filtered.length)} of {filtered.length}
+              </span>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setFlatPage(p => Math.max(0, p - 1))}
+                  disabled={flatPage === 0}
+                  className="p-1 rounded hover:bg-[var(--hover)] disabled:opacity-30 transition-colors"
+                >
+                  <ChevronLeft size={14} />
+                </button>
+                <span className="text-xs text-[var(--dim)] px-1">{flatPage + 1} / {Math.ceil(filtered.length / FLAT_PAGE_SIZE)}</span>
+                <button
+                  onClick={() => setFlatPage(p => Math.min(Math.ceil(filtered.length / FLAT_PAGE_SIZE) - 1, p + 1))}
+                  disabled={flatPage >= Math.ceil(filtered.length / FLAT_PAGE_SIZE) - 1}
+                  className="p-1 rounded hover:bg-[var(--hover)] disabled:opacity-30 transition-colors"
+                >
+                  <ChevronRight size={14} />
+                </button>
+              </div>
+            </div>
+          )}
         </Card>
       ) : (
         <div className="space-y-3">

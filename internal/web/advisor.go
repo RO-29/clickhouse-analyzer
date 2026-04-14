@@ -39,6 +39,7 @@ func (s *Server) handleAdvisorCompression(w http.ResponseWriter, r *http.Request
 		"FROM system.columns "+
 		"WHERE database NOT IN ('system','INFORMATION_SCHEMA','information_schema','ch_analyzer') "+
 		"GROUP BY database, table_name "+
+		"HAVING sum(data_compressed_bytes) > 0 "+
 		"ORDER BY sum(data_compressed_bytes) DESC")
 	if err != nil {
 		slog.Error("advisor compression", "err", err, "instance", instance)
@@ -623,13 +624,24 @@ func (s *Server) handleAdvisorCardinality(w http.ResponseWriter, r *http.Request
 
 		if len(cardRows) > 0 {
 			cr.Cardinality = toFloat64(cardRows[0]["card"])
-			if cr.Cardinality < 10000 {
+			// Only recommend if the table has actual data (cardinality > 0)
+			// and distinct count is low enough to benefit from LowCardinality.
+			if cr.Cardinality > 0 && cr.Cardinality < 10000 {
 				cr.Recommend = true
 			}
 		}
 
+		// Skip columns with no data or high cardinality — not actionable.
+		if !cr.Recommend {
+			continue
+		}
 		results = append(results, cr)
 	}
+
+	// Sort by cardinality ascending — lowest distinct count = best candidates first.
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Cardinality < results[j].Cardinality
+	})
 
 	writeJSON(w, http.StatusOK, results)
 }

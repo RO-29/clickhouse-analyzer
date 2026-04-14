@@ -335,7 +335,13 @@ export default function Advisor() {
                   format: (v: any) => v ? <FixButton sql={v} instance={inst} /> : null,
                 },
               ]}
-              data={limitRows('compression', compression.data)}
+              data={limitRows('compression', [...compression.data].sort((a: any, b: any) => {
+                // Issues (bad ratio) first, then sort by compressed size descending.
+                const aIssue = a.recommendations?.length > 0 ? 1 : 0
+                const bIssue = b.recommendations?.length > 0 ? 1 : 0
+                if (bIssue !== aIssue) return bIssue - aIssue
+                return (b.compressed_bytes ?? 0) - (a.compressed_bytes ?? 0)
+              }))}
             />
             <ShowAllButton sectionKey="compression" total={compression.data.length} />
           </>)}
