@@ -287,6 +287,25 @@ export interface CostOverview {
 }
 
 // Keep AnalyzeOptions for inline Analyze buttons on other tabs
+export interface ReplicaStatus {
+  database: string
+  table: string
+  replica_name: string
+  is_leader: boolean
+  is_readonly: boolean
+  is_session_expired: boolean
+  future_parts: number
+  parts_to_check: number
+  queue_size: number
+  inserts_in_queue: number
+  merges_in_queue: number
+  log_max_index: number
+  log_pointer: number
+  absolute_delay: number
+  replica_is_active: boolean
+  last_exception: string
+}
+
 export interface AnalyzeOptions {
   contextType: 'tab' | 'row' | 'chart' | 'followup'
   tab: string

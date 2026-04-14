@@ -126,6 +126,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/query/history", s.handleQueryHistory)
 	mux.HandleFunc("GET /api/instances/{name}/alerts-at", s.handleAlertsAt)
 	mux.HandleFunc("GET /api/instances/{name}/s3-stats", s.handleS3Stats)
+	mux.HandleFunc("GET /api/instances/{name}/replication", s.handleReplication)
 
 	// Compare endpoints (from compare.go).
 	mux.HandleFunc("GET /api/compare/tables", s.handleCompareTables)
@@ -1026,5 +1027,91 @@ func (s *Server) handleResolveStale(w http.ResponseWriter, r *http.Request) {
 	}
 	slog.Info("bulk resolved stale alerts", "hours", hours, "count", resolved)
 	writeJSON(w, http.StatusOK, map[string]int64{"resolved": resolved})
+}
+
+// GET /api/instances/{name}/replication — current replication status from system.replicas.
+func (s *Server) handleReplication(w http.ResponseWriter, r *http.Request) {
+	instance := r.PathValue("name")
+	if !s.validInstance(instance) {
+		writeErr(w, http.StatusNotFound, "unknown instance")
+		return
+	}
+	client := s.manager.Get(instance)
+	if client == nil {
+		writeErr(w, http.StatusServiceUnavailable, "instance not connected")
+		return
+	}
+
+	ctx := r.Context()
+	sql := `
+		SELECT
+			database,
+			table,
+			replica_name,
+			is_leader,
+			is_readonly,
+			is_session_expired,
+			future_parts,
+			parts_to_check,
+			queue_size,
+			inserts_in_queue,
+			merges_in_queue,
+			log_max_index,
+			log_pointer,
+			absolute_delay,
+			replica_is_active,
+			last_exception
+		FROM system.replicas
+		ORDER BY absolute_delay DESC`
+
+	rows, err := client.Query(ctx, sql)
+	if err != nil {
+		// Non-replicated instances don't have this table
+		writeJSON(w, http.StatusOK, []struct{}{})
+		return
+	}
+
+	type ReplicaRow struct {
+		Database        string  `json:"database"`
+		Table           string  `json:"table"`
+		ReplicaName     string  `json:"replica_name"`
+		IsLeader        bool    `json:"is_leader"`
+		IsReadonly      bool    `json:"is_readonly"`
+		IsSessionExpired bool   `json:"is_session_expired"`
+		FutureParts     float64 `json:"future_parts"`
+		PartsToCheck    float64 `json:"parts_to_check"`
+		QueueSize       float64 `json:"queue_size"`
+		InsertsInQueue  float64 `json:"inserts_in_queue"`
+		MergesInQueue   float64 `json:"merges_in_queue"`
+		LogMaxIndex     float64 `json:"log_max_index"`
+		LogPointer      float64 `json:"log_pointer"`
+		AbsoluteDelay   float64 `json:"absolute_delay"`
+		ReplicaIsActive bool    `json:"replica_is_active"`
+		LastException   string  `json:"last_exception"`
+	}
+
+	out := make([]ReplicaRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, ReplicaRow{
+			Database:         toString(row["database"]),
+			Table:            toString(row["table"]),
+			ReplicaName:      toString(row["replica_name"]),
+			IsLeader:         toFloat64(row["is_leader"]) != 0,
+			IsReadonly:       toFloat64(row["is_readonly"]) != 0,
+			IsSessionExpired: toFloat64(row["is_session_expired"]) != 0,
+			FutureParts:      toFloat64(row["future_parts"]),
+			PartsToCheck:     toFloat64(row["parts_to_check"]),
+			QueueSize:        toFloat64(row["queue_size"]),
+			InsertsInQueue:   toFloat64(row["inserts_in_queue"]),
+			MergesInQueue:    toFloat64(row["merges_in_queue"]),
+			LogMaxIndex:      toFloat64(row["log_max_index"]),
+			LogPointer:       toFloat64(row["log_pointer"]),
+			AbsoluteDelay:    toFloat64(row["absolute_delay"]),
+			ReplicaIsActive:  toFloat64(row["replica_is_active"]) != 0,
+			LastException:    toString(row["last_exception"]),
+		})
+	}
+
+	writeJSON(w, http.StatusOK, out)
 }
 

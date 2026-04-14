@@ -17,7 +17,7 @@ import { Badge } from '../components/Badge'
 import { MetricChart } from '../components/MetricChart'
 import { HealthChecklist } from '../components/HealthChecklist'
 import { DataTable } from '../components/DataTable'
-import type { Alert, DiskInfo, S3Stats } from '../types/api'
+import type { Alert, DiskInfo, ReplicaStatus, S3Stats } from '../types/api'
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, ChartTooltip)
 
@@ -39,6 +39,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
   const [s3Stats, setS3Stats] = useState<S3Stats | null>(null)
   const [cacheStats, setCacheStats] = useState<any>(null)
   const [tableMemory, setTableMemory] = useState<any[]>([])
+  const [replicas, setReplicas] = useState<ReplicaStatus[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [currentStateRefreshTick, setCurrentStateRefreshTick] = useState(0)
@@ -54,6 +55,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
   const [showMVs, setShowMVs] = useState(false)
   const [showStorage, setShowStorage] = useState(false)
   const [showHistory, setShowHistory] = useState(true)
+  const [showReplication, setShowReplication] = useState(false)
 
   useEffect(() => {
     if (!instance) return
@@ -66,7 +68,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
         setRefreshing(true)
       }
       try {
-        const [ah, q, t, d, m, s3, cs, tm] = await Promise.all([
+        const [ah, q, t, d, m, s3, cs, tm, repl] = await Promise.all([
           api.alerts.history(500).catch(() => [] as Alert[]),
           api.queries(instance!).catch(() => []),
           api.tables(instance!).catch(() => []),
@@ -75,6 +77,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
           api.s3Stats(instance!).catch(() => null),
           api.cacheStats(instance!).catch(() => null),
           api.tableMemory(instance!).catch(() => []),
+          api.replication(instance!).catch(() => [] as ReplicaStatus[]),
         ])
         if (!cancelled) {
           setAlertHistory((ah as Alert[]).filter((a) => a.instance === instance))
@@ -85,6 +88,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
           setS3Stats(s3 as any)
           setCacheStats(cs)
           setTableMemory(tm ?? [])
+          setReplicas(repl as ReplicaStatus[])
         }
       } catch {
         // keep empty state
@@ -459,6 +463,89 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
           {showRunning && (
             <Card className="mt-2">
               <DataTable columns={queryCols} data={queries} maxHeight="280px" />
+            </Card>
+          )}
+        </div>
+      )}
+
+      {/* ---- Replication health (collapsible, current state) ---- */}
+      {replicas.length > 0 && (
+        <div>
+          <button
+            onClick={() => setShowReplication(!showReplication)}
+            className="w-full flex items-center gap-2 py-2 text-sm font-medium text-[var(--dim)] hover:text-[var(--text)] transition-colors"
+          >
+            <ChevronRight size={14} className={cn('transition-transform', showReplication && 'rotate-90')} />
+            Replication ({replicas.length} table{replicas.length !== 1 ? 's' : ''})
+            {replicas.some(r => r.is_readonly || r.is_session_expired) && (
+              <span className="text-xs font-medium px-1.5 py-0.5 rounded bg-red-500/15 text-red-400 border border-red-500/20">readonly</span>
+            )}
+            {replicas.some(r => r.absolute_delay > 30) && !replicas.some(r => r.is_readonly) && (
+              <span className="text-xs font-medium px-1.5 py-0.5 rounded bg-yellow-500/15 text-yellow-400 border border-yellow-500/20">lag</span>
+            )}
+            <span className="text-xs font-normal px-1.5 py-0.5 rounded bg-[var(--hover)] text-[var(--dim)] border border-[var(--border)]">now</span>
+          </button>
+          {showReplication && (
+            <Card className="mt-2">
+              <div className="overflow-auto">
+                <table className="w-full min-w-[700px] text-xs">
+                  <thead>
+                    <tr className="border-b border-[var(--border)]">
+                      {['Table', 'Replica', 'Leader', 'Delay', 'Queue', 'Parts to Check', 'Status'].map(h => (
+                        <th key={h} className="text-left py-2 px-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--dim)]">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {replicas.map((r, i) => {
+                      const hasIssue = r.is_readonly || r.is_session_expired || r.absolute_delay > 300
+                      const hasWarn = r.absolute_delay > 30 || r.parts_to_check > 0 || r.queue_size > 100
+                      return (
+                        <tr key={i} className={cn(
+                          'border-b border-[var(--border)] last:border-0',
+                          hasIssue ? 'bg-red-500/5' : hasWarn ? 'bg-yellow-500/5' : '',
+                        )}>
+                          <td className="py-2 px-3 font-mono">{r.database}.{r.table}</td>
+                          <td className="py-2 px-3 text-[var(--dim)]">{r.replica_name}</td>
+                          <td className="py-2 px-3">{r.is_leader ? <span className="text-green-400">leader</span> : <span className="text-[var(--dim)]">replica</span>}</td>
+                          <td className="py-2 px-3">
+                            <span className={r.absolute_delay > 300 ? 'text-red-400 font-medium' : r.absolute_delay > 30 ? 'text-yellow-400' : 'text-[var(--dim)]'}>
+                              {r.absolute_delay > 0 ? `${Math.round(r.absolute_delay)}s` : '—'}
+                            </span>
+                          </td>
+                          <td className="py-2 px-3">
+                            <span className={r.queue_size > 1000 ? 'text-red-400' : r.queue_size > 100 ? 'text-yellow-400' : 'text-[var(--dim)]'}>
+                              {fmtNum(r.queue_size)}
+                            </span>
+                          </td>
+                          <td className="py-2 px-3">
+                            <span className={r.parts_to_check > 5 ? 'text-yellow-400' : 'text-[var(--dim)]'}>
+                              {fmtNum(r.parts_to_check)}
+                            </span>
+                          </td>
+                          <td className="py-2 px-3">
+                            {r.is_readonly || r.is_session_expired
+                              ? <span className="text-red-400 font-medium">readonly</span>
+                              : r.replica_is_active
+                                ? <span className="text-green-400">active</span>
+                                : <span className="text-[var(--dim)]">inactive</span>
+                            }
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+                {replicas.some(r => r.last_exception) && (
+                  <div className="mt-3 space-y-1">
+                    {replicas.filter(r => r.last_exception).map((r, i) => (
+                      <div key={i} className="text-xs text-red-400 bg-red-500/5 rounded px-3 py-2 font-mono">
+                        <span className="font-semibold">{r.database}.{r.table}:</span> {r.last_exception}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </Card>
           )}
         </div>

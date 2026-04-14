@@ -19,6 +19,7 @@ import type {
   TableScanResult,
   CostReport,
   CostOverview,
+  ReplicaStatus,
 } from '../types/api'
 
 const BASE = ''
@@ -127,6 +128,7 @@ export const api = {
   },
   cost: (inst: string) => get<CostReport>(`/api/instances/${inst}/cost`),
   costOverview: () => get<CostOverview>('/api/cost'),
+  replication: (inst: string) => get<ReplicaStatus[]>(`/api/instances/${inst}/replication`),
   analyzeElementQueries: (inst: string, tab: string, elementId?: string) => {
     const params = new URLSearchParams({ tab })
     if (elementId) params.set('element_id', elementId)

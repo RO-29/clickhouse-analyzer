@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
-import { Brain, ChevronDown, ChevronLeft, ChevronRight, Clock, RefreshCw, Sparkles, Table2, Trash2 } from 'lucide-react'
+import { Bell, BellOff, BookOpen, Brain, ChevronDown, ChevronLeft, ChevronRight, Clock, RefreshCw, Sparkles, Table2, Trash2 } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
@@ -30,6 +30,195 @@ function isStale(a: Alert, staleHours: number): boolean {
   if (a.resolved) return false
   const updatedAt = a.updated_at ?? a.created_at
   return (Date.now() / 1000 - updatedAt) > staleHours * 3600
+}
+
+/* ------------------------------------------------------------------ */
+/*  Snooze — localStorage-based, no backend needed                    */
+/* ------------------------------------------------------------------ */
+const SNOOZE_LS_KEY = 'ch-snoozed-alerts'
+
+function loadSnoozed(): Record<string, number> {
+  try { return JSON.parse(localStorage.getItem(SNOOZE_LS_KEY) ?? '{}') } catch { return {} }
+}
+
+function snoozeAlert(dedupKey: string, hours: number) {
+  const snoozed = loadSnoozed()
+  snoozed[dedupKey] = Math.floor(Date.now() / 1000) + hours * 3600
+  // Prune expired entries
+  const now = Math.floor(Date.now() / 1000)
+  Object.keys(snoozed).forEach(k => { if (snoozed[k] < now) delete snoozed[k] })
+  try { localStorage.setItem(SNOOZE_LS_KEY, JSON.stringify(snoozed)) } catch {}
+}
+
+function unsnoozeAlert(dedupKey: string) {
+  const snoozed = loadSnoozed()
+  delete snoozed[dedupKey]
+  try { localStorage.setItem(SNOOZE_LS_KEY, JSON.stringify(snoozed)) } catch {}
+}
+
+function isSnoozed(dedupKey: string, snoozed: Record<string, number>): boolean {
+  const exp = snoozed[dedupKey]
+  return exp != null && exp > Math.floor(Date.now() / 1000)
+}
+
+function snoozeUntil(dedupKey: string, snoozed: Record<string, number>): number | null {
+  const exp = snoozed[dedupKey]
+  return (exp != null && exp > Math.floor(Date.now() / 1000)) ? exp : null
+}
+
+/* ------------------------------------------------------------------ */
+/*  Runbooks — per-category remediation steps                          */
+/* ------------------------------------------------------------------ */
+interface Runbook { title: string; steps: string[] }
+
+const RUNBOOKS: Record<string, Runbook> = {
+  memory: {
+    title: 'Memory Runbook',
+    steps: [
+      'Check current memory consumers: SELECT query_id, peak_memory_usage, substring(query,1,150) as q FROM system.processes ORDER BY peak_memory_usage DESC',
+      'Review `max_memory_usage` setting — lower it to prevent runaway queries from consuming all memory',
+      'Check if mark cache or primary key index is too large: SELECT * FROM system.metrics WHERE metric LIKE \'%Cache%\'',
+      'Consider enabling `max_bytes_before_external_group_by` / `max_bytes_before_external_sort` to spill to disk',
+      'If RSS is high but CH memory is normal, check for OS-level memory leaks or huge pages fragmentation',
+    ],
+  },
+  cpu: {
+    title: 'CPU Runbook',
+    steps: [
+      'Identify hot queries: SELECT query_id, elapsed, read_rows, substring(query,1,200) as q FROM system.processes ORDER BY elapsed DESC',
+      'Check if high CPU correlates with merges: SELECT * FROM system.merges ORDER BY elapsed DESC',
+      'Look for missing indexes causing full scans: check EXPLAIN output for queries with high read_rows',
+      'Consider reducing `max_threads` per query if CPU is saturated across many concurrent queries',
+      'Review load average trend — if > vCPU count, the system is genuinely overloaded; scale up or throttle inserts',
+    ],
+  },
+  queries: {
+    title: 'Queries Runbook',
+    steps: [
+      'Kill blocking long-running queries: KILL QUERY WHERE elapsed > 300 (use carefully)',
+      'Check for missing partition pruning — queries reading all partitions will be slow',
+      'Review query concurrency limit: `max_concurrent_queries` in server settings',
+      'Check if a single user/service is flooding with queries: SELECT user, count() FROM system.processes GROUP BY user',
+      'Look for repeated identical queries that should be cached upstream',
+    ],
+  },
+  tables: {
+    title: 'Tables / Parts Runbook',
+    steps: [
+      'Too many parts → force merge: OPTIMIZE TABLE <db>.<table> FINAL (use sparingly on large tables)',
+      'Check merge backlog: SELECT database, table, elapsed, progress FROM system.merges ORDER BY elapsed DESC',
+      'High parts usually means inserts are too small/frequent — batch them to ≥100K rows per insert',
+      'For detached parts: verify with CHECK TABLE, then ATTACH or DROP DETACHED PART after investigation',
+      'Review `parts_to_delay_insert` / `parts_to_throw_insert` settings — raise if inserts are being throttled',
+    ],
+  },
+  replication: {
+    title: 'Replication Runbook',
+    steps: [
+      'Check replica status: SELECT database, table, is_readonly, is_session_expired, last_exception, absolute_delay FROM system.replicas',
+      'If replica is readonly: check ZooKeeper connectivity — SELECT * FROM system.zookeeper WHERE path = \'/\'',
+      'Large queue: check for stuck mutations — SELECT * FROM system.mutations WHERE is_done = 0',
+      'Replica lag: verify disk space is not full (full disk prevents replication)',
+      'After fixing ZooKeeper: restart ClickHouse to re-establish the session',
+    ],
+  },
+  storage: {
+    title: 'Storage / Disk Runbook',
+    steps: [
+      'Identify largest tables: SELECT database, table, formatReadableSize(sum(bytes_on_disk)) as size FROM system.parts WHERE active GROUP BY database, table ORDER BY sum(bytes_on_disk) DESC',
+      'Check TTL policies are running: SELECT name, engine_full FROM system.tables WHERE engine LIKE \'%MergeTree%\' AND engine_full LIKE \'%TTL%\'',
+      'Look for orphaned temporary files: ls -la /var/lib/clickhouse/tmp/',
+      'Consider moving cold data to S3 tiered storage if available',
+      'If S3 latency is high: check network connectivity to S3 endpoint, review retry settings',
+    ],
+  },
+  inserts: {
+    title: 'Insert Pipeline Runbook',
+    steps: [
+      'Small insert anti-pattern: batch inserts to ≥100K rows to avoid part explosion',
+      'Check async inserts if enabled: SELECT * FROM system.asynchronous_inserts',
+      'Throughput drop: check if upstream pipeline is paused or rate-limited',
+      'Verify async insert buffer: set `async_insert_max_data_size` and `async_insert_busy_timeout_ms`',
+      'Monitor insert errors: SELECT exception, count() FROM system.query_log WHERE type = \'ExceptionWhileProcessing\' AND kind = \'Insert\' GROUP BY exception',
+    ],
+  },
+  mvs: {
+    title: 'Materialized Views Runbook',
+    steps: [
+      'Find failing MV executions: SELECT view, event_time, status, exception FROM system.query_views_log WHERE status = \'ExceptionWhileProcessing\' ORDER BY event_time DESC LIMIT 20',
+      'Slow MVs may block inserts on the source table — consider reducing MV complexity',
+      'Check for MV bloat: inner table growing much faster than expected',
+      'Chained MVs (MV → MV) compound latency; flatten them if possible',
+      'If MV fails due to schema mismatch, DROP and recreate the MV after fixing the query',
+    ],
+  },
+  errors: {
+    title: 'Errors Runbook',
+    steps: [
+      'Check full error list: SELECT name, times, last_error_time, last_error_message FROM system.errors ORDER BY times DESC',
+      'MEMORY_LIMIT_EXCEEDED: reduce query memory limits or add more RAM',
+      'KEEPER_EXCEPTION / ZOOKEEPER_ERROR: check ZooKeeper cluster health and CH-ZK connectivity',
+      'CORRUPTED_DATA / CHECKSUM_DOESNT_MATCH: run CHECK TABLE to identify, then detach/drop corrupt parts',
+      'Review recent text_log for Fatal/Critical entries: SELECT * FROM system.text_log WHERE level IN (\'Fatal\', \'Critical\') ORDER BY event_time DESC LIMIT 20',
+    ],
+  },
+  dictionaries: {
+    title: 'Dictionaries Runbook',
+    steps: [
+      'Check dictionary status: SELECT name, status, last_exception FROM system.dictionaries',
+      'Force reload: SYSTEM RELOAD DICTIONARY <name>',
+      'Verify source connectivity (DB/HTTP/file) — failed connection = dictionary not loaded',
+      'Empty dictionary (0 elements) may indicate empty source table or wrong WHERE clause',
+      'For large dictionaries, consider increasing `max_execution_time` for dictionary loads',
+    ],
+  },
+}
+
+function getRunbook(alert: Alert): Runbook | null {
+  const cat = (alert.category || '').toLowerCase()
+  for (const key of Object.keys(RUNBOOKS)) {
+    if (cat.includes(key)) return RUNBOOKS[key]
+  }
+  return null
+}
+
+function RunbookPanel({ runbook }: { runbook: Runbook }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div>
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="flex items-center gap-1.5 text-xs font-medium text-blue-400 hover:text-blue-300 transition-colors"
+      >
+        <BookOpen size={12} />
+        {open ? 'Hide runbook' : 'Show runbook'}: {runbook.title}
+      </button>
+      {open && (
+        <div className="mt-2 bg-blue-500/5 border border-blue-500/15 rounded-lg p-3 space-y-2">
+          <div className="text-xs font-semibold text-blue-400 uppercase tracking-wider mb-1">{runbook.title}</div>
+          {runbook.steps.map((step, i) => {
+            const sqlMatch = step.indexOf(': SELECT') > 0 || step.indexOf(': KILL') > 0 || step.indexOf(': OPTIMIZE') > 0 || step.indexOf(': SYSTEM') > 0
+            if (sqlMatch) {
+              const colonIdx = step.indexOf(': ')
+              const label = step.slice(0, colonIdx)
+              const sql = step.slice(colonIdx + 2)
+              return (
+                <div key={i} className="space-y-1">
+                  <div className="text-xs text-[var(--dim)]"><span className="text-blue-300 font-medium">{i + 1}.</span> {label}</div>
+                  <div className="font-mono text-xs bg-[var(--hover)] rounded p-2 border border-[var(--border)] overflow-x-auto whitespace-pre">{sql}</div>
+                </div>
+              )
+            }
+            return (
+              <div key={i} className="text-xs text-[var(--dim)]">
+                <span className="text-blue-300 font-medium">{i + 1}.</span> {step}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
 }
 
 /* ------------------------------------------------------------------ */
@@ -166,12 +355,22 @@ function AlertMessageRenderer({ message, instance }: { message: string; instance
 /* ------------------------------------------------------------------ */
 /*  AlertRow (expandable)                                             */
 /* ------------------------------------------------------------------ */
-function AlertRow({ alert, showMeta, staleHours, onAnalyze, onResolve }: { alert: Alert; showMeta?: boolean; staleHours: number; onAnalyze?: (alert: Alert) => void; onResolve?: (dedupKey: string) => void }) {
+function AlertRow({ alert, showMeta, staleHours, snoozed, onAnalyze, onResolve, onSnoozeChange }: {
+  alert: Alert
+  showMeta?: boolean
+  staleHours: number
+  snoozed: Record<string, number>
+  onAnalyze?: (alert: Alert) => void
+  onResolve?: (dedupKey: string) => void
+  onSnoozeChange?: () => void
+}) {
   const [expanded, setExpanded] = useState(false)
   const [suggestions, setSuggestions] = useState<Suggestion | null>(null)
   const [loadingSugg, setLoadingSugg] = useState(false)
   const { openTableDetail } = useStore()
   const stale = isStale(alert, staleHours)
+  const snoozedUntil = snoozeUntil(alert.dedup_key, snoozed)
+  const runbook = useMemo(() => getRunbook(alert), [alert])
 
   const handleExpand = useCallback(() => {
     const next = !expanded
@@ -196,6 +395,12 @@ function AlertRow({ alert, showMeta, staleHours, onAnalyze, onResolve }: { alert
           ? <Badge className="bg-gray-500/10 text-gray-400 border border-gray-500/20 text-xs shrink-0">stale</Badge>
           : <Badge severity={alert.severity} />
         }
+        {snoozedUntil && (
+          <span className="inline-flex items-center gap-1 text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-1.5 py-0.5 shrink-0">
+            <BellOff size={10} />
+            snoozed
+          </span>
+        )}
         {showMeta && (
           <>
             <span className="text-xs text-[var(--dim)] shrink-0">{alert.instance}</span>
@@ -272,7 +477,9 @@ function AlertRow({ alert, showMeta, staleHours, onAnalyze, onResolve }: { alert
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          {runbook && <RunbookPanel runbook={runbook} />}
+
+          <div className="flex items-center flex-wrap gap-2">
             {onAnalyze && (
               <button
                 onClick={() => onAnalyze(alert)}
@@ -289,6 +496,38 @@ function AlertRow({ alert, showMeta, staleHours, onAnalyze, onResolve }: { alert
               >
                 Mark resolved
               </button>
+            )}
+            {!alert.resolved && !snoozedUntil && (
+              <>
+                <button
+                  onClick={() => { snoozeAlert(alert.dedup_key, 4); onSnoozeChange?.() }}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-amber-400 hover:bg-amber-500/15 border border-amber-500/20 transition-colors"
+                  title="Hide this alert for 4 hours"
+                >
+                  <BellOff size={11} />
+                  Snooze 4h
+                </button>
+                <button
+                  onClick={() => { snoozeAlert(alert.dedup_key, 24); onSnoozeChange?.() }}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-amber-400 hover:bg-amber-500/15 border border-amber-500/20 transition-colors"
+                  title="Hide this alert for 24 hours"
+                >
+                  <BellOff size={11} />
+                  Snooze 24h
+                </button>
+              </>
+            )}
+            {snoozedUntil && (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-amber-400">Snoozed until {fmtTime(snoozedUntil)}</span>
+                <button
+                  onClick={() => { unsnoozeAlert(alert.dedup_key); onSnoozeChange?.() }}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-amber-400 hover:bg-amber-500/15 border border-amber-500/20 transition-colors"
+                >
+                  <Bell size={11} />
+                  Unsnooze
+                </button>
+              </div>
             )}
           </div>
         </div>
@@ -448,6 +687,11 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
   const [flatPage, setFlatPage] = useState(0)
   const FLAT_PAGE_SIZE = 50
 
+  // Snooze state — tick forces re-reads from localStorage
+  const [snoozeTick, setSnoozeTick] = useState(0)
+  const snoozed = useMemo(() => loadSnoozed(), [snoozeTick]) // eslint-disable-line react-hooks/exhaustive-deps
+  const handleSnoozeChange = useCallback(() => setSnoozeTick(t => t + 1), [])
+
   // Consume the preset once on mount, then clear it so navigating back doesn't re-apply
   useEffect(() => {
     if (alertPreset) setAlertPreset(null)
@@ -511,7 +755,10 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
       if (filterSeverity !== 'all' && a.severity !== filterSeverity) return false
       if (filterCategory !== 'all' && a.category !== filterCategory) return false
       if (filterType !== 'all' && a.title !== filterType) return false
-      if (filterStatus === 'firing' && (a.resolved || isStale(a, staleHours))) return false
+      if (filterStatus === 'firing') {
+        if (a.resolved || isStale(a, staleHours)) return false
+        if (isSnoozed(a.dedup_key, snoozed)) return false // hide snoozed from "firing" view
+      }
       if (filterStatus === 'stale' && !isStale(a, staleHours)) return false
       if (filterStatus === 'resolved' && !a.resolved) return false
       // Time range filter: show alerts created in range, plus always show active unresolved
@@ -522,7 +769,7 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
       }
       return true
     })
-  }, [allAlerts, filterInstance, filterSeverity, filterCategory, filterType, filterStatus, staleHours, customFrom, customTo])
+  }, [allAlerts, filterInstance, filterSeverity, filterCategory, filterType, filterStatus, staleHours, customFrom, customTo, snoozed])
 
   const groups = useMemo(() => {
     const map = new Map<string, Alert[]>()
@@ -559,6 +806,10 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
   const firingSub = firing > 0 ? firingParts.join(' · ') : undefined
   const staleCount = filtered.filter((a) => isStale(a, staleHours)).length
   const resolved = filtered.filter((a) => a.resolved).length
+  const snoozedCount = useMemo(
+    () => allAlerts.filter((a) => !a.resolved && isSnoozed(a.dedup_key, snoozed)).length,
+    [allAlerts, snoozed],
+  )
 
   // Total stale across ALL (unfiltered) for the dismiss button
   const totalStaleUnfiltered = useMemo(
@@ -654,6 +905,14 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
             sub={`>${staleHours}h without update`}
           />
           <StatCard label="Resolved" value={resolved} color="#22c55e" />
+          {snoozedCount > 0 && (
+            <StatCard
+              label="Snoozed"
+              value={snoozedCount}
+              color="#f59e0b"
+              sub="hidden from active view"
+            />
+          )}
         </div>
 
         {/* Action buttons */}
@@ -751,7 +1010,7 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
       ) : viewMode === 'flat' ? (
         <Card className="!p-0">
           {filtered.slice(flatPage * FLAT_PAGE_SIZE, (flatPage + 1) * FLAT_PAGE_SIZE).map((alert) => (
-            <AlertRow key={alert.id} alert={alert} showMeta staleHours={staleHours} onAnalyze={handleAnalyzeAlert} onResolve={!alert.resolved ? handleResolveAlert : undefined} />
+            <AlertRow key={alert.id} alert={alert} showMeta staleHours={staleHours} snoozed={snoozed} onAnalyze={handleAnalyzeAlert} onResolve={!alert.resolved ? handleResolveAlert : undefined} onSnoozeChange={handleSnoozeChange} />
           ))}
           {filtered.length > FLAT_PAGE_SIZE && (
             <div className="flex items-center justify-between px-3 py-2 border-t border-[var(--border)]">
@@ -815,7 +1074,7 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
                 </button>
                 {!isCollapsed && (
                   <div className="border-t border-[var(--border)]">
-                    {groupAlerts.map((alert) => <AlertRow key={alert.id} alert={alert} staleHours={staleHours} onAnalyze={handleAnalyzeAlert} onResolve={!alert.resolved ? handleResolveAlert : undefined} />)}
+                    {groupAlerts.map((alert) => <AlertRow key={alert.id} alert={alert} staleHours={staleHours} snoozed={snoozed} onAnalyze={handleAnalyzeAlert} onResolve={!alert.resolved ? handleResolveAlert : undefined} onSnoozeChange={handleSnoozeChange} />)}
                   </div>
                 )}
               </Card>

@@ -312,6 +312,12 @@ func buildCollectors(cfg *config.Config) []collector.Collector {
 		Thresholds: cfg.Thresholds.Dictionaries,
 	})
 
+	result = append(result, &collector.ReplicationCollector{
+		Thresholds: cfg.Thresholds.Replication,
+	})
+
+	result = append(result, &collector.ErrorsCollector{})
+
 	if cfg.K8s.Enabled {
 		result = append(result, &collector.K8sCollector{
 			Config: cfg.K8s,
