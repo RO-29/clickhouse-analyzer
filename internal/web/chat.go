@@ -939,8 +939,29 @@ Provide specific SQL recommendations where applicable.
 
 	// Trim if too large.
 	const maxPromptBytes = 1 << 20
-	if len(finalPrompt) > maxPromptBytes {
+	truncated := len(finalPrompt) > maxPromptBytes
+	if truncated {
 		finalPrompt = finalPrompt[:maxPromptBytes] + "\n\n[...context truncated...]"
+	}
+
+	// Send debug event so the browser can log the full prompt.
+	{
+		head := finalPrompt
+		if len(head) > 5120 {
+			head = head[:5120]
+		}
+		debugPayload := map[string]interface{}{
+			"mode":         "cli_two_pass",
+			"instance":     instance,
+			"plan_queries": len(validQueries),
+			"prompt_bytes": len(finalPrompt),
+			"prompt_kb":    float64(len(finalPrompt)) / 1024.0,
+			"truncated":    truncated,
+			"prompt_head":  head,
+		}
+		if b, err2 := json.Marshal(debugPayload); err2 == nil {
+			sendEvent("debug", string(b))
+		}
 	}
 
 	streamArgs := []string{"-p", "-"}
@@ -1204,6 +1225,25 @@ func (s *Server) handleChatCLIWithMCP(
 	}
 	sb.WriteString("## Question\n" + req.Question + "\n")
 	prompt := sb.String()
+
+	// Send debug event so the browser can log the full prompt.
+	{
+		head := prompt
+		if len(head) > 5120 {
+			head = head[:5120]
+		}
+		debugPayload := map[string]interface{}{
+			"mode":        "cli_mcp",
+			"instance":    instance,
+			"prompt_bytes": len(prompt),
+			"prompt_kb":   float64(len(prompt)) / 1024.0,
+			"truncated":   false,
+			"prompt_head": head,
+		}
+		if b, err2 := json.Marshal(debugPayload); err2 == nil {
+			sendEvent("debug", string(b))
+		}
+	}
 
 	streamCtx, streamCancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer streamCancel()

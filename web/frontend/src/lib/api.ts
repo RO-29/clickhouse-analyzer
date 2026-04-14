@@ -16,6 +16,7 @@ import type {
   CHLogEntry,
   Suggestion,
   DiskInfo,
+  TableScanResult,
 } from '../types/api'
 
 const BASE = ''
@@ -115,6 +116,13 @@ export const api = {
     storagePolicy: (inst: string) => get<any[]>(`/api/instances/${inst}/advisor/storage-policy`),
   },
   tableDetail: (inst: string, db: string, table: string) => get<any>(`/api/instances/${inst}/table-detail/${db}/${table}`),
+  tableScan: (inst: string, from?: number, to?: number) => {
+    const params = new URLSearchParams()
+    if (from) params.set('from', String(from))
+    if (to) params.set('to', String(to))
+    const qs = params.toString()
+    return get<TableScanResult>(`/api/instances/${inst}/table-scan${qs ? '?' + qs : ''}`)
+  },
   analyzeElementQueries: (inst: string, tab: string, elementId?: string) => {
     const params = new URLSearchParams({ tab })
     if (elementId) params.set('element_id', elementId)

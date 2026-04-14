@@ -225,7 +225,22 @@ export default function ChatAnalyzer() {
             } else if (line.startsWith('data: ')) {
               const raw = line.slice(6)
 
-              if (currentEvent === 'status') {
+              // Log every SSE event to the browser console for debugging
+              // eslint-disable-next-line no-console
+              console.debug('[CH-CHAT] event:', currentEvent, '|', raw.slice(0, 300))
+
+              if (currentEvent === 'debug') {
+                try {
+                  const dbg = JSON.parse(raw)
+                  // eslint-disable-next-line no-console
+                  console.log('[CH-CHAT] ── Debug payload ──', dbg)
+                  if (dbg.prompt_head) {
+                    // eslint-disable-next-line no-console
+                    console.log('[CH-CHAT] ── Prompt sent to Claude (first 5 KB) ──\n' + dbg.prompt_head)
+                  }
+                } catch { /* ignore */ }
+
+              } else if (currentEvent === 'status') {
                 try {
                   const payload = JSON.parse(raw) as { phase: string }
                   updateAssistantMsg(sessionId, assistantMsgId, {

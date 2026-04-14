@@ -12,6 +12,7 @@ import Terminal from './views/Terminal'
 import AppLogs from './views/AppLogs'
 import CHLogs from './views/CHLogs'
 import ChatAnalyzer from './views/ChatAnalyzer'
+import TableScanner from './views/TableScanner'
 import { TableDetail } from './components/TableDetail'
 import { AIAnalysisPanel } from './components/AIAnalysisPanel'
 import { NotificationToasts } from './components/NotificationToasts'
@@ -77,6 +78,7 @@ function Layout() {
     explore: <Explore refreshKey={tick} />,
     compare: <Compare />,
     advisor: <Advisor />,
+    scanner: <TableScanner refreshKey={tick} />,
     terminal: <Terminal />,
     logs: <AppLogs refreshKey={tick} />,
     chlogs: <CHLogs refreshKey={tick} />,

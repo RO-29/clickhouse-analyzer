@@ -11,6 +11,7 @@ const VIEW_TITLES: Record<View, string> = {
   compare: 'Compare Nodes',
   advisor: 'Advisor',
   terminal: 'Terminal',
+  scanner: 'Table Scanner',
   analyzer: 'AI Analyzer',
   logs: 'Application Logs',
   chlogs: 'ClickHouse Logs',

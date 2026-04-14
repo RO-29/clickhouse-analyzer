@@ -163,6 +163,48 @@ export interface StepInfo {
   elapsedMs?: number
 }
 
+// Table scanner types
+export interface DiskUsageEntry {
+  disk_name: string
+  disk_type: string
+  bytes: number
+  parts: number
+  readable_size: string
+}
+
+export interface TableQueryActivity {
+  select_count: number
+  insert_count: number
+  last_select?: string
+  last_insert?: string
+  is_active: boolean
+}
+
+export interface TableScanEntry {
+  database: string
+  table: string
+  engine: string
+  storage_policy: string
+  sorting_key: string
+  primary_key: string
+  partition_key: string
+  sampling_key: string
+  ttl_expression: string
+  total_rows: number
+  total_bytes: number
+  parts_count: number
+  create_query: string
+  disk_usage: DiskUsageEntry[]
+  query_activity: TableQueryActivity
+}
+
+export interface TableScanResult {
+  tables: TableScanEntry[]
+  scanned_at: string
+  time_from: string
+  time_to: string
+}
+
 // Keep AnalyzeOptions for inline Analyze buttons on other tabs
 export interface AnalyzeOptions {
   contextType: 'tab' | 'row' | 'chart' | 'followup'
