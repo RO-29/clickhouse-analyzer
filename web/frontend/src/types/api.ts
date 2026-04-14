@@ -337,3 +337,37 @@ export interface HealthResponse {
   last_poll_at?: string
   instances: HealthInstance[]
 }
+
+export interface CollectorMeta {
+  name: string
+  display_name: string
+  description: string
+  category: string
+}
+
+export interface RunCheckMetric {
+  name: string
+  value: number
+  labels: Record<string, string>
+}
+
+export interface RunCheckAlert {
+  severity: string
+  category: string
+  title: string
+  message: string
+}
+
+export interface RunCheckResult {
+  instance: string
+  collector: string
+  display_name: string
+  duration_ms: number
+  alerts: RunCheckAlert[]
+  metrics: RunCheckMetric[]
+  error: string
+}
+
+export interface RunCheckResponse {
+  results: RunCheckResult[]
+}

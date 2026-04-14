@@ -198,6 +198,10 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/maintenance", s.handleMaintenanceList)
 	mux.HandleFunc("POST /api/maintenance", s.handleMaintenanceCreate)
 	mux.HandleFunc("DELETE /api/maintenance/{id}", s.handleMaintenanceDelete)
+
+	// Collector registry and ad-hoc run endpoints (from runcheck.go).
+	mux.HandleFunc("GET /api/collectors", s.handleGetCollectors)
+	mux.HandleFunc("POST /api/run-check", s.handleRunCheck)
 }
 
 // ---------------------------------------------------------------------------

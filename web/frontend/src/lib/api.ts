@@ -22,6 +22,8 @@ import type {
   ReplicaStatus,
   MaintenanceWindow,
   HealthResponse,
+  CollectorMeta,
+  RunCheckResponse,
 } from '../types/api'
 
 const BASE = ''
@@ -145,4 +147,7 @@ export const api = {
     delete: (id: string) => fetch(`/api/maintenance/${id}`, { method: 'DELETE' }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`) }),
   },
   health: () => get<HealthResponse>('/health'),
+  collectors: () => get<CollectorMeta[]>('/api/collectors'),
+  runCheck: (collectors: string[], instances: string[]) =>
+    post<RunCheckResponse>('/api/run-check', { collectors, instances }),
 }
