@@ -119,16 +119,26 @@ export interface DiskInfo {
 export interface AnalysisEntry {
   id: string
   label: string
-  contextType: 'tab' | 'row' | 'chart'
+  contextType: 'tab' | 'row' | 'chart' | 'followup'
   tab: string
   elementId?: string
   status: 'streaming' | 'done' | 'error'
   output: string
-  timestamp: Date
+  timestamp: number  // epoch ms
+  question?: string  // user-typed follow-up question
+}
+
+export interface AISession {
+  id: string
+  name: string       // auto-named from first entry's label
+  instance: string
+  createdAt: number  // epoch ms
+  updatedAt: number  // epoch ms
+  entries: AnalysisEntry[]
 }
 
 export interface AnalyzeOptions {
-  contextType: 'tab' | 'row' | 'chart'
+  contextType: 'tab' | 'row' | 'chart' | 'followup'
   tab: string
   elementId?: string
   mode?: 'quick' | 'deep'

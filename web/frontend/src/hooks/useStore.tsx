@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useCallback, type ReactNode } from 'react'
 import { presetToRange } from '../lib/utils'
-import type { AnalysisEntry } from '../types/api'
+import type { AnalysisEntry, AISession } from '../types/api'
 
 export type View = 'overview' | 'detail' | 'alerts' | 'explore' | 'compare' | 'advisor' | 'terminal' | 'logs' | 'chlogs' | 'analyzer'
 
@@ -26,6 +26,8 @@ export interface Store {
   tableDetail: { instance: string; database: string; table: string } | null
   aiEntries: AnalysisEntry[]
   aiPanelOpen: boolean
+  aiSessions: AISession[]
+  activeSessionId: string | null
 
   // Actions
   setView: (v: View) => void
@@ -50,6 +52,8 @@ export interface Store {
   setAiEntries: (updater: AnalysisEntry[] | ((prev: AnalysisEntry[]) => AnalysisEntry[])) => void
   setAiPanelOpen: (v: boolean) => void
   clearAiEntries: () => void
+  setAiSessions: (updater: AISession[] | ((prev: AISession[]) => AISession[])) => void
+  setActiveSessionId: (id: string | null) => void
 }
 
 const StoreContext = createContext<Store | null>(null)
@@ -87,9 +91,52 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [terminalInstance, setTerminalInstance] = useState('')
   const [tableDetail, setTableDetail] = useState<{ instance: string; database: string; table: string } | null>(null)
   const [alertPreset, setAlertPreset] = useState<{ severity?: string; instance?: string } | null>(null)
-  const [aiEntries, setAiEntries] = useState<AnalysisEntry[]>([])
+  // QueryAnalyzer flat entries — persisted to localStorage
+  const [aiEntries, setAiEntriesState] = useState<AnalysisEntry[]>(() => {
+    try {
+      const saved = localStorage.getItem('ch-ai-entries')
+      if (!saved) return []
+      return JSON.parse(saved).map((e: any) => ({
+        ...e,
+        timestamp: typeof e.timestamp === 'number' ? e.timestamp : new Date(e.timestamp).getTime(),
+      }))
+    } catch { return [] }
+  })
+  const setAiEntries = useCallback((updater: AnalysisEntry[] | ((prev: AnalysisEntry[]) => AnalysisEntry[])) => {
+    setAiEntriesState(prev => {
+      const next = typeof updater === 'function' ? updater(prev) : updater
+      try { localStorage.setItem('ch-ai-entries', JSON.stringify(next.slice(0, 100))) } catch {}
+      return next
+    })
+  }, [])
+  const clearAiEntries = useCallback(() => setAiEntries([]), [setAiEntries])
+
+  // Session-based entries for the AI panel — persisted to localStorage
+  const [aiSessions, setAiSessionsState] = useState<AISession[]>(() => {
+    try {
+      const saved = localStorage.getItem('ch-ai-sessions')
+      return saved ? JSON.parse(saved) : []
+    } catch { return [] }
+  })
+  const setAiSessions = useCallback((updater: AISession[] | ((prev: AISession[]) => AISession[])) => {
+    setAiSessionsState(prev => {
+      const next = typeof updater === 'function' ? updater(prev) : updater
+      const trimmed = next.slice(0, 50)
+      try { localStorage.setItem('ch-ai-sessions', JSON.stringify(trimmed)) } catch {}
+      return trimmed
+    })
+  }, [])
+
+  const [activeSessionId, setActiveSessionIdState] = useState<string | null>(() => {
+    return localStorage.getItem('ch-ai-active-session')
+  })
+  const setActiveSessionId = useCallback((id: string | null) => {
+    setActiveSessionIdState(id)
+    if (id) localStorage.setItem('ch-ai-active-session', id)
+    else localStorage.removeItem('ch-ai-active-session')
+  }, [])
+
   const [aiPanelOpen, setAiPanelOpen] = useState(false)
-  const clearAiEntries = useCallback(() => setAiEntries([]), [])
 
   const toggleTheme = useCallback(() => {
     setTheme(prev => {
@@ -166,6 +213,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     tableDetail,
     aiEntries, aiPanelOpen,
     setAiEntries, setAiPanelOpen, clearAiEntries,
+    aiSessions, setAiSessions,
+    activeSessionId, setActiveSessionId,
     navToDetail, navToAlerts, alertPreset, setAlertPreset,
     navToTerminal,
     openTableDetail, closeTableDetail,

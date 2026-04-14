@@ -362,7 +362,7 @@ export default function QueryAnalyzer() {
         tab: 'analyzer',
         status,
         output: outputAccRef.current,
-        timestamp: analysisStartRef.current,
+        timestamp: analysisStartRef.current.getTime(),
       }
       setAiEntries((prev) => [entry, ...prev])
     }
@@ -648,7 +648,7 @@ export default function QueryAnalyzer() {
             <div className="space-y-1 max-h-60 overflow-y-auto pr-0.5">
               {aiEntries.map((entry) => {
                 const isSelected = selectedEntry?.id === entry.id
-                const ts = entry.timestamp
+                const ts = new Date(entry.timestamp)
                 const timeStr = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                 const dateStr = ts.toLocaleDateString([], { month: 'short', day: 'numeric' })
                 const today = new Date().toDateString() === ts.toDateString()
@@ -689,7 +689,7 @@ export default function QueryAnalyzer() {
               <Sparkles size={13} className="text-purple-400" />
               <span className="text-xs font-medium text-[var(--fg)] flex-1 truncate">{selectedEntry.label}</span>
               <span className="text-xs text-[var(--dim)]">
-                {selectedEntry.timestamp.toLocaleDateString([], { month: 'short', day: 'numeric' })} {selectedEntry.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                {new Date(selectedEntry.timestamp).toLocaleDateString([], { month: 'short', day: 'numeric' })} {new Date(selectedEntry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
               </span>
               <button onClick={() => setSelectedEntry(null)} className="text-[var(--dim)] hover:text-[var(--fg)] transition-colors ml-1">
                 <X size={13} />

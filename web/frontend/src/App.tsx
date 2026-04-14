@@ -24,7 +24,17 @@ function Layout() {
   const [tick, setTick] = useState(0)
   // Mount QueryAnalyzer once on first visit and keep it alive (preserves session state)
   const [analyzerMounted, setAnalyzerMounted] = useState(view === 'analyzer')
-  const { entries: aiEntries, isOpen: aiOpen, setIsOpen: setAiOpen, analyze: aiAnalyze, clearEntries: clearAiEntries } = useAIAnalysis(selectedInstance)
+  const {
+    sessions: aiSessions,
+    activeSessionId: aiActiveSessionId,
+    setActiveSessionId: setAiActiveSession,
+    isOpen: aiOpen,
+    setIsOpen: setAiOpen,
+    analyze: aiAnalyze,
+    followUp: aiFollowUp,
+    newSession: aiNewSession,
+    deleteSession: aiDeleteSession,
+  } = useAIAnalysis(selectedInstance)
   const aiSpacerHeight = aiOpen ? PANEL_EXPANDED_HEIGHT : PANEL_COLLAPSED_HEIGHT
 
   // Load instances on mount
@@ -93,11 +103,15 @@ function Layout() {
       )}
       <AIAnalysisPanel
         instance={selectedInstance}
-        entries={aiEntries}
         isOpen={aiOpen}
         onToggle={() => setAiOpen(!aiOpen)}
         onAnalyze={aiAnalyze}
-        onClear={clearAiEntries}
+        onFollowUp={aiFollowUp}
+        onNewSession={aiNewSession}
+        onDeleteSession={aiDeleteSession}
+        onSelectSession={setAiActiveSession}
+        sessions={aiSessions}
+        activeSessionId={aiActiveSessionId}
       />
     </div>
   )

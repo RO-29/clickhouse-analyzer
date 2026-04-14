@@ -1018,6 +1018,25 @@ Analyze this time-series chart. Cover:
 Use 🔴 CRITICAL, 🟠 WARNING, 🟡 INFO for severity.
 If the chart looks normal, say so clearly — do not invent issues.
 `)
+
+	case "followup":
+		if history, ok := req.VisibleData["history"]; ok {
+			sb.WriteString("## Previous Analysis\n```json\n" + fmtJSON(history) + "\n```\n\n")
+		}
+		question := ""
+		if q, ok := req.VisibleData["question"].(string); ok {
+			question = q
+		}
+		if question == "" {
+			question = "Please summarize and provide additional insights."
+		}
+		sb.WriteString("## User Question\n" + question + "\n\n")
+		sb.WriteString(`## Instructions
+Answer the user's question above using the previous analysis context.
+Be specific and reference relevant data points from the analysis history.
+Use 🔴 CRITICAL, 🟠 WARNING, 🟡 INFO severity markers where appropriate.
+Keep the response focused and actionable.
+`)
 	}
 
 	return sb.String()
