@@ -439,7 +439,7 @@ export default function Advisor() {
           {queryRegression.data && queryRegression.data.length > 0 && (<>
             <DataTable
               columns={[
-                { key: 'normalized_query_hash', label: 'Hash', format: (v: any) => String(v ?? '').slice(0, 12) },
+                { key: 'normalized_query_hash', label: 'Hash', format: (v: any) => { const s = String(v ?? ''); return s ? `0x${s.slice(0, 8).toUpperCase()}` : '—' } },
                 {
                   key: 'sample_query',
                   label: 'Query',

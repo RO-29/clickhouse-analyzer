@@ -152,7 +152,7 @@ export function Sidebar() {
       </nav>
 
       {/* Footer */}
-      <div className={cn('border-t border-[var(--border)] p-2 space-y-1', collapsed && 'flex flex-col items-center')}>
+      <div className={cn('border-t border-[var(--border)] p-2 space-y-1 shrink-0', collapsed && 'flex flex-col items-center gap-1')}>
         {/* Refresh interval */}
         {!collapsed ? (
           <div className="flex items-center gap-1 px-1">
@@ -172,30 +172,45 @@ export function Sidebar() {
               </button>
             ))}
           </div>
-        ) : (
-          <div className="text-[9px] text-[var(--dim)] text-center">
-            {refreshInterval > 0 ? `${refreshInterval}s` : 'Off'}
-          </div>
-        )}
+        ) : null}
 
-        {/* Theme + collapse */}
-        <div className={cn('flex items-center', collapsed ? 'flex-col gap-1' : 'gap-1 px-1')}>
+        {/* Theme toggle — full-width button when expanded for discoverability */}
+        {!collapsed ? (
           <button
             onClick={toggleTheme}
-            className="p-1.5 rounded-lg text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)] transition-colors"
+            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)] transition-colors"
+          >
+            {theme === 'dark' ? <Sun size={16} className="shrink-0" /> : <Moon size={16} className="shrink-0" />}
+            <span className="text-xs">{theme === 'dark' ? 'Light mode' : 'Dark mode'}</span>
+          </button>
+        ) : (
+          <button
+            onClick={toggleTheme}
+            className="p-2 rounded-lg text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)] transition-colors"
             title={theme === 'dark' ? 'Light mode' : 'Dark mode'}
           >
             {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
           </button>
-          {!collapsed && <div className="flex-1" />}
+        )}
+
+        {/* Collapse / expand button */}
+        {!collapsed ? (
           <button
-            onClick={() => setSidebarCollapsed(!collapsed)}
-            className="p-1.5 rounded-lg text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)] transition-colors"
-            title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            onClick={() => setSidebarCollapsed(true)}
+            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)] transition-colors"
           >
-            {collapsed ? <ChevronsRight size={16} /> : <ChevronsLeft size={16} />}
+            <ChevronsLeft size={16} className="shrink-0" />
+            <span className="text-xs">Collapse sidebar</span>
           </button>
-        </div>
+        ) : (
+          <button
+            onClick={() => setSidebarCollapsed(false)}
+            className="p-2 rounded-lg text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)] transition-colors"
+            title="Expand sidebar"
+          >
+            <ChevronsRight size={16} />
+          </button>
+        )}
       </div>
     </aside>
   )

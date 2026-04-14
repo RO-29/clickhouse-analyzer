@@ -117,12 +117,14 @@ func (s *Server) handleAdvisorQueryRegression(w http.ResponseWriter, r *http.Req
 	defer cancel()
 
 	// Current hour stats.
+	// hex() ensures normalized_query_hash is returned as a string — avoids float64 precision
+	// loss when Go's JSON decoder reads UInt64 values.
 	currentRows, err := client.Query(ctx,
-		"SELECT normalized_query_hash, count() as cnt, "+
+		"SELECT hex(normalized_query_hash) as normalized_query_hash, count() as cnt, "+
 			"avg(query_duration_ms) as avg_ms, max(query_duration_ms) as max_ms, "+
 			"avg(memory_usage) as avg_mem, avg(read_rows) as avg_rows, "+
 			"any(query_kind) as kind, any(user) as user, "+
-			"substring(any(query), 1, 200) as sample_query "+
+			"substring(any(query), 1, 4000) as sample_query "+
 			"FROM system.query_log "+
 			"WHERE type = 'QueryFinish' AND event_time >= now() - INTERVAL 1 HOUR "+
 			"GROUP BY normalized_query_hash HAVING cnt >= 10")
@@ -134,7 +136,7 @@ func (s *Server) handleAdvisorQueryRegression(w http.ResponseWriter, r *http.Req
 
 	// Same hour yesterday.
 	yesterdayRows, err := client.Query(ctx,
-		"SELECT normalized_query_hash, avg(query_duration_ms) as avg_ms, count() as cnt "+
+		"SELECT hex(normalized_query_hash) as normalized_query_hash, avg(query_duration_ms) as avg_ms, count() as cnt "+
 			"FROM system.query_log "+
 			"WHERE type = 'QueryFinish' "+
 			"AND event_time >= now() - INTERVAL 25 HOUR AND event_time <= now() - INTERVAL 24 HOUR "+
@@ -147,7 +149,7 @@ func (s *Server) handleAdvisorQueryRegression(w http.ResponseWriter, r *http.Req
 
 	// Rolling 24h average.
 	rolling24hRows, err := client.Query(ctx,
-		"SELECT normalized_query_hash, avg(query_duration_ms) as avg_ms, count() as cnt "+
+		"SELECT hex(normalized_query_hash) as normalized_query_hash, avg(query_duration_ms) as avg_ms, count() as cnt "+
 			"FROM system.query_log "+
 			"WHERE type = 'QueryFinish' "+
 			"AND event_time >= now() - INTERVAL 24 HOUR AND event_time < now() - INTERVAL 1 HOUR "+
@@ -193,6 +195,12 @@ func (s *Server) handleAdvisorQueryRegression(w http.ResponseWriter, r *http.Req
 		hash := toString(row["normalized_query_hash"])
 		currentAvg := toFloat64(row["avg_ms"])
 
+		// Strip trailing FORMAT clause added by the ClickHouse client (e.g. " FORMAT JSON").
+		sampleQuery := toString(row["sample_query"])
+		if i := strings.LastIndex(strings.ToUpper(sampleQuery), " FORMAT "); i > 0 {
+			sampleQuery = strings.TrimRight(sampleQuery[:i], " \t\n\r")
+		}
+
 		rr := regressionResult{
 			Hash:        hash,
 			Count:       toFloat64(row["cnt"]),
@@ -202,7 +210,7 @@ func (s *Server) handleAdvisorQueryRegression(w http.ResponseWriter, r *http.Req
 			AvgRows:     toFloat64(row["avg_rows"]),
 			Kind:        toString(row["kind"]),
 			User:        toString(row["user"]),
-			SampleQuery: toString(row["sample_query"]),
+			SampleQuery: sampleQuery,
 		}
 
 		if yAvg, ok := yesterdayByHash[hash]; ok && yAvg > 0 {

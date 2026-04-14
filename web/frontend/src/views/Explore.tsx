@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, type ChangeEvent } from 'react'
-import { Sparkles } from 'lucide-react'
+import { Sparkles, X, Copy, Play } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
@@ -56,7 +56,75 @@ interface TabProps {
   instance: string
   from: number
   to: number
+  refreshKey?: number
   onAnalyze: (label: string, data: Record<string, any>, options: AnalyzeOptions) => void
+  onShowQuery: (query: string) => void
+}
+
+/* ── QueryModal ──────────────────────────────────────────────────────────── */
+
+function QueryModal({
+  query,
+  instance,
+  onClose,
+}: {
+  query: string
+  instance: string
+  onClose: () => void
+}) {
+  const { navToTerminal } = useStore()
+
+  const handleCopy = () => navigator.clipboard.writeText(query).catch(() => {})
+  const handleRun = () => { navToTerminal(query, instance); onClose() }
+
+  // Close on Escape
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onClose])
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
+    >
+      <div className="w-full max-w-3xl bg-[var(--card)] border border-[var(--border)] rounded-xl shadow-2xl flex flex-col max-h-[80vh]">
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--border)] shrink-0">
+          <span className="text-sm font-semibold">Full Query</span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleCopy}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[var(--border)] text-xs text-[var(--dim)] hover:text-[var(--fg)] hover:border-[var(--accent)] transition-colors"
+            >
+              <Copy size={12} />
+              Copy
+            </button>
+            <button
+              onClick={handleRun}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--accent)] text-white text-xs font-medium hover:opacity-90 transition-opacity"
+            >
+              <Play size={12} />
+              Run in Terminal
+            </button>
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-lg text-[var(--dim)] hover:text-[var(--fg)] hover:bg-[var(--surface)] transition-colors"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        </div>
+        {/* Query body */}
+        <div className="flex-1 overflow-auto p-4">
+          <pre className="font-mono text-sm text-[var(--fg)] whitespace-pre-wrap break-all leading-relaxed">
+            {query}
+          </pre>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 /* ── small helper: "Analyze Tab" button ─────────────────────────────────── */
@@ -93,7 +161,7 @@ function AnalyzeTabBtn({
 /*  Query Patterns Tab                                                 */
 /* ------------------------------------------------------------------ */
 
-function QueryPatternsTab({ instance, from, to, onAnalyze }: TabProps) {
+function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQuery }: TabProps) {
   const [patterns, setPatterns] = useState<QueryPattern[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -111,7 +179,7 @@ function QueryPatternsTab({ instance, from, to, onAnalyze }: TabProps) {
       .catch(e => { if (!c) setError(e.message) })
       .finally(() => { if (!c) setLoading(false) })
     return () => { c = true }
-  }, [instance, from, to])
+  }, [instance, from, to, refreshKey])
 
   useEffect(() => {
     if (!selectedHash) return
@@ -139,11 +207,18 @@ function QueryPatternsTab({ instance, from, to, onAnalyze }: TabProps) {
     {
       key: 'sample_query',
       label: 'Sample Query',
-      format: (v: any) => (
-        <span className="text-[var(--dim)]" title={String(v ?? '')}>
-          {String(v ?? '').length > 100 ? String(v).slice(0, 100) + '...' : String(v ?? '')}
-        </span>
-      ),
+      format: (v: any) => {
+        const q = String(v ?? '')
+        return (
+          <span
+            className="text-[var(--dim)] hover:text-[var(--accent)] cursor-pointer transition-colors"
+            title="Click to view full query"
+            onClick={(e) => { e.stopPropagation(); if (q) onShowQuery(q) }}
+          >
+            {q.length > 80 ? q.slice(0, 80) + '…' : q}
+          </span>
+        )
+      },
     },
   ]
 
@@ -204,7 +279,7 @@ function QueryPatternsTab({ instance, from, to, onAnalyze }: TabProps) {
 /*  Failures Tab                                                       */
 /* ------------------------------------------------------------------ */
 
-function FailuresTab({ instance, from, to, onAnalyze }: TabProps) {
+function FailuresTab({ instance, from, to, refreshKey, onAnalyze }: TabProps) {
   const [data, setData] = useState<HistoryFailure[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -218,7 +293,7 @@ function FailuresTab({ instance, from, to, onAnalyze }: TabProps) {
       .catch(e => { if (!c) setError(e.message) })
       .finally(() => { if (!c) setLoading(false) })
     return () => { c = true }
-  }, [instance, from, to])
+  }, [instance, from, to, refreshKey])
 
   const byTs = useMemo(() => {
     const map = new Map<string, number>()
@@ -292,7 +367,7 @@ function FailuresTab({ instance, from, to, onAnalyze }: TabProps) {
 /*  Merges & Parts Tab                                                 */
 /* ------------------------------------------------------------------ */
 
-function MergesTab({ instance, from, to, onAnalyze }: TabProps) {
+function MergesTab({ instance, from, to, refreshKey, onAnalyze }: TabProps) {
   const [data, setData] = useState<HistoryMerge[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -306,7 +381,7 @@ function MergesTab({ instance, from, to, onAnalyze }: TabProps) {
       .catch(e => { if (!c) setError(e.message) })
       .finally(() => { if (!c) setLoading(false) })
     return () => { c = true }
-  }, [instance, from, to])
+  }, [instance, from, to, refreshKey])
 
   if (loading) return <LoadingSkeleton />
   if (error) return <ErrorBox message={error} />
@@ -351,7 +426,7 @@ function MergesTab({ instance, from, to, onAnalyze }: TabProps) {
 /*  MV Performance Tab                                                 */
 /* ------------------------------------------------------------------ */
 
-function MVTab({ instance, from, to, onAnalyze }: TabProps) {
+function MVTab({ instance, from, to, refreshKey, onAnalyze }: TabProps) {
   const [data, setData] = useState<Record<string, any>[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -367,7 +442,7 @@ function MVTab({ instance, from, to, onAnalyze }: TabProps) {
       .catch(e => { if (!c) setError(e.message) })
       .finally(() => { if (!c) setLoading(false) })
     return () => { c = true }
-  }, [instance, from, to])
+  }, [instance, from, to, refreshKey])
 
   const aggregated = useMemo(() => {
     const map = new Map<string, { cnt: number; sumAvg: number; maxMax: number; failures: number; n: number }>()
@@ -448,7 +523,7 @@ function MVTab({ instance, from, to, onAnalyze }: TabProps) {
 /*  S3 Latency Tab                                                     */
 /* ------------------------------------------------------------------ */
 
-function S3Tab({ instance, from, to, onAnalyze }: TabProps) {
+function S3Tab({ instance, from, to, refreshKey, onAnalyze, onShowQuery }: TabProps) {
   const [history, setHistory] = useState<HistoryS3[]>([])
   const [stats, setStats] = useState<S3Stats | null>(null)
   const [loading, setLoading] = useState(true)
@@ -463,7 +538,7 @@ function S3Tab({ instance, from, to, onAnalyze }: TabProps) {
       .catch(e => { if (!c) setError(e.message) })
       .finally(() => { if (!c) setLoading(false) })
     return () => { c = true }
-  }, [instance, from, to])
+  }, [instance, from, to, refreshKey])
 
   if (loading) return <LoadingSkeleton />
   if (error) return <ErrorBox message={error} />
@@ -501,7 +576,18 @@ function S3Tab({ instance, from, to, onAnalyze }: TabProps) {
               { key: 'max_latency_ms', label: 'Max ms', format: (v: any) => fmtDuration(Number(v ?? 0)) },
               {
                 key: 'sample_query', label: 'Sample',
-                format: (v: any) => <span className="text-[var(--dim)]" title={String(v ?? '')}>{String(v ?? '').slice(0, 100)}</span>,
+                format: (v: any) => {
+                  const q = String(v ?? '')
+                  return (
+                    <span
+                      className="text-[var(--dim)] hover:text-[var(--accent)] cursor-pointer transition-colors"
+                      title="Click to view full query"
+                      onClick={(e) => { e.stopPropagation(); if (q) onShowQuery(q) }}
+                    >
+                      {q.length > 60 ? q.slice(0, 60) + '…' : q}
+                    </span>
+                  )
+                },
               },
             ]}
             data={stats.latency_by_query}
@@ -539,7 +625,7 @@ function S3Tab({ instance, from, to, onAnalyze }: TabProps) {
 /*  Insert Throughput Tab                                              */
 /* ------------------------------------------------------------------ */
 
-function InsertsTab({ instance, from, to, onAnalyze }: TabProps) {
+function InsertsTab({ instance, from, to, refreshKey, onAnalyze }: TabProps) {
   const [data, setData] = useState<HistoryInsert[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -553,7 +639,7 @@ function InsertsTab({ instance, from, to, onAnalyze }: TabProps) {
       .catch(e => { if (!c) setError(e.message) })
       .finally(() => { if (!c) setLoading(false) })
     return () => { c = true }
-  }, [instance, from, to])
+  }, [instance, from, to, refreshKey])
 
   const byTs = useMemo(() => {
     const map = new Map<string, number>()
@@ -626,7 +712,7 @@ function InsertsTab({ instance, from, to, onAnalyze }: TabProps) {
 /*  System Metrics Tab                                                 */
 /* ------------------------------------------------------------------ */
 
-function SystemMetricsTab({ instance, from, to, onAnalyze }: TabProps) {
+function SystemMetricsTab({ instance, from, to, refreshKey, onAnalyze }: TabProps) {
   const [data, setData] = useState<HistoryAsyncMetric[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -640,7 +726,7 @@ function SystemMetricsTab({ instance, from, to, onAnalyze }: TabProps) {
       .catch(e => { if (!c) setError(e.message) })
       .finally(() => { if (!c) setLoading(false) })
     return () => { c = true }
-  }, [instance, from, to])
+  }, [instance, from, to, refreshKey])
 
   const { memoryData, loadData } = useMemo(() => {
     const allTs = [...new Set(data.map(r => r.ts))].sort()
@@ -710,7 +796,7 @@ function SystemMetricsTab({ instance, from, to, onAnalyze }: TabProps) {
 /*  Disk I/O Tab                                                       */
 /* ------------------------------------------------------------------ */
 
-function DiskIOTab({ instance, from, to, onAnalyze }: TabProps) {
+function DiskIOTab({ instance, from, to, refreshKey, onAnalyze }: TabProps) {
   const [data, setData] = useState<HistoryAsyncMetric[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -724,7 +810,7 @@ function DiskIOTab({ instance, from, to, onAnalyze }: TabProps) {
       .catch(e => { if (!c) setError(e.message) })
       .finally(() => { if (!c) setLoading(false) })
     return () => { c = true }
-  }, [instance, from, to])
+  }, [instance, from, to, refreshKey])
 
   const pivoted = useMemo(() => {
     const allTs = [...new Set(data.map(r => r.ts))].sort()
@@ -793,9 +879,10 @@ function ErrorBox({ message }: { message: string }) {
 /*  Main Explore Component                                             */
 /* ------------------------------------------------------------------ */
 
-export default function Explore() {
+export default function Explore({ refreshKey }: { refreshKey?: number }) {
   const { instances, selectedInstance, setSelectedInstance, setView, from, to } = useStore()
   const [tab, setTab] = useState<Tab>('patterns')
+  const [queryModal, setQueryModal] = useState<string | null>(null)
   const inst = selectedInstance || instances[0] || ''
 
   const { analyze } = useAIAnalysis(inst)
@@ -811,6 +898,8 @@ export default function Explore() {
     },
     [analyze],
   )
+
+  const handleShowQuery = useCallback((query: string) => setQueryModal(query), [])
 
   return (
     <div className="space-y-4">
@@ -860,17 +949,25 @@ export default function Explore() {
         </div>
       ) : (
         <>
-          {tab === 'patterns' && <QueryPatternsTab instance={inst} from={from} to={to} onAnalyze={handleAnalyze} />}
-          {tab === 'failures' && <FailuresTab instance={inst} from={from} to={to} onAnalyze={handleAnalyze} />}
-          {tab === 'merges' && <MergesTab instance={inst} from={from} to={to} onAnalyze={handleAnalyze} />}
-          {tab === 'mvs' && <MVTab instance={inst} from={from} to={to} onAnalyze={handleAnalyze} />}
-          {tab === 's3' && <S3Tab instance={inst} from={from} to={to} onAnalyze={handleAnalyze} />}
-          {tab === 'inserts' && <InsertsTab instance={inst} from={from} to={to} onAnalyze={handleAnalyze} />}
-          {tab === 'metrics' && <SystemMetricsTab instance={inst} from={from} to={to} onAnalyze={handleAnalyze} />}
-          {tab === 'diskio' && <DiskIOTab instance={inst} from={from} to={to} onAnalyze={handleAnalyze} />}
+          {tab === 'patterns' && <QueryPatternsTab instance={inst} from={from} to={to} refreshKey={refreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
+          {tab === 'failures' && <FailuresTab instance={inst} from={from} to={to} refreshKey={refreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
+          {tab === 'merges' && <MergesTab instance={inst} from={from} to={to} refreshKey={refreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
+          {tab === 'mvs' && <MVTab instance={inst} from={from} to={to} refreshKey={refreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
+          {tab === 's3' && <S3Tab instance={inst} from={from} to={to} refreshKey={refreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
+          {tab === 'inserts' && <InsertsTab instance={inst} from={from} to={to} refreshKey={refreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
+          {tab === 'metrics' && <SystemMetricsTab instance={inst} from={from} to={to} refreshKey={refreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
+          {tab === 'diskio' && <DiskIOTab instance={inst} from={from} to={to} refreshKey={refreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
         </>
       )}
 
+      {/* Full-query modal */}
+      {queryModal && (
+        <QueryModal
+          query={queryModal}
+          instance={inst}
+          onClose={() => setQueryModal(null)}
+        />
+      )}
     </div>
   )
 }

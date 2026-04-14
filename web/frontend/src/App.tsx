@@ -50,7 +50,7 @@ function Layout() {
     overview: <Overview refreshKey={tick} />,
     detail: <Detail refreshKey={tick} />,
     alerts: <Alerts refreshKey={tick} />,
-    explore: <Explore key={tick} />,
+    explore: <Explore refreshKey={tick} />,
     compare: <Compare key={tick} />,
     advisor: <Advisor key={tick} />,
     terminal: <Terminal />,
