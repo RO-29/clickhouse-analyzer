@@ -18,13 +18,14 @@ type runCheckRequest struct {
 
 // runCheckResultItem holds the outcome of one (instance, collector) pair.
 type runCheckResultItem struct {
-	Instance    string              `json:"instance"`
-	Collector   string              `json:"collector"`
-	DisplayName string              `json:"display_name"`
-	DurationMs  int64               `json:"duration_ms"`
-	Alerts      []runCheckAlert     `json:"alerts"`
-	Metrics     []runCheckMetric    `json:"metrics"`
-	Error       string              `json:"error"`
+	Instance    string           `json:"instance"`
+	Collector   string           `json:"collector"`
+	DisplayName string           `json:"display_name"`
+	DurationMs  int64            `json:"duration_ms"`
+	Alerts      []runCheckAlert  `json:"alerts"`
+	Metrics     []runCheckMetric `json:"metrics"`
+	Queries     []string         `json:"queries"`
+	Error       string           `json:"error"`
 }
 
 type runCheckAlert struct {
@@ -112,12 +113,17 @@ func (s *Server) handleRunCheck(w http.ResponseWriter, r *http.Request) {
 			defer wg.Done()
 
 			meta := metaByName[wi.collectorName]
+			queries := meta.Queries
+			if queries == nil {
+				queries = []string{}
+			}
 			result := runCheckResultItem{
 				Instance:    wi.instanceName,
 				Collector:   wi.collectorName,
 				DisplayName: meta.DisplayName,
 				Alerts:      []runCheckAlert{},
 				Metrics:     []runCheckMetric{},
+				Queries:     queries,
 			}
 
 			client := s.manager.Get(wi.instanceName)

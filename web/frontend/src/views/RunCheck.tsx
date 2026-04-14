@@ -1,20 +1,13 @@
-import { useState, useEffect } from 'react'
-import { PlayCircle, ChevronDown, ChevronRight, AlertTriangle, CheckCircle2, XCircle, BarChart2, Clock, Loader2 } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import {
+  PlayCircle, ChevronDown, ChevronRight, AlertTriangle, CheckCircle2,
+  XCircle, BarChart2, Clock, Loader2, Code2, Database,
+} from 'lucide-react'
 import { api } from '../lib/api'
-import { useStore } from '../hooks/useStore'
 import { cn } from '../lib/utils'
 import type { CollectorMeta, RunCheckResult, RunCheckAlert } from '../types/api'
 
 // ── helpers ────────────────────────────────────────────────────────────────────
-
-function severityColor(s: string) {
-  switch (s) {
-    case 'critical': return 'text-red-500'
-    case 'warn':     return 'text-yellow-500'
-    case 'info':     return 'text-blue-400'
-    default:         return 'text-[var(--dim)]'
-  }
-}
 
 function severityBg(s: string) {
   switch (s) {
@@ -25,7 +18,7 @@ function severityBg(s: string) {
   }
 }
 
-function alertSummary(alerts: RunCheckAlert[]): { critical: number; warn: number; info: number } {
+function alertSummary(alerts: RunCheckAlert[]) {
   return alerts.reduce((acc, a) => {
     if (a.severity === 'critical') acc.critical++
     else if (a.severity === 'warn') acc.warn++
@@ -34,7 +27,6 @@ function alertSummary(alerts: RunCheckAlert[]): { critical: number; warn: number
   }, { critical: 0, warn: 0, info: 0 })
 }
 
-// Group collectors by category
 function groupByCategory(metas: CollectorMeta[]): Record<string, CollectorMeta[]> {
   return metas.reduce((acc, m) => {
     ;(acc[m.category] ??= []).push(m)
@@ -43,65 +35,56 @@ function groupByCategory(metas: CollectorMeta[]): Record<string, CollectorMeta[]
 }
 
 const CATEGORY_LABELS: Record<string, string> = {
-  system:      'System',
-  queries:     'Queries',
-  tables:      'Tables',
-  storage:     'Storage',
-  inserts:     'Inserts',
-  mvs:         'Materialized Views',
-  dictionaries:'Dictionaries',
-  replication: 'Replication',
-  errors:      'Errors',
-  background:  'Background Pool',
-  cache:       'Cache',
-  latency:     'Latency',
-  freshness:   'Freshness',
-  schema:      'Schema',
-  projections: 'Projections',
+  system:       'System',
+  queries:      'Queries',
+  tables:       'Tables',
+  storage:      'Storage',
+  inserts:      'Inserts',
+  mvs:          'Materialized Views',
+  dictionaries: 'Dictionaries',
+  replication:  'Replication',
+  errors:       'Errors',
 }
 
-// ── Result row ────────────────────────────────────────────────────────────────
+// ── Result card (always expanded) ─────────────────────────────────────────────
 
-function ResultRow({ result }: { result: RunCheckResult }) {
-  const [expanded, setExpanded] = useState(false)
+function ResultCard({ result }: { result: RunCheckResult }) {
+  const [showQueries, setShowQueries] = useState(false)
   const [expandedAlert, setExpandedAlert] = useState<number | null>(null)
 
   const summary = alertSummary(result.alerts)
   const hasAlerts = result.alerts.length > 0
   const hasError = !!result.error
+  const hasMetrics = result.metrics.length > 0
+
+  const borderColor = hasError
+    ? 'border-red-500/40'
+    : summary.critical > 0
+      ? 'border-red-500/30'
+      : summary.warn > 0
+        ? 'border-yellow-500/30'
+        : 'border-green-500/20'
 
   return (
-    <div className={cn('border border-[var(--border)] rounded-lg overflow-hidden',
-      hasError ? 'border-red-500/30' : hasAlerts ? 'border-yellow-500/20' : '')}>
-      {/* Header row */}
-      <button
-        onClick={() => setExpanded(e => !e)}
-        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-[var(--surface)] transition-colors text-left"
-      >
-        <span className="text-[var(--dim)]">
-          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+    <div className={cn('bg-[var(--card)] border rounded-xl overflow-hidden', borderColor)}>
+      {/* Header */}
+      <div className="flex items-center gap-3 px-4 py-3 border-b border-[var(--border)] bg-[var(--surface)]/40">
+        {hasError ? (
+          <XCircle size={15} className="text-red-400 shrink-0" />
+        ) : hasAlerts ? (
+          summary.critical > 0
+            ? <AlertTriangle size={15} className="text-red-400 shrink-0" />
+            : <AlertTriangle size={15} className="text-yellow-400 shrink-0" />
+        ) : (
+          <CheckCircle2 size={15} className="text-green-500 shrink-0" />
+        )}
+
+        <span className="font-mono text-xs bg-[var(--accent)]/10 text-[var(--accent)] px-2 py-0.5 rounded border border-[var(--accent)]/20">
+          {result.instance}
         </span>
+        <span className="text-sm font-semibold text-[var(--text)]">{result.display_name}</span>
 
-        {/* Instance + collector */}
-        <span className="font-mono text-xs bg-[var(--surface)] px-2 py-0.5 rounded text-[var(--accent)]">{result.instance}</span>
-        <span className="text-sm font-medium text-[var(--text)]">{result.display_name}</span>
-
-        <span className="ml-auto flex items-center gap-2 shrink-0">
-          {/* Duration */}
-          <span className="flex items-center gap-1 text-xs text-[var(--dim)]">
-            <Clock size={11} />
-            {result.duration_ms}ms
-          </span>
-
-          {/* Metrics count */}
-          {result.metrics.length > 0 && (
-            <span className="flex items-center gap-1 text-xs text-[var(--dim)]">
-              <BarChart2 size={11} />
-              {result.metrics.length} metrics
-            </span>
-          )}
-
-          {/* Alert badges */}
+        <div className="ml-auto flex items-center gap-2 shrink-0">
           {summary.critical > 0 && (
             <span className={cn('text-xs px-2 py-0.5 rounded-full border font-medium', severityBg('critical'))}>
               {summary.critical} critical
@@ -112,89 +95,135 @@ function ResultRow({ result }: { result: RunCheckResult }) {
               {summary.warn} warn
             </span>
           )}
-          {summary.info > 0 && (
-            <span className={cn('text-xs px-2 py-0.5 rounded-full border font-medium', severityBg('info'))}>
-              {summary.info} info
-            </span>
+          {!hasError && !hasAlerts && (
+            <span className="text-xs text-green-500 font-medium">clean</span>
           )}
-
-          {/* Status icon */}
-          {hasError ? (
-            <XCircle size={15} className="text-red-400" />
-          ) : hasAlerts ? (
-            <AlertTriangle size={15} className="text-yellow-400" />
-          ) : (
-            <CheckCircle2 size={15} className="text-green-500" />
-          )}
-        </span>
-      </button>
-
-      {/* Expanded detail */}
-      {expanded && (
-        <div className="border-t border-[var(--border)] px-4 py-3 space-y-4 bg-[var(--bg)]">
-          {/* Error */}
-          {hasError && (
-            <div className="flex items-start gap-2 text-sm text-red-400 bg-red-500/10 rounded-lg p-3">
-              <XCircle size={14} className="shrink-0 mt-0.5" />
-              <span className="font-mono text-xs">{result.error}</span>
-            </div>
-          )}
-
-          {/* Alerts */}
-          {result.alerts.length > 0 && (
-            <div className="space-y-2">
-              <p className="text-xs font-semibold uppercase tracking-wider text-[var(--dim)]">Alerts</p>
-              {result.alerts.map((a, i) => (
-                <div key={i} className={cn('rounded-lg border overflow-hidden', severityBg(a.severity))}>
-                  <button
-                    onClick={() => setExpandedAlert(expandedAlert === i ? null : i)}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-left hover:opacity-80 transition-opacity"
-                  >
-                    <span className={cn('text-xs font-bold uppercase', severityColor(a.severity))}>{a.severity}</span>
-                    <span className="text-xs font-medium flex-1">{a.title}</span>
-                    <span className="text-[10px] text-[var(--dim)]">{a.category}</span>
-                    {expandedAlert === i ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                  </button>
-                  {expandedAlert === i && (
-                    <div className="px-3 pb-3">
-                      <pre className="text-xs whitespace-pre-wrap text-[var(--text)] opacity-80 font-mono leading-relaxed">{a.message}</pre>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* No alerts */}
-          {!hasError && result.alerts.length === 0 && (
-            <div className="flex items-center gap-2 text-sm text-green-500">
-              <CheckCircle2 size={14} />
-              <span>No alerts — all checks passed</span>
-            </div>
-          )}
-
-          {/* Metrics */}
-          {result.metrics.length > 0 && (
-            <div className="space-y-1">
-              <p className="text-xs font-semibold uppercase tracking-wider text-[var(--dim)]">Metrics ({result.metrics.length})</p>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-1 max-h-48 overflow-y-auto">
-                {result.metrics.map((m, i) => {
-                  const labelStr = Object.entries(m.labels ?? {}).map(([k, v]) => `${k}=${v}`).join(', ')
-                  return (
-                    <div key={i} className="flex items-center justify-between bg-[var(--surface)] rounded px-2 py-1 text-xs">
-                      <span className="text-[var(--dim)] truncate flex-1 mr-2">
-                        {m.name}
-                        {labelStr && <span className="text-[var(--dim)] opacity-60 ml-1">{'{' + labelStr + '}'}</span>}
-                      </span>
-                      <span className="font-mono font-medium text-[var(--text)] shrink-0">{m.value.toFixed(2)}</span>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-          )}
+          <span className="flex items-center gap-1 text-xs text-[var(--dim)]">
+            <Clock size={10} />
+            {result.duration_ms}ms
+          </span>
         </div>
-      )}
+      </div>
+
+      <div className="p-4 space-y-4">
+        {/* Error */}
+        {hasError && (
+          <div className="flex items-start gap-2 text-sm text-red-400 bg-red-500/10 rounded-lg p-3 border border-red-500/20">
+            <XCircle size={14} className="shrink-0 mt-0.5" />
+            <code className="text-xs font-mono">{result.error}</code>
+          </div>
+        )}
+
+        {/* Alerts */}
+        {hasAlerts && (
+          <div className="space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-wider text-[var(--dim)] flex items-center gap-1.5">
+              <AlertTriangle size={11} /> Alerts ({result.alerts.length})
+            </p>
+            {result.alerts.map((a, i) => (
+              <div key={i} className={cn('rounded-lg border overflow-hidden', severityBg(a.severity))}>
+                <button
+                  onClick={() => setExpandedAlert(expandedAlert === i ? null : i)}
+                  className="w-full flex items-center gap-2 px-3 py-2.5 text-left hover:opacity-80 transition-opacity"
+                >
+                  <span className="text-[10px] font-bold uppercase opacity-70 w-12 shrink-0">{a.severity}</span>
+                  <span className="text-xs font-medium flex-1 text-left">{a.title}</span>
+                  <span className="text-[10px] opacity-60 shrink-0">{a.category}</span>
+                  <span className="shrink-0 opacity-60">
+                    {expandedAlert === i ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  </span>
+                </button>
+                {expandedAlert === i && (
+                  <div className="px-3 pb-3 border-t border-current/10">
+                    <pre className="text-xs whitespace-pre-wrap font-mono leading-relaxed opacity-90 mt-2">{a.message}</pre>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Clean state */}
+        {!hasError && !hasAlerts && (
+          <div className="flex items-center gap-2 text-sm text-green-500 bg-green-500/10 rounded-lg px-3 py-2.5 border border-green-500/20">
+            <CheckCircle2 size={14} />
+            <span>All checks passed — no issues detected</span>
+          </div>
+        )}
+
+        {/* Metrics table */}
+        {hasMetrics && (
+          <div className="space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-wider text-[var(--dim)] flex items-center gap-1.5">
+              <BarChart2 size={11} /> Metrics ({result.metrics.length})
+            </p>
+            <div className="rounded-lg border border-[var(--border)] overflow-hidden">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="bg-[var(--surface)] border-b border-[var(--border)]">
+                    <th className="text-left px-3 py-2 text-[var(--dim)] font-medium">Metric</th>
+                    <th className="text-left px-3 py-2 text-[var(--dim)] font-medium">Labels</th>
+                    <th className="text-right px-3 py-2 text-[var(--dim)] font-medium">Value</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {result.metrics.map((m, i) => {
+                    const labelPairs = Object.entries(m.labels ?? {})
+                    return (
+                      <tr key={i} className={cn('border-b border-[var(--border)] last:border-0', i % 2 === 0 ? '' : 'bg-[var(--surface)]/30')}>
+                        <td className="px-3 py-2 font-mono text-[var(--text)] max-w-[220px]">
+                          <span className="block truncate" title={m.name}>{m.name}</span>
+                        </td>
+                        <td className="px-3 py-2 text-[var(--dim)]">
+                          {labelPairs.length > 0 ? (
+                            <span className="flex flex-wrap gap-1">
+                              {labelPairs.map(([k, v]) => (
+                                <span key={k} className="bg-[var(--surface)] rounded px-1.5 py-0.5 text-[10px] font-mono">
+                                  {k}=<span className="text-[var(--accent)]">{v}</span>
+                                </span>
+                              ))}
+                            </span>
+                          ) : (
+                            <span className="text-[var(--dim)] opacity-40">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono font-semibold text-[var(--text)]">
+                          {Number.isInteger(m.value) ? m.value : m.value.toFixed(3)}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* SQL Queries */}
+        {result.queries && result.queries.length > 0 && (
+          <div className="space-y-2">
+            <button
+              onClick={() => setShowQueries(q => !q)}
+              className="flex items-center gap-1.5 text-xs text-[var(--dim)] hover:text-[var(--text)] transition-colors"
+            >
+              <Code2 size={11} />
+              <span className="font-semibold uppercase tracking-wider">
+                SQL Queries ({result.queries.length})
+              </span>
+              {showQueries ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+            </button>
+            {showQueries && (
+              <div className="space-y-2">
+                {result.queries.map((q, i) => (
+                  <pre key={i} className="text-[11px] font-mono bg-[var(--surface)] rounded-lg p-3 overflow-x-auto text-[var(--text)] leading-relaxed border border-[var(--border)] whitespace-pre">
+                    {q.trim()}
+                  </pre>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
@@ -202,7 +231,6 @@ function ResultRow({ result }: { result: RunCheckResult }) {
 // ── Main view ─────────────────────────────────────────────────────────────────
 
 export default function RunCheck() {
-  const { instances } = useStore() as any
   const [collectorMetas, setCollectorMetas] = useState<CollectorMeta[]>([])
   const [selectedCollectors, setSelectedCollectors] = useState<Set<string>>(new Set())
   const [selectedInstances, setSelectedInstances] = useState<Set<string>>(new Set())
@@ -210,8 +238,8 @@ export default function RunCheck() {
   const [running, setRunning] = useState(false)
   const [error, setError] = useState('')
   const [instanceList, setInstanceList] = useState<string[]>([])
+  const resultsRef = useRef<HTMLDivElement>(null)
 
-  // Load collector metadata + instances
   useEffect(() => {
     api.collectors().then(setCollectorMetas).catch(() => {})
     api.overview().then(data => setInstanceList(data.map(d => d.name))).catch(() => {})
@@ -248,7 +276,11 @@ export default function RunCheck() {
         Array.from(selectedCollectors),
         Array.from(selectedInstances),
       )
-      setResults(resp.results)
+      setResults(resp.results ?? [])
+      // Scroll to results after a short tick so DOM has updated
+      setTimeout(() => {
+        resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }, 50)
     } catch (e: any) {
       setError(e.message ?? 'Run failed')
     } finally {
@@ -259,18 +291,18 @@ export default function RunCheck() {
   const grouped = groupByCategory(collectorMetas)
   const categories = Object.keys(grouped).sort()
 
-  const resultSummary = results.length > 0 ? {
-    total: results.length,
-    alerts: results.reduce((n, r) => n + r.alerts.length, 0),
-    errors: results.filter(r => !!r.error).length,
-    clean: results.filter(r => !r.error && r.alerts.length === 0).length,
-  } : null
-
-  // Sort results: errors first, then by alert count desc, then clean
+  // Sort: errors first, then by alert count desc, then clean
   const sortedResults = [...results].sort((a, b) => {
     if (!!a.error !== !!b.error) return a.error ? -1 : 1
     return b.alerts.length - a.alerts.length
   })
+
+  const resultSummary = results.length > 0 ? {
+    total: results.length,
+    alerts: results.reduce((n, r) => n + r.alerts.length, 0),
+    errors: results.filter(r => !!r.error).length,
+    clean:  results.filter(r => !r.error && r.alerts.length === 0).length,
+  } : null
 
   return (
     <div className="space-y-6">
@@ -283,14 +315,16 @@ export default function RunCheck() {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Collector picker */}
-        <div className="lg:col-span-2 bg-[var(--card)] border border-[var(--border)] rounded-xl p-4 space-y-3">
+        <div className="lg:col-span-2 bg-[var(--card)] border border-[var(--border)] rounded-xl p-4 space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold text-[var(--text)]">Select Checks</h2>
-            <div className="flex gap-2 text-xs">
+            <div className="flex gap-2 text-xs items-center">
               <button onClick={selectAllCollectors} className="text-[var(--accent)] hover:opacity-70">All</button>
               <span className="text-[var(--border)]">·</span>
               <button onClick={clearCollectors} className="text-[var(--dim)] hover:opacity-70">None</button>
-              <span className="text-[var(--dim)] ml-1">({selectedCollectors.size} selected)</span>
+              {selectedCollectors.size > 0 && (
+                <span className="ml-1 text-[var(--dim)]">({selectedCollectors.size} selected)</span>
+              )}
             </div>
           </div>
 
@@ -322,7 +356,7 @@ export default function RunCheck() {
                         </span>
                         <span className="flex-1 min-w-0">
                           <span className="block text-xs font-medium text-[var(--text)]">{m.display_name}</span>
-                          <span className="block text-[11px] text-[var(--dim)] leading-tight mt-0.5 truncate">{m.description}</span>
+                          <span className="block text-[11px] text-[var(--dim)] leading-tight mt-0.5">{m.description}</span>
                         </span>
                       </button>
                     )
@@ -337,7 +371,9 @@ export default function RunCheck() {
         <div className="space-y-4">
           <div className="bg-[var(--card)] border border-[var(--border)] rounded-xl p-4 space-y-3">
             <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-[var(--text)]">Instances</h2>
+              <h2 className="text-sm font-semibold text-[var(--text)] flex items-center gap-1.5">
+                <Database size={13} /> Instances
+              </h2>
               <div className="flex gap-2 text-xs">
                 <button onClick={selectAllInstances} className="text-[var(--accent)] hover:opacity-70">All</button>
                 <span className="text-[var(--border)]">·</span>
@@ -376,7 +412,6 @@ export default function RunCheck() {
             )}
           </div>
 
-          {/* Run button */}
           <button
             onClick={handleRun}
             disabled={running || selectedCollectors.size === 0 || selectedInstances.size === 0}
@@ -412,12 +447,12 @@ export default function RunCheck() {
 
       {/* Results */}
       {results.length > 0 && (
-        <div className="space-y-3">
+        <div className="space-y-4" ref={resultsRef}>
           {/* Summary bar */}
-          {resultSummary && (
-            <div className="flex items-center gap-4 flex-wrap">
-              <h2 className="text-sm font-semibold text-[var(--text)]">Results</h2>
-              <div className="flex items-center gap-3 text-xs ml-auto flex-wrap">
+          <div className="flex items-center gap-3 flex-wrap">
+            <h2 className="text-sm font-semibold text-[var(--text)]">Results</h2>
+            {resultSummary && (
+              <div className="flex items-center gap-3 text-xs flex-wrap">
                 <span className="text-[var(--dim)]">{resultSummary.total} runs</span>
                 {resultSummary.errors > 0 && (
                   <span className={cn('px-2 py-0.5 rounded-full border font-medium', severityBg('critical'))}>
@@ -435,12 +470,12 @@ export default function RunCheck() {
                   </span>
                 )}
               </div>
-            </div>
-          )}
+            )}
+          </div>
 
-          <div className="space-y-2">
+          <div className="space-y-4">
             {sortedResults.map((r, i) => (
-              <ResultRow key={`${r.instance}-${r.collector}-${i}`} result={r} />
+              <ResultCard key={`${r.instance}-${r.collector}-${i}`} result={r} />
             ))}
           </div>
         </div>

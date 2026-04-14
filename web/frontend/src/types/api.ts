@@ -365,6 +365,7 @@ export interface RunCheckResult {
   duration_ms: number
   alerts: RunCheckAlert[]
   metrics: RunCheckMetric[]
+  queries: string[]
   error: string
 }
 
