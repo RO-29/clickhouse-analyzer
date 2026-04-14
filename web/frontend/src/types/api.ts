@@ -28,6 +28,9 @@ export interface Instance {
   key_metrics: Record<string, number>
   area_status?: AreaStatus[]
   top_alerts?: TopAlert[]
+  in_maintenance?: boolean
+  maintenance_until?: string   // ISO timestamp, present when in_maintenance=true
+  maintenance_reason?: string
 }
 
 export interface MetricPoint { ts: number; value: number }

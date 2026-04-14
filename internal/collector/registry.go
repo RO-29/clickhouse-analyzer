@@ -1,5 +1,11 @@
 package collector
 
+import (
+	"time"
+
+	"github.com/rohitjain/ch-analyzer/internal/config"
+)
+
 // CollectorMeta describes a collector for the UI.
 type CollectorMeta struct {
 	Name        string   `json:"name"`
@@ -247,6 +253,68 @@ WHERE database NOT IN ('system','information_schema','INFORMATION_SCHEMA')
 LIMIT 100`,
 			},
 		},
+	}
+}
+
+// BuildCollectorFromConfig creates a Collector instance using the configured
+// thresholds from cfg. This is what Run Check uses so results match the
+// same sensitivity as the background polling loop.
+func BuildCollectorFromConfig(name string, cfg *config.Config) (Collector, bool) {
+	switch name {
+	case "system":
+		return &SystemCollector{
+			MemoryThresholds: cfg.Thresholds.Memory,
+			CPUThresholds:    cfg.Thresholds.CPU,
+		}, true
+	case "queries":
+		return &QueryCollector{
+			Thresholds: cfg.Thresholds.Queries,
+		}, true
+	case "tables":
+		return &TableCollector{
+			PartsThresholds:     cfg.Thresholds.Parts,
+			MergesThresholds:    cfg.Thresholds.Merges,
+			MutationsThresholds: cfg.Thresholds.Mutations,
+		}, true
+	case "storage":
+		return &StorageCollector{
+			DiskThresholds: cfg.Thresholds.Disk,
+			S3Thresholds:   cfg.Thresholds.S3,
+		}, true
+	case "inserts":
+		return &InsertCollector{
+			Thresholds:      cfg.Thresholds.Inserts,
+			PollingInterval: 60 * time.Second,
+		}, true
+	case "mvs":
+		return &MVCollector{
+			Thresholds: cfg.Thresholds.MV,
+		}, true
+	case "dictionaries":
+		return &DictionaryCollector{
+			Thresholds: cfg.Thresholds.Dictionaries,
+		}, true
+	case "replication":
+		return &ReplicationCollector{
+			Thresholds: cfg.Thresholds.Replication,
+		}, true
+	// These collectors have hardcoded thresholds — no config needed.
+	case "errors":
+		return &ErrorsCollector{}, true
+	case "background_pool":
+		return &BackgroundPoolCollector{}, true
+	case "cache_health":
+		return &CacheHealthCollector{}, true
+	case "query_latency":
+		return &QueryLatencyCollector{}, true
+	case "freshness":
+		return &FreshnessCollector{}, true
+	case "schema_drift":
+		return &SchemaDriftCollector{}, true
+	case "projections":
+		return &ProjectionCollector{}, true
+	default:
+		return nil, false
 	}
 }
 

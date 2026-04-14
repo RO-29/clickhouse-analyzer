@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
-import { Bell, BellOff, BookOpen, Brain, ChevronDown, ChevronLeft, ChevronRight, Clock, RefreshCw, Sparkles, Table2, Trash2 } from 'lucide-react'
+import { Bell, BellOff, BookOpen, Brain, ChevronDown, ChevronLeft, ChevronRight, Clock, RefreshCw, Sparkles, Table2, Trash2, Wrench } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
@@ -992,8 +992,31 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
     )
   }
 
+  const maintInstances = cachedInstances.filter((inst: any) => inst.in_maintenance)
+
   return (
     <div className="space-y-6">
+      {/* ---- Maintenance banners ---- */}
+      {maintInstances.length > 0 && (
+        <div className="space-y-2">
+          {maintInstances.map((inst: any) => {
+            const until = inst.maintenance_until
+              ? new Date(inst.maintenance_until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+              : null
+            return (
+              <div key={inst.name} className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-orange-500/30 bg-orange-500/10 text-sm text-orange-400">
+                <Wrench size={14} className="shrink-0" />
+                <span className="font-medium font-mono">{inst.name}</span>
+                <span className="text-orange-400/70">is in maintenance — alerts suppressed</span>
+                {inst.maintenance_reason && (
+                  <span className="text-orange-400/60 italic">· {inst.maintenance_reason}</span>
+                )}
+                {until && <span className="ml-auto text-orange-400/70 text-xs shrink-0">until {until}</span>}
+              </div>
+            )
+          })}
+        </div>
+      )}
       {/* ---- Stat cards + actions ---- */}
       <div className="flex items-start gap-4">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 flex-1">

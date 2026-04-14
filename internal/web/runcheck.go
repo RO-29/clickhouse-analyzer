@@ -128,7 +128,7 @@ func (s *Server) handleRunCheck(w http.ResponseWriter, r *http.Request) {
 
 			client := s.manager.Get(wi.instanceName)
 
-			coll, _ := collector.BuildCollector(wi.collectorName)
+			coll, _ := collector.BuildCollectorFromConfig(wi.collectorName, s.cfg)
 
 			ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 			defer cancel()
@@ -172,4 +172,20 @@ func (s *Server) handleRunCheck(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"results": results,
 	})
+}
+
+// handleForcePoll handles POST /api/force-poll.
+// Signals the main polling loop to run an immediate collection cycle.
+func (s *Server) handleForcePoll(w http.ResponseWriter, r *http.Request) {
+	if s.forcePollCh == nil {
+		writeErr(w, http.StatusServiceUnavailable, "force poll not configured")
+		return
+	}
+	select {
+	case s.forcePollCh <- struct{}{}:
+		writeJSON(w, http.StatusOK, map[string]string{"status": "triggered"})
+	default:
+		// Channel already has a pending poll — that's fine.
+		writeJSON(w, http.StatusOK, map[string]string{"status": "already_queued"})
+	}
 }

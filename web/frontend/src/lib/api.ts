@@ -150,4 +150,5 @@ export const api = {
   collectors: () => get<CollectorMeta[]>('/api/collectors'),
   runCheck: (collectors: string[], instances: string[]) =>
     post<RunCheckResponse>('/api/run-check', { collectors, instances }),
+  forcePoll: () => post<{ status: string }>('/api/force-poll', {}),
 }

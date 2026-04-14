@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { ArrowLeft, ChevronRight, RefreshCw, Sparkles } from 'lucide-react'
+import { ArrowLeft, ChevronRight, RefreshCw, Sparkles, Wrench } from 'lucide-react'
 import { Bar } from 'react-chartjs-2'
 import {
   Chart as ChartJS,
@@ -25,7 +25,7 @@ ChartJS.register(CategoryScale, LinearScale, BarElement, ChartTooltip)
 /*  Detail view                                                       */
 /* ------------------------------------------------------------------ */
 export default function Detail({ refreshKey }: { refreshKey?: number }) {
-  const { instance, setView, setInstance, customFrom, customTo } = useStore()
+  const { instance, setView, setInstance, customFrom, customTo, instances: cachedInstances } = useStore() as any
   const { analyze } = useAIAnalysis(instance ?? '')
   const handleAnalyze = useCallback((data: Record<string, any>) => {
     analyze('Instance Detail', data, { contextType: 'tab', tab: 'detail' })
@@ -312,8 +312,26 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
     )
   }
 
+  const maintInfo = (cachedInstances ?? []).find((i: any) => i.name === instance && i.in_maintenance)
+  const maintUntil = maintInfo?.maintenance_until
+    ? new Date(maintInfo.maintenance_until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : null
+
   return (
     <div className="space-y-6">
+      {/* ---- Maintenance banner ---- */}
+      {maintInfo && (
+        <div className="flex items-center gap-2 px-4 py-3 rounded-xl border border-orange-500/30 bg-orange-500/10 text-sm text-orange-400">
+          <Wrench size={15} className="shrink-0" />
+          <div className="flex-1">
+            <span className="font-semibold">Maintenance window active</span>
+            {maintInfo.maintenance_reason && (
+              <span className="text-orange-400/70 ml-2">— {maintInfo.maintenance_reason}</span>
+            )}
+          </div>
+          {maintUntil && <span className="text-orange-400/70 text-xs shrink-0">Alerts suppressed until {maintUntil}</span>}
+        </div>
+      )}
       {/* ---- Header ---- */}
       <div className="flex items-center gap-3">
         <button

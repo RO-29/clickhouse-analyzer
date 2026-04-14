@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import {
   PlayCircle, ChevronDown, ChevronRight, AlertTriangle, CheckCircle2,
-  XCircle, BarChart2, Clock, Loader2, Code2, Database,
+  XCircle, BarChart2, Clock, Loader2, Code2, Database, Info, RefreshCw,
 } from 'lucide-react'
 import { api } from '../lib/api'
 import { cn } from '../lib/utils'
@@ -238,6 +238,8 @@ export default function RunCheck() {
   const [running, setRunning] = useState(false)
   const [error, setError] = useState('')
   const [instanceList, setInstanceList] = useState<string[]>([])
+  const [forcingPoll, setForcingPoll] = useState(false)
+  const [forcePollStatus, setForcePollStatus] = useState('')
   const resultsRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -265,6 +267,20 @@ export default function RunCheck() {
   const clearCollectors = () => setSelectedCollectors(new Set())
   const selectAllInstances = () => setSelectedInstances(new Set(instanceList))
   const clearInstances = () => setSelectedInstances(new Set())
+
+  const handleForcePoll = async () => {
+    setForcingPoll(true)
+    setForcePollStatus('')
+    try {
+      const resp = await api.forcePoll()
+      setForcePollStatus(resp.status === 'already_queued' ? 'Already queued — poll running soon' : 'Poll triggered — check Alerts in a few seconds')
+    } catch {
+      setForcePollStatus('Failed to trigger poll')
+    } finally {
+      setForcingPoll(false)
+      setTimeout(() => setForcePollStatus(''), 5000)
+    }
+  }
 
   const handleRun = async () => {
     if (selectedCollectors.size === 0 || selectedInstances.size === 0) return
@@ -309,8 +325,21 @@ export default function RunCheck() {
       <div>
         <h1 className="text-xl font-semibold text-[var(--text)]">Run Checks</h1>
         <p className="text-sm text-[var(--dim)] mt-1">
-          Pick any collector type and run it on-demand against one or more instances. Results show immediately — no waiting for the next poll cycle.
+          Run any collector on-demand against specific instances and see results immediately.
         </p>
+      </div>
+
+      {/* Diagnostic-only disclaimer */}
+      <div className="flex items-start gap-3 px-4 py-3 rounded-xl border border-blue-500/25 bg-blue-500/8 text-sm text-blue-400">
+        <Info size={15} className="shrink-0 mt-0.5" />
+        <div className="space-y-1">
+          <p className="font-medium">Diagnostic tool — results are not stored</p>
+          <p className="text-blue-400/70 text-xs leading-relaxed">
+            Run Check shows what collectors find <em>right now</em> but does <strong>not</strong> write to the database, update the Alerts tab, or send Slack/PagerDuty notifications.
+            Those only come from the background polling loop.
+            If a condition you see here is real and persists, it will automatically appear in Alerts after the next poll cycle.
+          </p>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -448,7 +477,28 @@ export default function RunCheck() {
       {/* Results */}
       {results.length > 0 && (
         <div className="space-y-4" ref={resultsRef}>
-          {/* Summary bar */}
+          {/* Force Poll CTA */}
+          {results.some(r => r.alerts.length > 0) && (
+            <div className="flex items-center gap-3 px-4 py-3 rounded-xl border border-[var(--accent)]/25 bg-[var(--accent)]/8">
+              <Info size={14} className="text-[var(--accent)] shrink-0" />
+              <p className="text-sm text-[var(--dim)] flex-1">
+                Alerts found above use your <strong className="text-[var(--text)]">real configured thresholds</strong>. To push them into the Alerts tab and Slack, trigger an immediate background poll:
+              </p>
+              <button
+                onClick={handleForcePoll}
+                disabled={forcingPoll}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--accent)] text-white text-xs font-semibold hover:opacity-90 transition-all shrink-0 disabled:opacity-50"
+              >
+                <RefreshCw size={12} className={forcingPoll ? 'animate-spin' : ''} />
+                {forcingPoll ? 'Polling…' : 'Force Poll Now'}
+              </button>
+            </div>
+          )}
+          {forcePollStatus && (
+            <p className="text-xs text-green-400 font-medium">{forcePollStatus}</p>
+          )}
+
+        {/* Summary bar */}
           <div className="flex items-center gap-3 flex-wrap">
             <h2 className="text-sm font-semibold text-[var(--text)]">Results</h2>
             {resultSummary && (

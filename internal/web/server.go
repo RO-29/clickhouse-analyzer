@@ -27,18 +27,19 @@ var staticFS embed.FS
 
 // Server serves the web dashboard and REST API.
 type Server struct {
-	cfg          *config.Config
-	store        *store.Store
-	analyzer     *analyzer.Analyzer
-	manager      *chclient.Manager
-	addr         string
-	configPath   string // path to ch-analyzer.yaml, passed to MCP subprocess
-	srv          *http.Server
-	logs         *LogBuffer
-	queryHistory *QueryHistory
-	maintenance  *alerter.MaintenanceStore
-	startTime    time.Time
-	version      string
+	cfg           *config.Config
+	store         *store.Store
+	analyzer      *analyzer.Analyzer
+	manager       *chclient.Manager
+	addr          string
+	configPath    string // path to ch-analyzer.yaml, passed to MCP subprocess
+	srv           *http.Server
+	logs          *LogBuffer
+	queryHistory  *QueryHistory
+	maintenance   *alerter.MaintenanceStore
+	startTime     time.Time
+	version       string
+	forcePollCh   chan struct{} // signals main loop to run an immediate poll
 }
 
 // New creates a new web Server.
@@ -60,6 +61,12 @@ func New(addr string, cfg *config.Config, store *store.Store, analyzer *analyzer
 // Called from main after the alerter is initialised.
 func (s *Server) SetMaintenanceStore(ms *alerter.MaintenanceStore) {
 	s.maintenance = ms
+}
+
+// SetForcePollCh gives the server a channel it can signal to trigger an
+// immediate background poll in the main loop.
+func (s *Server) SetForcePollCh(ch chan struct{}) {
+	s.forcePollCh = ch
 }
 
 // SetVersion sets the binary version string shown in /health.
@@ -202,6 +209,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Collector registry and ad-hoc run endpoints (from runcheck.go).
 	mux.HandleFunc("GET /api/collectors", s.handleGetCollectors)
 	mux.HandleFunc("POST /api/run-check", s.handleRunCheck)
+	mux.HandleFunc("POST /api/force-poll", s.handleForcePoll)
 }
 
 // ---------------------------------------------------------------------------
@@ -511,14 +519,17 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type instanceSummary struct {
-		Name         string             `json:"name"`
-		HealthScore  float64            `json:"health_score"`
-		Status       string             `json:"status"`
-		ActiveAlerts int                `json:"active_alerts"`
-		AlertCounts  alertCounts        `json:"alert_counts"`
-		KeyMetrics   map[string]float64 `json:"key_metrics"`
-		AreaStatus   []areaStatus       `json:"area_status"`
-		TopAlerts    []topAlert         `json:"top_alerts"`
+		Name               string             `json:"name"`
+		HealthScore        float64            `json:"health_score"`
+		Status             string             `json:"status"`
+		ActiveAlerts       int                `json:"active_alerts"`
+		AlertCounts        alertCounts        `json:"alert_counts"`
+		KeyMetrics         map[string]float64 `json:"key_metrics"`
+		AreaStatus         []areaStatus       `json:"area_status"`
+		TopAlerts          []topAlert         `json:"top_alerts"`
+		InMaintenance      bool               `json:"in_maintenance"`
+		MaintenanceUntil   string             `json:"maintenance_until,omitempty"`
+		MaintenanceReason  string             `json:"maintenance_reason,omitempty"`
 	}
 
 	// Map alert categories to triage areas.
@@ -717,7 +728,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 			sorted = sorted[:3]
 		}
 
-		results = append(results, instanceSummary{
+		summary := instanceSummary{
 			Name:         name,
 			HealthScore:  score,
 			Status:       status,
@@ -726,7 +737,15 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 			KeyMetrics:   keyMetrics,
 			AreaStatus:   areas,
 			TopAlerts:    sorted,
-		})
+		}
+		if s.maintenance != nil {
+			if win := s.maintenance.GetActiveWindow(name); win != nil {
+				summary.InMaintenance = true
+				summary.MaintenanceUntil = win.EndsAt.UTC().Format(time.RFC3339)
+				summary.MaintenanceReason = win.Reason
+			}
+		}
+		results = append(results, summary)
 	}
 
 	writeJSON(w, http.StatusOK, results)

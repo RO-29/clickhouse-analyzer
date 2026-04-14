@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { ChevronRight, RotateCcw } from 'lucide-react'
+import { ChevronRight, RotateCcw, Wrench } from 'lucide-react'
 import { cn, scoreColor, sevColor, fmtTime } from '../lib/utils'
 import { api } from '../lib/api'
 import { Card } from './Card'
@@ -67,8 +67,21 @@ export function NodeCard({
     navToDetail(instance.name)
   }
 
+  const inMaint = instance.in_maintenance
+  const maintUntil = instance.maintenance_until
+    ? new Date(instance.maintenance_until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : null
+
   return (
-    <Card onClick={onClick} className="cursor-pointer hover:border-[var(--accent)]/40 transition-colors">
+    <Card onClick={onClick} className={cn("cursor-pointer hover:border-[var(--accent)]/40 transition-colors", inMaint && "border-orange-500/30")}>
+      {/* Maintenance banner */}
+      {inMaint && (
+        <div className="flex items-center gap-1.5 text-xs text-orange-400 bg-orange-500/10 border border-orange-500/20 rounded-lg px-2.5 py-1.5 mb-3">
+          <Wrench size={11} className="shrink-0" />
+          <span className="font-medium">Maintenance</span>
+          {maintUntil && <span className="text-orange-400/70 ml-auto">until {maintUntil}</span>}
+        </div>
+      )}
       {/* Header: name + health score */}
       <div className="flex items-center justify-between mb-3">
         <div className="font-medium truncate">{instance.name}</div>

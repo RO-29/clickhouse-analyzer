@@ -209,7 +209,10 @@ func main() {
 	}
 
 	// Maintenance store (shared with web server).
+	// Persist windows to a JSON file alongside the config so they survive restarts.
 	maintenanceStore := alerter.NewMaintenanceStore()
+	maintFile := *configPath + ".maintenance.json"
+	maintenanceStore.SetPersistPath(maintFile)
 	alertMgrOpts = append(alertMgrOpts, alerter.WithMaintenance(maintenanceStore))
 
 	alertMgr := alerter.NewAlertManager(slackNotifier, storeAdapter, alertMgrOpts...)
@@ -274,10 +277,13 @@ func main() {
 	// Load custom suggestions if configured.
 	web.LoadSuggestions(cfg.Web.SuggestionsPath)
 
+	forcePollCh := make(chan struct{}, 1) // buffered: at most one pending force-poll
+
 	var webServer *web.Server
 	if cfg.Web.Enabled {
 		webServer = web.New(cfg.Web.ListenAddr, cfg, metricStore, az, clientMgr, logBuffer)
 		webServer.SetMaintenanceStore(maintenanceStore)
+		webServer.SetForcePollCh(forcePollCh)
 		webServer.SetVersion(version)
 		go func() {
 			if err := webServer.Start(ctx); err != nil {
@@ -341,6 +347,9 @@ func main() {
 			slog.Info("shutdown complete")
 			return
 		case <-ticker.C:
+			poll()
+		case <-forcePollCh:
+			slog.Info("force poll triggered via API")
 			poll()
 		}
 	}
