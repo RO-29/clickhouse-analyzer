@@ -998,6 +998,7 @@ func buildElementPrompt(req analyzeElementRequest, instance string, deepResults 
 		"merges": "Merges & Parts", "mvs": "MV Performance",
 		"s3": "S3 Latency", "inserts": "Insert Throughput",
 		"metrics": "System Metrics", "diskio": "Disk I/O",
+		"scanner": "Table Scanner",
 	}
 	tabLabel := tabLabels[req.Tab]
 	if tabLabel == "" {

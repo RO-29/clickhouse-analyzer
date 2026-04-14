@@ -508,22 +508,22 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
   const handleAnalyze = useCallback((entry: TableScanEntry) => {
     const label = `Analyze table: ${entry.database}.${entry.table}`
     analyze(label, {
-      database: entry.database,
-      table: entry.table,
-      engine: entry.engine,
-      total_rows: entry.total_rows,
-      total_bytes: entry.total_bytes,
-      parts_count: entry.parts_count,
-      sorting_key: entry.sorting_key,
-      partition_key: entry.partition_key,
-      primary_key: entry.primary_key,
-      sampling_key: entry.sampling_key,
-      storage_policy: entry.storage_policy,
-      disk_usage: entry.disk_usage,
-      select_count: entry.query_activity?.select_count,
-      insert_count: entry.query_activity?.insert_count,
-      is_active: entry.query_activity?.is_active,
-      create_query: entry.create_query,
+      row: {
+        database: entry.database,
+        table: entry.table,
+        engine: entry.engine,
+        total_rows: entry.total_rows,
+        total_bytes: entry.total_bytes,
+        parts_count: entry.parts_count,
+        sorting_key: entry.sorting_key,
+        partition_key: entry.partition_key,
+        primary_key: entry.primary_key,
+        sampling_key: entry.sampling_key,
+        storage_policy: entry.storage_policy,
+        disk_usage: entry.disk_usage,
+        query_activity: entry.query_activity,
+        create_query: entry.create_query,
+      },
     }, { contextType: 'row', tab: 'scanner' })
     setModalEntry(null)
   }, [analyze])
