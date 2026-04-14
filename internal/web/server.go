@@ -17,6 +17,7 @@ import (
 
 	"github.com/rohitjain/ch-analyzer/internal/analyzer"
 	"github.com/rohitjain/ch-analyzer/internal/chclient"
+	"github.com/rohitjain/ch-analyzer/internal/config"
 	"github.com/rohitjain/ch-analyzer/internal/store"
 )
 
@@ -25,6 +26,7 @@ var staticFS embed.FS
 
 // Server serves the web dashboard and REST API.
 type Server struct {
+	cfg          *config.Config
 	store        *store.Store
 	analyzer     *analyzer.Analyzer
 	manager      *chclient.Manager
@@ -36,8 +38,9 @@ type Server struct {
 }
 
 // New creates a new web Server.
-func New(addr string, store *store.Store, analyzer *analyzer.Analyzer, manager *chclient.Manager, logs *LogBuffer) *Server {
+func New(addr string, cfg *config.Config, store *store.Store, analyzer *analyzer.Analyzer, manager *chclient.Manager, logs *LogBuffer) *Server {
 	return &Server{
+		cfg:          cfg,
 		store:        store,
 		analyzer:     analyzer,
 		manager:      manager,
@@ -168,6 +171,10 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/instances/{name}/history/s3", s.handleHistoryS3)
 	mux.HandleFunc("GET /api/instances/{name}/history/async-metrics", s.handleHistoryAsyncMetrics)
 	mux.HandleFunc("GET /api/instances/{name}/history/disk-io", s.handleHistoryDiskIO)
+
+	// Cost explorer.
+	mux.HandleFunc("GET /api/instances/{name}/cost", s.handleCost)
+	mux.HandleFunc("GET /api/cost", s.handleCostOverview)
 }
 
 // ---------------------------------------------------------------------------

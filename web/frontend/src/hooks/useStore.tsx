@@ -2,7 +2,7 @@ import { createContext, useContext, useState, useCallback, type ReactNode } from
 import { presetToRange } from '../lib/utils'
 import type { ChatSession } from '../types/api'
 
-export type View = 'overview' | 'detail' | 'alerts' | 'explore' | 'compare' | 'advisor' | 'terminal' | 'logs' | 'chlogs' | 'analyzer' | 'scanner'
+export type View = 'overview' | 'detail' | 'alerts' | 'explore' | 'compare' | 'advisor' | 'terminal' | 'logs' | 'chlogs' | 'analyzer' | 'scanner' | 'cost'
 
 export interface Store {
   // State
@@ -61,7 +61,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [view, setViewState] = useState<View>(() => {
     const params = new URLSearchParams(window.location.search)
     const v = params.get('view') as View | null
-    const valid: View[] = ['overview','detail','alerts','explore','compare','advisor','terminal','logs','chlogs','analyzer','scanner']
+    const valid: View[] = ['overview','detail','alerts','explore','compare','advisor','terminal','logs','chlogs','analyzer','scanner','cost']
     return v && valid.includes(v) ? v : 'overview'
   })
   const [selectedInstance, setSelectedInstance] = useState('')

@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import {
   LayoutDashboard, Bell, Search, GitCompareArrows, Lightbulb, TerminalSquare, FileText, Database,
-  Sun, Moon, ChevronsLeft, ChevronsRight, Sparkles, RefreshCw, ScanSearch,
+  Sun, Moon, ChevronsLeft, ChevronsRight, Sparkles, RefreshCw, ScanSearch, DollarSign,
 } from 'lucide-react'
 import { useStore, type View } from '../hooks/useStore'
 import { cn, scoreColor } from '../lib/utils'
@@ -17,6 +17,7 @@ const NAV_ITEMS: { view: View; label: string; icon: typeof LayoutDashboard }[] =
   { view: 'terminal', label: 'Terminal', icon: TerminalSquare },
   { view: 'scanner', label: 'Table Scanner', icon: ScanSearch },
   { view: 'analyzer', label: 'AI Analyzer', icon: Sparkles },
+  { view: 'cost', label: 'Cost Explorer', icon: DollarSign },
   { view: 'logs', label: 'App Logs', icon: FileText },
   { view: 'chlogs', label: 'CH Logs', icon: Database },
 ]
@@ -29,7 +30,12 @@ const REFRESH_OPTIONS = [
   { label: 'Off', value: 0 },
 ]
 
-export function Sidebar() {
+interface SidebarProps {
+  mobileOpen?: boolean
+  onMobileClose?: () => void
+}
+
+export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
   const {
     view, setView, sidebarCollapsed, setSidebarCollapsed,
     theme, toggleTheme, refreshInterval, setRefreshInterval,
@@ -69,11 +75,28 @@ export function Sidebar() {
 
   const collapsed = sidebarCollapsed
 
+  const handleNavClick = (v: typeof view) => {
+    setView(v)
+    onMobileClose?.()
+  }
+
   return (
+    <>
+      {/* Mobile backdrop overlay */}
+      {mobileOpen && (
+        <div
+          className="fixed inset-0 z-30 bg-black/50 md:hidden"
+          onClick={onMobileClose}
+        />
+      )}
     <aside
       className={cn(
         'fixed top-0 left-0 h-full bg-[var(--card)] border-r border-[var(--border)] flex flex-col z-40 transition-all duration-200',
-        collapsed ? 'w-14' : 'w-[220px]',
+        // Mobile: always full-width sidebar, slides in/out
+        'w-[220px]',
+        mobileOpen ? 'translate-x-0' : '-translate-x-full',
+        // Desktop: collapse/expand, always visible
+        collapsed ? 'md:w-14 md:translate-x-0' : 'md:w-[220px] md:translate-x-0',
       )}
     >
       {/* Logo + collapse toggle */}
@@ -102,7 +125,7 @@ export function Sidebar() {
               <a
                 key={item.view}
                 href={`?view=${item.view}`}
-                onClick={(e) => { e.preventDefault(); setView(item.view) }}
+                onClick={(e) => { e.preventDefault(); handleNavClick(item.view) }}
                 className={cn(
                   'w-full flex items-center gap-2.5 rounded-lg text-sm transition-colors no-underline',
                   collapsed ? 'justify-center px-0 py-2.5' : 'px-3 py-2',
@@ -144,7 +167,7 @@ export function Sidebar() {
               {instances.map(inst => (
                 <button
                   key={inst.name}
-                  onClick={() => navToDetail(inst.name)}
+                  onClick={() => { navToDetail(inst.name); onMobileClose?.() }}
                   className={cn(
                     'w-full flex items-center gap-2 rounded-lg text-sm transition-colors',
                     collapsed ? 'justify-center px-0 py-2' : 'px-3 py-1.5',
@@ -215,5 +238,6 @@ export function Sidebar() {
 
       </div>
     </aside>
+    </>
   )
 }

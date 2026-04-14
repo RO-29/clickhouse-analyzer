@@ -88,7 +88,7 @@ export function NodeCard({
       </div>
 
       {/* Key metrics row */}
-      <div className="grid grid-cols-4 gap-2 mb-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
         {[
           { label: 'Mem', value: memPct != null ? `${memPct.toFixed(0)}%` : '—', warn: memPct != null && memPct > 85, crit: memPct != null && memPct > 95 },
           { label: 'CPU', value: cpuPct != null ? `${cpuPct.toFixed(0)}%` : '—', warn: cpuPct != null && cpuPct > 80, crit: cpuPct != null && cpuPct > 95 },

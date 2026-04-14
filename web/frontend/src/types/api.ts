@@ -221,6 +221,71 @@ export interface TableScanResult {
   activity_rows: number
 }
 
+// Cost Explorer
+export interface CostPricing {
+  model: string
+  vcpu_hourly_usd: number
+  server_hourly_usd: number
+  ebs_gb_monthly_usd: number
+  s3_gb_monthly_usd: number
+}
+
+export interface CostStorage {
+  local_bytes: number
+  s3_bytes: number
+  local_gb: number
+  s3_gb: number
+  local_monthly_usd: number
+  s3_monthly_usd: number
+  total_monthly_usd: number
+}
+
+export interface CostCompute {
+  vcpu_limit: number
+  memory_gb: number
+  server_count: number
+  monthly_server_fee_usd: number
+  monthly_vcpu_usd: number
+  monthly_total_usd: number
+  source: string
+}
+
+export interface CostTableEntry {
+  database: string
+  table: string
+  local_bytes: number
+  s3_bytes: number
+  local_gb: number
+  s3_gb: number
+  monthly_usd: number
+}
+
+export interface CostReport {
+  instance: string
+  generated_at: string
+  storage: CostStorage
+  compute: CostCompute
+  by_table: CostTableEntry[]
+  pricing: CostPricing
+  total_monthly_usd: number
+  notes: string[]
+}
+
+export interface CostOverviewEntry {
+  instance: string
+  total_monthly_usd: number
+  storage_usd: number
+  compute_usd: number
+  local_gb: number
+  s3_gb: number
+}
+
+export interface CostOverview {
+  instances: CostOverviewEntry[]
+  total_monthly_usd: number
+  pricing: CostPricing
+}
+
 // Keep AnalyzeOptions for inline Analyze buttons on other tabs
 export interface AnalyzeOptions {
   contextType: 'tab' | 'row' | 'chart' | 'followup'

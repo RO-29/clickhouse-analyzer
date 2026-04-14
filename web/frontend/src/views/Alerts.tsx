@@ -615,7 +615,7 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
   if (loading) {
     return (
       <div className="space-y-6">
-        <div className="grid grid-cols-3 gap-4 animate-pulse">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 animate-pulse">
           {[...Array(3)].map((_, i) => (
             <Card key={i}>
               <div className="h-8 bg-[var(--hover)] rounded w-1/3 mb-2" />
@@ -645,7 +645,7 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
     <div className="space-y-6">
       {/* ---- Stat cards + actions ---- */}
       <div className="flex items-start gap-4">
-        <div className="grid grid-cols-3 gap-4 flex-1">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 flex-1">
           <StatCard label="Active" value={firing} color={firingColor} sub={firingSub} />
           <StatCard
             label="Stale"
@@ -725,7 +725,7 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
       </div>
 
       {/* ---- Filters ---- */}
-      <div className="grid grid-cols-5 gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
         <Select label="Instance" value={filterInstance} onChange={setFilterInstance}
           options={[{ value: 'all', label: 'All instances' }, ...instanceNames.map((n) => ({ value: n, label: n }))]} />
         <Select label="Severity" value={filterSeverity} onChange={setFilterSeverity}

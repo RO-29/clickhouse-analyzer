@@ -185,7 +185,7 @@ export function TableDetail({ instance, database, table, onClose }: TableDetailP
               {/* Memory */}
               {(data.pk_memory != null || data.marks_memory != null) && (
                 <Card title="Memory">
-                  <div className="grid grid-cols-3 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                     <div>
                       <div className="text-xl font-bold">{fmtBytes(data.pk_memory ?? 0)}</div>
                       <div className="text-xs text-[var(--dim)] mt-1 uppercase tracking-wider">PK Memory</div>
@@ -205,7 +205,7 @@ export function TableDetail({ instance, database, table, onClose }: TableDetailP
               {/* Compression */}
               {(data.compressed != null || data.uncompressed != null) && (
                 <Card title="Compression">
-                  <div className="grid grid-cols-3 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                     <div>
                       <div className="text-xl font-bold">{fmtBytes(data.compressed ?? 0)}</div>
                       <div className="text-xs text-[var(--dim)] mt-1 uppercase tracking-wider">Compressed</div>

@@ -130,7 +130,7 @@ export function HealthChecklist({ instance, refreshTrigger }: HealthChecklistPro
 
   if (loading) {
     return (
-      <div className="grid grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         {[...Array(5)].map((_, i) => (
           <div key={i} className="animate-pulse border border-[var(--border)] rounded-lg p-3">
             <div className="h-4 bg-[var(--border)] rounded w-2/3 mb-2" />

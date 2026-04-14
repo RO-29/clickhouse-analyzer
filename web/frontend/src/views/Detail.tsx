@@ -296,7 +296,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
           <div className="h-8 w-8 bg-[var(--hover)] rounded" />
           <div className="h-6 bg-[var(--hover)] rounded w-48" />
         </div>
-        <div className="grid grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           {[...Array(8)].map((_, i) => (
             <Card key={i}>
               <div className="h-3 bg-[var(--hover)] rounded w-1/2 mb-2" />
@@ -347,7 +347,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
       <HealthChecklist instance={instance} refreshTrigger={currentStateRefreshTick} />
 
       {/* ---- Metric charts: 3-col compact grid (time-range aware) ---- */}
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
         <MetricChart instance={instance} title="Memory %" metrics={['system.memory.rss_percent', 'system.memory.used_percent']} yFormat="percent" height={130} />
         <MetricChart instance={instance} title="Memory Bytes" metrics={['system.memory.rss_bytes', 'system.memory.available_bytes', 'system.metrics.MemoryTracking']} yFormat="bytes" height={130} />
         <MetricChart instance={instance} title="CPU %" metrics={['system.cpu.busy_percent']} yFormat="percent" height={130} />
@@ -357,6 +357,112 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
         <MetricChart instance={instance} title="Insert Throughput" metrics={['inserts.total.rows']} height={130} />
         <MetricChart instance={instance} title="S3 Latency" metrics={['storage.s3.avg_latency_ms', 'storage.s3.max_latency_ms']} yFormat="ms" height={130} />
       </div>
+
+      {/* ---- Storage section (collapsible) ---- */}
+      {(localDisks.length > 0 || s3Stats || cacheStats) && (
+        <div>
+          <button
+            onClick={() => setShowStorage(!showStorage)}
+            className="w-full flex items-center gap-2 py-2 text-sm font-medium text-[var(--dim)] hover:text-[var(--text)] transition-colors"
+          >
+            <ChevronRight size={14} className={cn('transition-transform', showStorage && 'rotate-90')} />
+            Storage, S3 & Cache
+            <span className="text-xs font-normal px-1.5 py-0.5 rounded bg-[var(--hover)] text-[var(--dim)] border border-[var(--border)]">now</span>
+          </button>
+          {showStorage && (
+            <div className="space-y-4 mt-2">
+              {localDisks.length > 0 && (
+                <Card title="Disk Usage">
+                  <div style={{ height: Math.max(60, localDisks.length * 40) }}>
+                    <Bar data={diskChartData} options={diskChartOpts} />
+                  </div>
+                </Card>
+              )}
+              {cacheStats && (
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                  <Card>
+                    <div className="text-lg font-bold">{fmtBytes(cacheStats.mark_cache_bytes ?? 0)}</div>
+                    <div className="text-xs text-[var(--dim)] mt-1">Mark Cache</div>
+                    <div className="text-xs text-[var(--dim)]">{fmtNum(cacheStats.mark_cache_files ?? 0)} files</div>
+                  </Card>
+                  <Card>
+                    <div className="text-lg font-bold">{fmtBytes(cacheStats.primary_key_bytes ?? 0)}</div>
+                    <div className="text-xs text-[var(--dim)] mt-1">Primary Key Mem</div>
+                  </Card>
+                  <Card>
+                    <div className="text-lg font-bold">{fmtBytes(cacheStats.filesystem_cache_bytes ?? 0)}</div>
+                    <div className="text-xs text-[var(--dim)] mt-1">FS Cache</div>
+                    <div className="text-xs text-[var(--dim)]">{fmtBytes(cacheStats.filesystem_cache_limit ?? 0)} limit</div>
+                  </Card>
+                  <Card>
+                    <div className="text-lg font-bold">{fmtBytes(cacheStats.index_granularity_bytes ?? 0)}</div>
+                    <div className="text-xs text-[var(--dim)] mt-1">Index Granularity</div>
+                  </Card>
+                </div>
+              )}
+              {s3Stats && s3Stats.volume_by_table && Array.isArray(s3Stats.volume_by_table) && s3Stats.volume_by_table.length > 0 && (() => {
+                const volTable = s3Stats.volume_by_table as any[]
+                const totalS3Bytes = volTable.reduce((sum: number, r: any) => sum + (r.bytes ?? 0), 0)
+                const fsBytes = cacheStats?.filesystem_cache_bytes ?? 0
+                const fsLimit = cacheStats?.filesystem_cache_limit ?? 0
+                const fsPct = fsLimit > 0 ? Math.min(100, (fsBytes / fsLimit) * 100) : 0
+                return (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <Card>
+                        <div className="text-lg font-bold">{fmtBytes(totalS3Bytes)}</div>
+                        <div className="text-xs text-[var(--dim)] mt-1">Total S3 Data</div>
+                        <div className="text-xs text-[var(--dim)]">{volTable.length} tables</div>
+                      </Card>
+                      <Card>
+                        <div className="text-lg font-bold">{fsLimit > 0 ? fsPct.toFixed(1) + '%' : '--'}</div>
+                        <div className="text-xs text-[var(--dim)] mt-1">S3 Local Cache</div>
+                        <div className="text-xs text-[var(--dim)]">{fmtBytes(fsBytes)} / {fmtBytes(fsLimit)}</div>
+                        {fsLimit > 0 && (
+                          <div className="mt-1.5 h-1 rounded-full bg-[var(--hover)] overflow-hidden">
+                            <div className={`h-full rounded-full ${fsPct > 90 ? 'bg-red-500' : fsPct > 70 ? 'bg-yellow-500' : 'bg-green-500'}`} style={{ width: fsPct + '%' }} />
+                          </div>
+                        )}
+                      </Card>
+                      <Card>
+                        <div className="text-lg font-bold">{fmtNum(cacheStats?.filesystem_cache_elements ?? 0)}</div>
+                        <div className="text-xs text-[var(--dim)] mt-1">Cached Elements</div>
+                      </Card>
+                    </div>
+                    <Card title="S3 Volume by Table">
+                      <DataTable columns={s3VolCols} data={volTable} maxHeight="250px" />
+                    </Card>
+                    {s3Stats.latency_by_table && Array.isArray(s3Stats.latency_by_table) && s3Stats.latency_by_table.length > 0 && (
+                      <Card title="S3 Latency by Table">
+                        <DataTable columns={s3LatCols} data={s3Stats.latency_by_table} maxHeight="250px" />
+                      </Card>
+                    )}
+                  </div>
+                )
+              })()}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ---- Running Queries (collapsible, current state) ---- */}
+      {queries.length > 0 && (
+        <div>
+          <button
+            onClick={() => setShowRunning(!showRunning)}
+            className="w-full flex items-center gap-2 py-2 text-sm font-medium text-[var(--dim)] hover:text-[var(--text)] transition-colors"
+          >
+            <ChevronRight size={14} className={cn('transition-transform', showRunning && 'rotate-90')} />
+            Running Queries ({queries.length})
+            <span className="text-xs font-normal px-1.5 py-0.5 rounded bg-[var(--hover)] text-[var(--dim)] border border-[var(--border)]">now</span>
+          </button>
+          {showRunning && (
+            <Card className="mt-2">
+              <DataTable columns={queryCols} data={queries} maxHeight="280px" />
+            </Card>
+          )}
+        </div>
+      )}
 
       {/* ---- Alerts (time-range aware) ---- */}
       <Card title={`Alerts in Range${rangeAlerts.length > 0 ? ` (${rangeAlerts.length})` : ''}${activeAlerts.length > 0 ? ` · ${activeAlerts.length} active` : ''}`}>
@@ -477,112 +583,6 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
             maxHeight="300px"
           />
         </Card>
-      )}
-
-      {/* ---- Storage section (collapsible) ---- */}
-      {(localDisks.length > 0 || s3Stats || cacheStats) && (
-        <div>
-          <button
-            onClick={() => setShowStorage(!showStorage)}
-            className="w-full flex items-center gap-2 py-2 text-sm font-medium text-[var(--dim)] hover:text-[var(--text)] transition-colors"
-          >
-            <ChevronRight size={14} className={cn('transition-transform', showStorage && 'rotate-90')} />
-            Storage, S3 & Cache
-            <span className="text-xs font-normal px-1.5 py-0.5 rounded bg-[var(--hover)] text-[var(--dim)] border border-[var(--border)]">now</span>
-          </button>
-          {showStorage && (
-            <div className="space-y-4 mt-2">
-              {localDisks.length > 0 && (
-                <Card title="Disk Usage">
-                  <div style={{ height: Math.max(60, localDisks.length * 40) }}>
-                    <Bar data={diskChartData} options={diskChartOpts} />
-                  </div>
-                </Card>
-              )}
-              {cacheStats && (
-                <div className="grid grid-cols-4 gap-3">
-                  <Card>
-                    <div className="text-lg font-bold">{fmtBytes(cacheStats.mark_cache_bytes ?? 0)}</div>
-                    <div className="text-xs text-[var(--dim)] mt-1">Mark Cache</div>
-                    <div className="text-xs text-[var(--dim)]">{fmtNum(cacheStats.mark_cache_files ?? 0)} files</div>
-                  </Card>
-                  <Card>
-                    <div className="text-lg font-bold">{fmtBytes(cacheStats.primary_key_bytes ?? 0)}</div>
-                    <div className="text-xs text-[var(--dim)] mt-1">Primary Key Mem</div>
-                  </Card>
-                  <Card>
-                    <div className="text-lg font-bold">{fmtBytes(cacheStats.filesystem_cache_bytes ?? 0)}</div>
-                    <div className="text-xs text-[var(--dim)] mt-1">FS Cache</div>
-                    <div className="text-xs text-[var(--dim)]">{fmtBytes(cacheStats.filesystem_cache_limit ?? 0)} limit</div>
-                  </Card>
-                  <Card>
-                    <div className="text-lg font-bold">{fmtBytes(cacheStats.index_granularity_bytes ?? 0)}</div>
-                    <div className="text-xs text-[var(--dim)] mt-1">Index Granularity</div>
-                  </Card>
-                </div>
-              )}
-              {s3Stats && s3Stats.volume_by_table && Array.isArray(s3Stats.volume_by_table) && s3Stats.volume_by_table.length > 0 && (() => {
-                const volTable = s3Stats.volume_by_table as any[]
-                const totalS3Bytes = volTable.reduce((sum: number, r: any) => sum + (r.bytes ?? 0), 0)
-                const fsBytes = cacheStats?.filesystem_cache_bytes ?? 0
-                const fsLimit = cacheStats?.filesystem_cache_limit ?? 0
-                const fsPct = fsLimit > 0 ? Math.min(100, (fsBytes / fsLimit) * 100) : 0
-                return (
-                  <div className="space-y-3">
-                    <div className="grid grid-cols-3 gap-3">
-                      <Card>
-                        <div className="text-lg font-bold">{fmtBytes(totalS3Bytes)}</div>
-                        <div className="text-xs text-[var(--dim)] mt-1">Total S3 Data</div>
-                        <div className="text-xs text-[var(--dim)]">{volTable.length} tables</div>
-                      </Card>
-                      <Card>
-                        <div className="text-lg font-bold">{fsLimit > 0 ? fsPct.toFixed(1) + '%' : '--'}</div>
-                        <div className="text-xs text-[var(--dim)] mt-1">S3 Local Cache</div>
-                        <div className="text-xs text-[var(--dim)]">{fmtBytes(fsBytes)} / {fmtBytes(fsLimit)}</div>
-                        {fsLimit > 0 && (
-                          <div className="mt-1.5 h-1 rounded-full bg-[var(--hover)] overflow-hidden">
-                            <div className={`h-full rounded-full ${fsPct > 90 ? 'bg-red-500' : fsPct > 70 ? 'bg-yellow-500' : 'bg-green-500'}`} style={{ width: fsPct + '%' }} />
-                          </div>
-                        )}
-                      </Card>
-                      <Card>
-                        <div className="text-lg font-bold">{fmtNum(cacheStats?.filesystem_cache_elements ?? 0)}</div>
-                        <div className="text-xs text-[var(--dim)] mt-1">Cached Elements</div>
-                      </Card>
-                    </div>
-                    <Card title="S3 Volume by Table">
-                      <DataTable columns={s3VolCols} data={volTable} maxHeight="250px" />
-                    </Card>
-                    {s3Stats.latency_by_table && Array.isArray(s3Stats.latency_by_table) && s3Stats.latency_by_table.length > 0 && (
-                      <Card title="S3 Latency by Table">
-                        <DataTable columns={s3LatCols} data={s3Stats.latency_by_table} maxHeight="250px" />
-                      </Card>
-                    )}
-                  </div>
-                )
-              })()}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ---- Running Queries (collapsible, current state) ---- */}
-      {queries.length > 0 && (
-        <div>
-          <button
-            onClick={() => setShowRunning(!showRunning)}
-            className="w-full flex items-center gap-2 py-2 text-sm font-medium text-[var(--dim)] hover:text-[var(--text)] transition-colors"
-          >
-            <ChevronRight size={14} className={cn('transition-transform', showRunning && 'rotate-90')} />
-            Running Queries ({queries.length})
-            <span className="text-xs font-normal px-1.5 py-0.5 rounded bg-[var(--hover)] text-[var(--dim)] border border-[var(--border)]">now</span>
-          </button>
-          {showRunning && (
-            <Card className="mt-2">
-              <DataTable columns={queryCols} data={queries} maxHeight="280px" />
-            </Card>
-          )}
-        </div>
       )}
 
       {/* ---- Materialized Views (collapsible, current state) ---- */}

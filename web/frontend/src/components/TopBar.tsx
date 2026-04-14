@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Sun, Moon } from 'lucide-react'
+import { Sun, Moon, Menu } from 'lucide-react'
 import { useStore, type View } from '../hooks/useStore'
 import { cn } from '../lib/utils'
 
@@ -12,6 +12,7 @@ const VIEW_TITLES: Record<View, string> = {
   advisor: 'Advisor',
   terminal: 'Terminal',
   scanner: 'Table Scanner',
+  cost: 'Cost Explorer',
   analyzer: 'AI Analyzer',
   logs: 'Application Logs',
   chlogs: 'ClickHouse Logs',
@@ -31,7 +32,11 @@ const QUICK_RANGES = [
   { label: 'Last 12h', from: () => new Date(Date.now()-12*3600000), to: () => new Date() },
 ]
 
-export function TopBar() {
+interface TopBarProps {
+  onMobileMenuClick?: () => void
+}
+
+export function TopBar({ onMobileMenuClick }: TopBarProps) {
   const { view, selectedInstance, rangePreset, setRangePreset, setCustomRange, theme, toggleTheme } = useStore()
 
   const [customFrom, setCustomFrom] = useState('')
@@ -55,9 +60,18 @@ export function TopBar() {
 
   return (
     <header className="sticky top-0 z-30 bg-[var(--bg)]/80 backdrop-blur-sm border-b border-[var(--border)]">
-      <div className="flex items-center justify-between px-6 h-12">
-        {/* Left: page title */}
-        <h1 className="text-sm font-semibold truncate">{title}</h1>
+      <div className="flex items-center justify-between px-3 sm:px-6 h-12 gap-3">
+        {/* Left: hamburger (mobile) + page title */}
+        <div className="flex items-center gap-2 min-w-0">
+          <button
+            onClick={onMobileMenuClick}
+            className="md:hidden p-1.5 rounded-lg text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)] transition-colors shrink-0"
+            title="Open menu"
+          >
+            <Menu size={18} />
+          </button>
+          <h1 className="text-sm font-semibold truncate">{title}</h1>
+        </div>
 
         {/* Right: theme toggle + time range controls */}
         <div className="flex items-center gap-3">
@@ -68,7 +82,7 @@ export function TopBar() {
           >
             {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
           </button>
-        {!showTimeRange ? null : <div className="flex items-center gap-2">
+        {!showTimeRange ? null : <div className="hidden md:flex items-center gap-2">
           {/* Presets */}
           <div className="flex items-center bg-[var(--surface)] rounded-lg border border-[var(--border)] p-0.5">
             {PRESETS.map(p => (

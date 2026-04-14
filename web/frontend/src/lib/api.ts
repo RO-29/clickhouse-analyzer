@@ -17,6 +17,8 @@ import type {
   Suggestion,
   DiskInfo,
   TableScanResult,
+  CostReport,
+  CostOverview,
 } from '../types/api'
 
 const BASE = ''
@@ -123,6 +125,8 @@ export const api = {
     const qs = params.toString()
     return get<TableScanResult>(`/api/instances/${inst}/table-scan${qs ? '?' + qs : ''}`)
   },
+  cost: (inst: string) => get<CostReport>(`/api/instances/${inst}/cost`),
+  costOverview: () => get<CostOverview>('/api/cost'),
   analyzeElementQueries: (inst: string, tab: string, elementId?: string) => {
     const params = new URLSearchParams({ tab })
     if (elementId) params.set('element_id', elementId)

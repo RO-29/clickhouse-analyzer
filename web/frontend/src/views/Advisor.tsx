@@ -260,7 +260,7 @@ export default function Advisor() {
 
       {/* Summary tiles */}
       {hasRun && (
-        <div className="grid grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           {tiles.map(t => (
             <Card key={t.label}>
               <div className={cn(

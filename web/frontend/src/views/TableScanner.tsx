@@ -62,13 +62,6 @@ function abbrevEngine(e: string): string {
     .replace('GraphiteMergeTree', 'GraphiteMT')
 }
 
-const DISK_TYPE_COLORS: Record<string, string> = {
-  local: 'text-blue-400',
-  s3: 'text-yellow-400',
-  hdfs: 'text-purple-400',
-  azure_blob_storage: 'text-cyan-400',
-}
-
 /* ─── Time range presets ──────────────────────────────────────────────────── */
 
 const RANGE_PRESETS = [
@@ -83,6 +76,116 @@ const RANGE_PRESETS = [
 
 type SortCol = 'table' | 'engine' | 'rows' | 'bytes' | 'parts' | 'selects' | 'inserts'
 type SortDir = 'asc' | 'desc'
+
+/* ─── Disk usage visual section ──────────────────────────────────────────── */
+
+const DISK_BAR_COLORS: Record<string, { bar: string; badge: string; label: string }> = {
+  s3:                    { bar: 'bg-yellow-500', badge: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/20', label: 'S3' },
+  s3_plain:              { bar: 'bg-yellow-500', badge: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/20', label: 'S3' },
+  s3_plain_rewritable:   { bar: 'bg-yellow-500', badge: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/20', label: 'S3' },
+  objectstorage:         { bar: 'bg-yellow-500', badge: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/20', label: 'S3' },
+  local:                 { bar: 'bg-blue-500',   badge: 'bg-blue-500/15 text-blue-400 border-blue-500/20',     label: 'Local' },
+  hdfs:                  { bar: 'bg-purple-500', badge: 'bg-purple-500/15 text-purple-400 border-purple-500/20', label: 'HDFS' },
+  azure_blob_storage:    { bar: 'bg-cyan-500',   badge: 'bg-cyan-500/15 text-cyan-400 border-cyan-500/20',     label: 'Azure' },
+}
+
+function diskStyle(diskType: string) {
+  return DISK_BAR_COLORS[diskType?.toLowerCase()] ?? DISK_BAR_COLORS.local
+}
+
+function isS3Type(t: string) {
+  const l = t?.toLowerCase() ?? ''
+  return l === 's3' || l === 's3_plain' || l === 's3_plain_rewritable' || l.includes('object')
+}
+
+function DiskUsageSection({ disks }: { disks: DiskUsageEntry[] }) {
+  const totalBytes = disks.reduce((s, d) => s + d.bytes, 0)
+  const localBytes = disks.filter(d => !isS3Type(d.disk_type)).reduce((s, d) => s + d.bytes, 0)
+  const s3Bytes    = disks.filter(d => isS3Type(d.disk_type)).reduce((s, d) => s + d.bytes, 0)
+
+  const localPct = totalBytes > 0 ? (localBytes / totalBytes) * 100 : 0
+  const s3Pct    = totalBytes > 0 ? (s3Bytes / totalBytes) * 100 : 0
+
+  // Sort: largest first
+  const sorted = [...disks].sort((a, b) => b.bytes - a.bytes)
+
+  return (
+    <div className="space-y-3">
+      <div className="text-xs font-semibold uppercase tracking-wider text-[var(--dim)]">Storage</div>
+
+      {/* Cumulative split bar */}
+      <div className="rounded-lg bg-[var(--surface)] border border-[var(--border)] px-4 py-3 space-y-2.5">
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-[var(--dim)]">Total across all disks</span>
+          <span className="font-mono font-semibold">{fmtBytes(totalBytes)}</span>
+        </div>
+        {/* Split bar */}
+        <div className="h-3 rounded-full overflow-hidden bg-[var(--hover)] flex">
+          {localBytes > 0 && (
+            <div
+              className="bg-blue-500 h-full transition-all"
+              style={{ width: `${localPct}%` }}
+              title={`Local: ${fmtBytes(localBytes)} (${localPct.toFixed(1)}%)`}
+            />
+          )}
+          {s3Bytes > 0 && (
+            <div
+              className="bg-yellow-500 h-full transition-all"
+              style={{ width: `${s3Pct}%` }}
+              title={`S3: ${fmtBytes(s3Bytes)} (${s3Pct.toFixed(1)}%)`}
+            />
+          )}
+        </div>
+        {/* Legend */}
+        <div className="flex items-center gap-4 text-[10px]">
+          {localBytes > 0 && (
+            <div className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-sm bg-blue-500 shrink-0" />
+              <span className="text-[var(--dim)]">Local</span>
+              <span className="font-mono font-medium">{fmtBytes(localBytes)}</span>
+              <span className="text-[var(--dim)]">({localPct.toFixed(1)}%)</span>
+            </div>
+          )}
+          {s3Bytes > 0 && (
+            <div className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-sm bg-yellow-500 shrink-0" />
+              <span className="text-[var(--dim)]">S3</span>
+              <span className="font-mono font-medium">{fmtBytes(s3Bytes)}</span>
+              <span className="text-[var(--dim)]">({s3Pct.toFixed(1)}%)</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Per-disk rows */}
+      <div className="space-y-1.5">
+        {sorted.map(d => {
+          const style = diskStyle(d.disk_type)
+          const pct = totalBytes > 0 ? (d.bytes / totalBytes) * 100 : 0
+          return (
+            <div key={d.disk_name} className="rounded-lg bg-[var(--surface)] border border-[var(--border)] px-3 py-2.5 space-y-1.5">
+              <div className="flex items-center gap-2">
+                <HardDrive size={11} className="text-[var(--dim)] shrink-0" />
+                <span className="font-mono text-xs font-medium">{d.disk_name}</span>
+                <span className={cn('text-[9px] font-semibold px-1.5 py-0.5 rounded border', style.badge)}>
+                  {d.disk_type || 'local'}
+                </span>
+                <span className="ml-auto font-mono text-xs font-semibold">{d.readable_size}</span>
+                <span className="text-[10px] text-[var(--dim)]">·</span>
+                <span className="text-[10px] text-[var(--dim)]">{d.parts.toLocaleString()} parts</span>
+                <span className="text-[10px] text-[var(--dim)] w-10 text-right">{pct.toFixed(1)}%</span>
+              </div>
+              {/* Per-disk bar */}
+              <div className="h-1.5 rounded-full bg-[var(--hover)] overflow-hidden">
+                <div className={cn('h-full rounded-full transition-all', style.bar)} style={{ width: `${pct}%` }} />
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
 
 /* ─── Full detail modal ───────────────────────────────────────────────────── */
 
@@ -212,26 +315,9 @@ function TableDetailModal({
             </div>
           </div>
 
-          {/* Disk breakdown */}
+          {/* Disk breakdown — visual bars */}
           {entry.disk_usage && entry.disk_usage.length > 0 && (
-            <div className="space-y-2">
-              <div className="text-xs font-semibold uppercase tracking-wider text-[var(--dim)]">Storage</div>
-              <div className="flex flex-wrap gap-2">
-                {entry.disk_usage.map((d: DiskUsageEntry) => (
-                  <div
-                    key={d.disk_name}
-                    className="flex items-center gap-2 px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--surface)]"
-                  >
-                    <HardDrive size={12} className="text-[var(--dim)]" />
-                    <span className="font-mono text-xs font-medium">{d.disk_name}</span>
-                    <span className={cn('text-xs', DISK_TYPE_COLORS[d.disk_type?.toLowerCase()] ?? 'text-[var(--dim)]')}>
-                      {d.disk_type || 'local'}
-                    </span>
-                    <span className="text-xs text-[var(--dim)]">{d.readable_size}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
+            <DiskUsageSection disks={entry.disk_usage} />
           )}
 
           {/* CREATE TABLE DDL — full, no height limit */}

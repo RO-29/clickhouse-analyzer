@@ -13,6 +13,7 @@ import AppLogs from './views/AppLogs'
 import CHLogs from './views/CHLogs'
 import ChatAnalyzer from './views/ChatAnalyzer'
 import TableScanner from './views/TableScanner'
+import CostExplorer from './views/CostExplorer'
 import { TableDetail } from './components/TableDetail'
 import { AIAnalysisPanel } from './components/AIAnalysisPanel'
 import { NotificationToasts } from './components/NotificationToasts'
@@ -24,6 +25,7 @@ function Layout() {
   const { view, refreshInterval, sidebarCollapsed, setInstances, tableDetail, closeTableDetail, selectedInstance } = useStore()
   const intervalRef = useRef<number>(0)
   const [tick, setTick] = useState(0)
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   // Mount ChatAnalyzer once on first visit and keep it alive (preserves session state)
   const [analyzerMounted, setAnalyzerMounted] = useState(view === 'analyzer')
   const {
@@ -79,6 +81,7 @@ function Layout() {
     compare: <Compare />,
     advisor: <Advisor />,
     scanner: <TableScanner refreshKey={tick} />,
+    cost: <CostExplorer />,
     terminal: <Terminal />,
     logs: <AppLogs refreshKey={tick} />,
     chlogs: <CHLogs refreshKey={tick} />,
@@ -86,14 +89,14 @@ function Layout() {
 
   return (
     <div className="flex min-h-screen bg-[var(--bg)] text-[var(--text)]">
-      <Sidebar />
-      <div className={cn("flex-1 flex flex-col transition-all duration-200", sidebarCollapsed ? "ml-14" : "ml-[220px]")}>
-        <TopBar />
+      <Sidebar mobileOpen={mobileSidebarOpen} onMobileClose={() => setMobileSidebarOpen(false)} />
+      <div className={cn("flex-1 flex flex-col transition-all duration-200", sidebarCollapsed ? "md:ml-14" : "md:ml-[220px]")}>
+        <TopBar onMobileMenuClick={() => setMobileSidebarOpen(o => !o)} />
         <main className={cn(
           'flex-1 w-full',
           view === 'analyzer' || view === 'terminal'
             ? 'overflow-hidden flex flex-col'
-            : 'p-6 max-w-[1600px] mx-auto overflow-auto',
+            : 'p-3 sm:p-6 max-w-[1600px] mx-auto overflow-auto',
         )}>
           {/* Chat Analyzer: mount once and keep alive (hidden when inactive) to preserve session */}
           {analyzerMounted && (

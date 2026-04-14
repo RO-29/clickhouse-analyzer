@@ -16,7 +16,7 @@ import type { Instance, Alert } from '../types/api'
 function Skeleton() {
   return (
     <div className="space-y-6 animate-pulse">
-      <div className="grid grid-cols-7 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
         {[...Array(7)].map((_, i) => (
           <Card key={i}>
             <div className="h-8 bg-[var(--hover)] rounded w-1/2 mb-2" />
@@ -24,7 +24,7 @@ function Skeleton() {
           </Card>
         ))}
       </div>
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         {[...Array(4)].map((_, i) => (
           <Card key={i}>
             <div className="h-24 bg-[var(--hover)] rounded" />
@@ -168,7 +168,7 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
       </div>
 
       {/* ---- Stat cards ---- */}
-      <div className="grid grid-cols-7 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
         {/* Summary: instances, health, queries, merges */}
         <Card>
           <div className="text-2xl font-bold">{totalInstances}</div>
@@ -223,7 +223,7 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
       </div>
 
       {/* ---- Instance node cards ---- */}
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         {instances.map((inst) => (
           <NodeCard
             key={inst.name}

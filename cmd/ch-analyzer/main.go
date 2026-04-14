@@ -217,7 +217,7 @@ func main() {
 
 	var webServer *web.Server
 	if cfg.Web.Enabled {
-		webServer = web.New(cfg.Web.ListenAddr, metricStore, az, clientMgr, logBuffer)
+		webServer = web.New(cfg.Web.ListenAddr, cfg, metricStore, az, clientMgr, logBuffer)
 		go func() {
 			if err := webServer.Start(ctx); err != nil {
 				slog.Error("web server error", "error", err)

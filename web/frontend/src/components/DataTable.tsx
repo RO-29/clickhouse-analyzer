@@ -77,7 +77,7 @@ export function DataTable({
 
   return (
     <div className="overflow-auto" style={{ maxHeight: maxHeight ?? undefined }}>
-      <table className="w-full text-sm">
+      <table className="w-full min-w-[500px] text-sm">
         <thead className="sticky top-0 bg-[var(--surface)]">
           <tr className="border-b border-[var(--border)]">
             {columns.map(col => (
