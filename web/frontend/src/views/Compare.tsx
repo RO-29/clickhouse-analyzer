@@ -248,28 +248,25 @@ function TablesView({ data, instances }: { data: TablesData; instances: string[]
     nodes.some((n) => t.missing_on?.includes(n)),
   [])
 
-  const filtered = useMemo(() => {
-    let rows = data.tables
-
-    // Only show tables that exist on at least one selected node.
-    rows = rows.filter((t) =>
+  // Base rows: nodes-filtered + search only (no rowFilter) — used for counts
+  const baseRows = useMemo(() => {
+    let rows = data.tables.filter((t) =>
       activeNodes.some((n) => !(t.missing_on ?? []).includes(n)),
     )
+    if (search.trim()) {
+      const q = search.toLowerCase()
+      rows = rows.filter((t) => t.table.toLowerCase().includes(q) || t.database.toLowerCase().includes(q))
+    }
+    return rows
+  }, [data.tables, search, activeNodes])
 
-    // Row filter: missing / divergent / all
+  const filtered = useMemo(() => {
+    let rows = baseRows
+
     if (rowFilter === 'missing') {
       rows = rows.filter((t) => isRowMissing(t, activeNodes))
     } else if (rowFilter === 'divergent') {
       rows = rows.filter((t) => !isRowMissing(t, activeNodes) && rowDrift(t, activeNodes) > 0.01)
-    }
-
-    if (search.trim()) {
-      const q = search.toLowerCase()
-      rows = rows.filter(
-        (t) =>
-          t.table.toLowerCase().includes(q) ||
-          t.database.toLowerCase().includes(q),
-      )
     }
 
     return [...rows].sort((a, b) => {
@@ -289,7 +286,7 @@ function TablesView({ data, instances }: { data: TablesData; instances: string[]
       }
       return sortDir === 'asc' ? cmp : -cmp
     })
-  }, [data.tables, search, sortKey, sortDir, activeNodes, rowDrift])
+  }, [baseRows, rowFilter, sortKey, sortDir, activeNodes, rowDrift, isRowMissing])
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -310,16 +307,14 @@ function TablesView({ data, instances }: { data: TablesData; instances: string[]
     )
   }
 
+  // Counts from baseRows so they stay stable regardless of rowFilter selection
   const missingCount = useMemo(
-    () => filtered.filter((t) => isRowMissing(t, activeNodes)).length,
-    [filtered, activeNodes, isRowMissing],
+    () => baseRows.filter((t) => isRowMissing(t, activeNodes)).length,
+    [baseRows, activeNodes, isRowMissing],
   )
   const diffCount = useMemo(
-    () =>
-      filtered.filter(
-        (t) => !isRowMissing(t, activeNodes) && rowDrift(t, activeNodes) > 0.01,
-      ).length,
-    [filtered, activeNodes, isRowMissing, rowDrift],
+    () => baseRows.filter((t) => !isRowMissing(t, activeNodes) && rowDrift(t, activeNodes) > 0.01).length,
+    [baseRows, activeNodes, isRowMissing, rowDrift],
   )
 
   return (
