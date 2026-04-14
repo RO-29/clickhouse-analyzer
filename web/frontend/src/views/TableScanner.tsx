@@ -74,7 +74,6 @@ function TableDetail({ entry }: { entry: TableScanEntry }) {
           { label: 'Primary Key', value: entry.primary_key },
           { label: 'Partition Key', value: entry.partition_key },
           { label: 'Sampling Key', value: entry.sampling_key },
-          { label: 'TTL', value: entry.ttl_expression },
           { label: 'Storage Policy', value: entry.storage_policy },
         ].map(({ label, value }) => value ? (
           <div key={label}>
@@ -219,7 +218,8 @@ interface TableScannerProps {
 }
 
 export default function TableScanner({ refreshKey }: TableScannerProps) {
-  const { selectedInstance } = useStore()
+  const { selectedInstance, instances } = useStore()
+  const [instance, setInstance] = useState(() => selectedInstance || '')
   const [result, setResult] = useState<TableScanResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -228,20 +228,25 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
   const [sortCol, setSortCol] = useState<'bytes' | 'rows' | 'parts' | 'selects' | 'inserts'>('bytes')
   const [activityFilter, setActivityFilter] = useState<'all' | 'active' | 'idle'>('all')
 
+  // Keep local instance in sync when global selection changes
+  useEffect(() => {
+    if (selectedInstance && !instance) setInstance(selectedInstance)
+  }, [selectedInstance]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const load = useCallback(async () => {
-    if (!selectedInstance) return
+    if (!instance) return
     setLoading(true)
     setError('')
     try {
       const now = Math.floor(Date.now() / 1000)
-      const data = await api.tableScan(selectedInstance, now - rangePreset, now)
+      const data = await api.tableScan(instance, now - rangePreset, now)
       setResult(data)
     } catch (e: any) {
       setError(e.message ?? 'Failed to load')
     } finally {
       setLoading(false)
     }
-  }, [selectedInstance, rangePreset])
+  }, [instance, rangePreset])
 
   useEffect(() => { load() }, [load, refreshKey])
 
@@ -273,7 +278,18 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
       {/* Header stats */}
       <div className="flex items-center gap-4 flex-wrap">
         <div className="flex-1 min-w-0">
-          <h2 className="text-sm font-semibold text-[var(--fg)]">Table Scanner</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm font-semibold text-[var(--fg)]">Table Scanner</h2>
+            {/* Instance selector */}
+            <select
+              value={instance}
+              onChange={e => { setInstance(e.target.value); setResult(null) }}
+              className="bg-[var(--surface)] border border-[var(--border)] rounded-lg px-2 py-0.5 text-xs focus:outline-none focus:border-[var(--accent)] transition-colors"
+            >
+              {instances.length === 0 && <option value="">No instances</option>}
+              {instances.map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </div>
           {result && (
             <p className="text-xs text-[var(--dim)] mt-0.5">
               {tables.length} tables · {fmtBytes(totalBytes)} total · {activeTables} active
@@ -369,10 +385,10 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
       )}
 
       {/* No instance */}
-      {!selectedInstance && (
+      {!instance && (
         <div className="flex items-center justify-center h-40 text-sm text-[var(--dim)]">
           <Database size={16} className="mr-2" />
-          Select an instance to scan tables
+          Select an instance above to scan tables
         </div>
       )}
 
@@ -418,7 +434,7 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
       )}
 
       {/* Empty state */}
-      {result && sorted.length === 0 && !loading && (
+      {result && sorted.length === 0 && !loading && instance && (
         <div className="flex flex-col items-center justify-center h-40 gap-2 text-[var(--dim)]">
           <Activity size={24} className="opacity-50" />
           <p className="text-sm">{filter ? 'No tables match your filter' : 'No tables found'}</p>

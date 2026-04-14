@@ -196,11 +196,15 @@ function AssistantBubble({ message, isLast }: { message: ChatMessageType; isLast
 
   return (
     <div className="flex flex-col gap-2 w-full">
-      {/* Planning: spinner only */}
-      {isPlanning && !message.content && (
+      {/* Streaming with no visible content yet — covers planning/collecting/streaming phases */}
+      {isStreaming && !message.content && !hasProgress && (
         <div className="flex items-center gap-2 text-sm text-[var(--dim)]">
           <ThinkingSpinner size={16} className="text-orange-400" />
-          <span>Thinking…</span>
+          <span>
+            {message.phase === 'collecting' ? 'Collecting data…'
+              : message.phase === 'streaming' ? 'Writing response…'
+              : 'Thinking…'}
+          </span>
         </div>
       )}
 

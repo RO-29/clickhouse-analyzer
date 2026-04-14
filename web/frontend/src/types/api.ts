@@ -189,7 +189,6 @@ export interface TableScanEntry {
   primary_key: string
   partition_key: string
   sampling_key: string
-  ttl_expression: string
   total_rows: number
   total_bytes: number
   parts_count: number

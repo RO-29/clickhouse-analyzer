@@ -31,7 +31,6 @@ type tableScanEntry struct {
 	PrimaryKey   string            `json:"primary_key"`
 	PartitionKey string            `json:"partition_key"`
 	SamplingKey  string            `json:"sampling_key"`
-	TTLExpression string           `json:"ttl_expression"`
 	TotalRows    uint64            `json:"total_rows"`
 	TotalBytes   uint64            `json:"total_bytes"`
 	PartsCount   uint64            `json:"parts_count"`
@@ -115,7 +114,6 @@ SELECT
   primary_key,
   partition_key,
   sampling_key,
-  ttl_expression,
   total_rows,
   total_bytes,
   parts,
@@ -253,7 +251,6 @@ GROUP BY db, tbl, query_kind
 			PrimaryKey:    strVal(row["primary_key"]),
 			PartitionKey:  strVal(row["partition_key"]),
 			SamplingKey:   strVal(row["sampling_key"]),
-			TTLExpression: strVal(row["ttl_expression"]),
 			TotalRows:     uint64Val(row["total_rows"]),
 			TotalBytes:    uint64Val(row["total_bytes"]),
 			PartsCount:    uint64Val(row["parts"]),
