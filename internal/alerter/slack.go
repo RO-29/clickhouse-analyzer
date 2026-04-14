@@ -15,7 +15,7 @@ import (
 // DigestMessage holds the data needed to render a daily or weekly summary
 // message in Slack.
 type DigestMessage struct {
-	Period       string            // "daily" or "weekly"
+	Period       string           // "daily" or "weekly"
 	HealthScores map[string]int   // instance -> score (0-100)
 	TopIssues    []string
 	Stats        map[string]string // key metrics
@@ -41,165 +41,43 @@ func NewSlackNotifier(botToken, channelID string) *SlackNotifier {
 	}
 }
 
-// UpdateOrPostAlert updates an existing message if slackTS is set, or posts a new one.
-// Returns the message timestamp for future updates.
-func (s *SlackNotifier) UpdateOrPostAlert(alert collector.Alert, slackTS string, resolved bool, fireCount ...int) (string, error) {
-	color := severityColor(alert.Severity)
-	emoji := severityEmoji(alert.Severity)
-	statusLine := ""
-
-	count := 0
-	if len(fireCount) > 0 {
-		count = fireCount[0]
-	}
-
-	if resolved {
-		color = colorGreen
-		emoji = ":white_check_mark:"
-		statusLine = "\n\n*Status:* :white_check_mark: RESOLVED"
-		if count > 1 {
-			statusLine += fmt.Sprintf(" (fired %d times)", count)
-		}
-	} else {
-		statusLine = "\n\n*Status:* :rotating_light: FIRING"
-		if count > 1 {
-			statusLine += fmt.Sprintf(" (iteration #%d)", count)
-		}
-	}
-
-	headerText := fmt.Sprintf("%s *%s*", emoji, escapeMarkdown(alert.Title))
-	fields := []*slack.TextBlockObject{
-		slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf("*Instance:*\n%s", alert.Instance), false, false),
-		slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf("*Severity:*\n%s", strings.ToUpper(string(alert.Severity))), false, false),
-		slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf("*Category:*\n%s", alert.Category), false, false),
-		slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf("*Time:*\n%s", alert.Timestamp.Format(time.RFC822)), false, false),
-	}
-
-	blocks := []slack.Block{
-		slack.NewSectionBlock(
-			slack.NewTextBlockObject(slack.MarkdownType, headerText+statusLine, false, false),
-			nil, nil,
-		),
-		slack.NewSectionBlock(nil, fields, nil),
-	}
-
-	if alert.Message != "" {
-		blocks = append(blocks,
-			slack.NewDividerBlock(),
-			slack.NewSectionBlock(
-				slack.NewTextBlockObject(slack.MarkdownType, alert.Message, false, false),
-				nil, nil,
-			),
-		)
-	}
-
-	blocks = append(blocks, slack.NewContextBlock("",
-		slack.NewTextBlockObject(slack.MarkdownType,
-			fmt.Sprintf("dedup: `%s` | updated: %s", alert.DedupKey, time.Now().Format(time.RFC822)), false, false),
-	))
-
-	attachment := slack.Attachment{
-		Color:  color,
-		Blocks: slack.Blocks{BlockSet: blocks},
-	}
-
-	fallbackText := fmt.Sprintf("%s %s — %s", emoji, alert.Title, alert.Instance)
-
-	if slackTS != "" {
-		// Update existing message.
-		_, _, _, err := s.client.UpdateMessage(
-			s.channelID,
-			slackTS,
-			slack.MsgOptionAttachments(attachment),
-			slack.MsgOptionText(fallbackText, false),
-		)
-		if err != nil {
-			s.logger.Error("failed to update slack message, posting new",
-				slog.String("ts", slackTS),
-				slog.String("error", err.Error()),
-			)
-			// Fall through to post new message.
-		} else {
-			s.logger.Debug("slack message updated", slog.String("ts", slackTS))
-			return slackTS, nil
-		}
-	}
-
-	// Post new message.
-	_, ts, err := s.client.PostMessage(s.channelID,
-		slack.MsgOptionAttachments(attachment),
-		slack.MsgOptionText(fallbackText, false),
-		slack.MsgOptionDisableLinkUnfurl(),
-	)
-	if err != nil {
-		return "", fmt.Errorf("slack post: %w", err)
-	}
-	s.logger.Debug("slack message posted", slog.String("ts", ts))
-	return ts, nil
-}
-
-// SendAlert posts a single critical alert with rich Block Kit formatting and a
-// red sidebar.
-func (s *SlackNotifier) SendAlert(alert collector.Alert) error {
-	color := severityColor(alert.Severity)
-	emoji := severityEmoji(alert.Severity)
-
-	headerText := fmt.Sprintf("%s *%s*", emoji, escapeMarkdown(alert.Title))
-	fields := []*slack.TextBlockObject{
-		slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf("*Instance:*\n%s", alert.Instance), false, false),
-		slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf("*Severity:*\n%s", strings.ToUpper(string(alert.Severity))), false, false),
-		slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf("*Category:*\n%s", alert.Category), false, false),
-		slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf("*Time:*\n%s", alert.Timestamp.Format(time.RFC822)), false, false),
-	}
-
-	blocks := []slack.Block{
-		slack.NewSectionBlock(
-			slack.NewTextBlockObject(slack.MarkdownType, headerText, false, false),
-			nil, nil,
-		),
-		slack.NewSectionBlock(nil, fields, nil),
-	}
-
-	if alert.Message != "" {
-		blocks = append(blocks,
-			slack.NewDividerBlock(),
-			slack.NewSectionBlock(
-				slack.NewTextBlockObject(slack.MarkdownType, alert.Message, false, false),
-				nil, nil,
-			),
-		)
-	}
-
-	blocks = append(blocks, slack.NewContextBlock("",
-		slack.NewTextBlockObject(slack.MarkdownType,
-			fmt.Sprintf("dedup: `%s`", alert.DedupKey), false, false),
-	))
-
-	attachment := slack.Attachment{
-		Color:  color,
-		Blocks: slack.Blocks{BlockSet: blocks},
-	}
-
-	return s.postMessage(
-		slack.MsgOptionAttachments(attachment),
-		slack.MsgOptionText(fmt.Sprintf("%s %s — %s", emoji, alert.Title, alert.Instance), false),
-	)
-}
-
-// SendOrUpdateBatch posts or updates a single Slack message with all warn alerts.
-// Returns the message timestamp for future updates.
-func (s *SlackNotifier) SendOrUpdateBatch(alerts []collector.Alert, slackTS string) (string, error) {
+// UpdateOrPostInstanceMessage builds a single grouped Slack message containing
+// all currently-active alerts for the given instance, then updates the existing
+// message (slackTS) in-place or posts a new one. Returns the message timestamp.
+//
+// All severities (critical + warn) appear in one message, sorted critical-first.
+// Color reflects the highest severity present.
+func (s *SlackNotifier) UpdateOrPostInstanceMessage(instance string, slackTS string, alerts []*ActiveAlert) (string, error) {
 	if len(alerts) == 0 {
 		return slackTS, nil
 	}
 
-	// Group alerts by instance for cleaner display.
-	byInstance := make(map[string][]collector.Alert)
+	var critCount, warnCount int
 	for _, a := range alerts {
-		byInstance[a.Instance] = append(byInstance[a.Instance], a)
+		switch a.Alert.Severity {
+		case collector.SeverityCritical:
+			critCount++
+		case collector.SeverityWarn:
+			warnCount++
+		}
 	}
 
-	headerText := fmt.Sprintf(":warning: *%d Warning Alerts* across %d instances", len(alerts), len(byInstance))
+	color := colorOrange
+	emoji := ":warning:"
+	if critCount > 0 {
+		color = colorRed
+		emoji = ":rotating_light:"
+	}
+
+	var countParts []string
+	if critCount > 0 {
+		countParts = append(countParts, fmt.Sprintf("*%d critical*", critCount))
+	}
+	if warnCount > 0 {
+		countParts = append(countParts, fmt.Sprintf("*%d warn*", warnCount))
+	}
+
+	headerText := fmt.Sprintf("%s *%s* — %s", emoji, escapeMarkdown(instance), strings.Join(countParts, " · "))
 
 	blocks := []slack.Block{
 		slack.NewSectionBlock(
@@ -209,134 +87,94 @@ func (s *SlackNotifier) SendOrUpdateBatch(alerts []collector.Alert, slackTS stri
 		slack.NewDividerBlock(),
 	}
 
-	i := 0
-	for instance, instanceAlerts := range byInstance {
+	// Critical alerts section.
+	if critCount > 0 {
 		var lines []string
-		for _, a := range instanceAlerts {
-			msg := a.Message
-			if len(msg) > 200 {
-				msg = msg[:200] + "..."
+		for _, a := range alerts {
+			if a.Alert.Severity != collector.SeverityCritical {
+				continue
 			}
-			lines = append(lines, fmt.Sprintf("  %d. *%s* [%s]\n      %s",
-				i+1, escapeMarkdown(a.Title), a.Category, msg))
-			i++
+			dur := time.Since(a.FirstSeen).Round(time.Minute)
+			line := fmt.Sprintf("• *%s* — firing %s", escapeMarkdown(a.Alert.Title), formatDuration(dur))
+			if a.Count > 1 {
+				line += fmt.Sprintf(" (×%d)", a.Count)
+			}
+			lines = append(lines, line)
 		}
-
 		blocks = append(blocks, slack.NewSectionBlock(
 			slack.NewTextBlockObject(slack.MarkdownType,
-				fmt.Sprintf("*%s* (%d alerts):\n%s", instance, len(instanceAlerts), strings.Join(lines, "\n")),
+				fmt.Sprintf(":rotating_light: *Critical (%d)*\n%s", critCount, strings.Join(lines, "\n")),
 				false, false),
 			nil, nil,
 		))
 	}
 
-	blocks = append(blocks, slack.NewContextBlock("",
-		slack.NewTextBlockObject(slack.MarkdownType,
-			fmt.Sprintf("Updated at %s", time.Now().Format(time.RFC822)), false, false),
-	))
-
-	attachment := slack.Attachment{
-		Color:  colorOrange,
-		Blocks: slack.Blocks{BlockSet: blocks},
-	}
-
-	fallbackText := fmt.Sprintf(":warning: %d warning alerts", len(alerts))
-
-	if slackTS != "" {
-		_, _, _, err := s.client.UpdateMessage(s.channelID, slackTS,
-			slack.MsgOptionAttachments(attachment),
-			slack.MsgOptionText(fallbackText, false),
-		)
-		if err == nil {
-			s.logger.Debug("warn batch updated in-place", slog.String("ts", slackTS))
-			return slackTS, nil
+	// Warn alerts section.
+	if warnCount > 0 {
+		var lines []string
+		for _, a := range alerts {
+			if a.Alert.Severity != collector.SeverityWarn {
+				continue
+			}
+			dur := time.Since(a.FirstSeen).Round(time.Minute)
+			line := fmt.Sprintf("• *%s* — firing %s", escapeMarkdown(a.Alert.Title), formatDuration(dur))
+			if a.Count > 1 {
+				line += fmt.Sprintf(" (×%d)", a.Count)
+			}
+			lines = append(lines, line)
 		}
-		s.logger.Warn("failed to update batch, posting new", slog.String("error", err.Error()))
-	}
-
-	_, ts, err := s.client.PostMessage(s.channelID,
-		slack.MsgOptionAttachments(attachment),
-		slack.MsgOptionText(fallbackText, false),
-		slack.MsgOptionDisableLinkUnfurl(),
-	)
-	if err != nil {
-		return "", fmt.Errorf("slack post batch: %w", err)
-	}
-	return ts, nil
-}
-
-// SendAlertBatch posts multiple warn-level alerts as a single Slack message.
-// Deprecated: use SendOrUpdateBatch for in-place updates.
-func (s *SlackNotifier) SendAlertBatch(alerts []collector.Alert) error {
-	if len(alerts) == 0 {
-		return nil
-	}
-
-	headerText := fmt.Sprintf(":warning: *%d Warning Alerts*", len(alerts))
-
-	blocks := []slack.Block{
-		slack.NewSectionBlock(
-			slack.NewTextBlockObject(slack.MarkdownType, headerText, false, false),
-			nil, nil,
-		),
-		slack.NewDividerBlock(),
-	}
-
-	for i, alert := range alerts {
-		line := fmt.Sprintf("*%d.* *%s* — `%s` [%s]\n%s",
-			i+1,
-			escapeMarkdown(alert.Title),
-			alert.Instance,
-			alert.Category,
-			alert.Message,
-		)
 		blocks = append(blocks, slack.NewSectionBlock(
-			slack.NewTextBlockObject(slack.MarkdownType, line, false, false),
+			slack.NewTextBlockObject(slack.MarkdownType,
+				fmt.Sprintf(":warning: *Warn (%d)*\n%s", warnCount, strings.Join(lines, "\n")),
+				false, false),
 			nil, nil,
 		))
-
-		// Slack limits blocks per message; split at a reasonable boundary.
-		if i > 0 && i%15 == 0 {
-			blocks = append(blocks, slack.NewDividerBlock())
-		}
 	}
 
-	ts := time.Now().Format(time.RFC822)
+	// Expanded detail for the most-severe single alert (avoids flooding with
+	// all messages; gives the on-call engineer the most important context).
+	if len(alerts) > 0 && alerts[0].Alert.Message != "" {
+		msg := alerts[0].Alert.Message
+		if len(msg) > 400 {
+			msg = msg[:400] + "…"
+		}
+		blocks = append(blocks,
+			slack.NewDividerBlock(),
+			slack.NewSectionBlock(
+				slack.NewTextBlockObject(slack.MarkdownType,
+					fmt.Sprintf("*Top alert detail:*\n%s", msg), false, false),
+				nil, nil,
+			),
+		)
+	}
+
 	blocks = append(blocks, slack.NewContextBlock("",
 		slack.NewTextBlockObject(slack.MarkdownType,
-			fmt.Sprintf("Batched at %s", ts), false, false),
+			fmt.Sprintf("Updated: %s", time.Now().Format("02 Jan 15:04 MST")), false, false),
 	))
 
 	attachment := slack.Attachment{
-		Color:  colorOrange,
+		Color:  color,
 		Blocks: slack.Blocks{BlockSet: blocks},
 	}
 
-	return s.postMessage(
-		slack.MsgOptionAttachments(attachment),
-		slack.MsgOptionText(fmt.Sprintf(":warning: %d warning alerts", len(alerts)), false),
-	)
+	fallbackText := fmt.Sprintf("%s %s — %s", emoji, instance, strings.Join(countParts, ", "))
+	return s.updateOrPost(slackTS, fallbackText, attachment)
 }
 
-// SendResolution posts a green "all clear" message indicating a previously
-// firing alert has resolved.
-func (s *SlackNotifier) SendResolution(dedupKey, title, instance string, duration time.Duration) error {
-	headerText := fmt.Sprintf(":white_check_mark: *Resolved: %s*", escapeMarkdown(title))
-
-	fields := []*slack.TextBlockObject{
-		slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf("*Instance:*\n%s", instance), false, false),
-		slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf("*Duration:*\n%s", formatDuration(duration)), false, false),
-	}
+// PostInstanceAllClear updates the instance's existing Slack message to show
+// all alerts resolved (green). If no existing message, posts a new one.
+func (s *SlackNotifier) PostInstanceAllClear(instance string, slackTS string) (string, error) {
+	headerText := fmt.Sprintf(":white_check_mark: *%s* — All clear", escapeMarkdown(instance))
 
 	blocks := []slack.Block{
 		slack.NewSectionBlock(
 			slack.NewTextBlockObject(slack.MarkdownType, headerText, false, false),
 			nil, nil,
 		),
-		slack.NewSectionBlock(nil, fields, nil),
 		slack.NewContextBlock("",
 			slack.NewTextBlockObject(slack.MarkdownType,
-				fmt.Sprintf("dedup: `%s` | resolved at %s", dedupKey, time.Now().Format(time.RFC822)),
+				fmt.Sprintf("All alerts resolved at %s", time.Now().Format("02 Jan 15:04 MST")),
 				false, false),
 		),
 	}
@@ -346,10 +184,8 @@ func (s *SlackNotifier) SendResolution(dedupKey, title, instance string, duratio
 		Blocks: slack.Blocks{BlockSet: blocks},
 	}
 
-	return s.postMessage(
-		slack.MsgOptionAttachments(attachment),
-		slack.MsgOptionText(fmt.Sprintf(":white_check_mark: Resolved: %s — %s (lasted %s)", title, instance, formatDuration(duration)), false),
-	)
+	fallbackText := fmt.Sprintf(":white_check_mark: %s — All clear", instance)
+	return s.updateOrPost(slackTS, fallbackText, attachment)
 }
 
 // SendDigest posts a daily or weekly summary with health scores, top issues,
@@ -456,66 +292,60 @@ const (
 	colorBlue   = "#36C5F0"
 )
 
-// postMessage wraps the Slack API call with logging and basic rate-limit
-// handling.
+// updateOrPost updates an existing Slack message by TS, or posts a new one.
+// Returns the (possibly new) message timestamp.
+func (s *SlackNotifier) updateOrPost(slackTS, fallbackText string, attachment slack.Attachment) (string, error) {
+	if slackTS != "" {
+		_, _, _, err := s.client.UpdateMessage(
+			s.channelID, slackTS,
+			slack.MsgOptionAttachments(attachment),
+			slack.MsgOptionText(fallbackText, false),
+		)
+		if err == nil {
+			s.logger.Debug("slack message updated in-place", slog.String("ts", slackTS))
+			return slackTS, nil
+		}
+		s.logger.Warn("failed to update slack message, posting new",
+			slog.String("ts", slackTS), slog.String("error", err.Error()))
+		// Fall through to post a new message.
+	}
+
+	_, ts, err := s.client.PostMessage(s.channelID,
+		slack.MsgOptionAttachments(attachment),
+		slack.MsgOptionText(fallbackText, false),
+		slack.MsgOptionDisableLinkUnfurl(),
+	)
+	if err != nil {
+		return "", fmt.Errorf("slack post: %w", err)
+	}
+	s.logger.Debug("slack message posted", slog.String("ts", ts))
+	return ts, nil
+}
+
+// postMessage wraps the Slack API call with logging and rate-limit handling.
 func (s *SlackNotifier) postMessage(opts ...slack.MsgOption) error {
 	opts = append(opts, slack.MsgOptionDisableLinkUnfurl())
-
 	_, _, err := s.client.PostMessage(s.channelID, opts...)
 	if err != nil {
-		// Handle Slack rate limiting.
 		if rlErr, ok := err.(*slack.RateLimitedError); ok {
 			s.logger.Warn("slack rate limited, message dropped",
-				slog.Duration("retry_after", rlErr.RetryAfter),
-			)
+				slog.Duration("retry_after", rlErr.RetryAfter))
 			return fmt.Errorf("slack rate limited (retry after %s): %w", rlErr.RetryAfter, err)
 		}
 		s.logger.Error("failed to post slack message",
-			slog.String("channel", s.channelID),
-			slog.String("error", err.Error()),
-		)
+			slog.String("channel", s.channelID), slog.String("error", err.Error()))
 		return fmt.Errorf("slack post message: %w", err)
 	}
-
 	s.logger.Debug("slack message sent", slog.String("channel", s.channelID))
 	return nil
 }
 
-func severityColor(sev collector.Severity) string {
-	switch sev {
-	case collector.SeverityCritical:
-		return colorRed
-	case collector.SeverityWarn:
-		return colorOrange
-	case collector.SeverityInfo:
-		return colorBlue
-	default:
-		return colorBlue
-	}
-}
-
-func severityEmoji(sev collector.Severity) string {
-	switch sev {
-	case collector.SeverityCritical:
-		return ":rotating_light:"
-	case collector.SeverityWarn:
-		return ":warning:"
-	case collector.SeverityInfo:
-		return ":information_source:"
-	default:
-		return ":information_source:"
-	}
-}
-
-// escapeMarkdown does a minimal escape of characters that could break Slack
-// mrkdwn rendering.
+// escapeMarkdown does a minimal escape of characters that could break Slack mrkdwn.
 func escapeMarkdown(s string) string {
 	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
 	return r.Replace(s)
 }
 
-// capitalizeFirst upper-cases the first rune of s (avoids deprecated
-// strings.Title).
 func capitalizeFirst(s string) string {
 	if s == "" {
 		return s
@@ -523,8 +353,7 @@ func capitalizeFirst(s string) string {
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 
-// formatDuration returns a human-friendly representation of a duration,
-// e.g. "2h 15m" instead of "2h15m0s".
+// formatDuration returns a human-friendly representation, e.g. "2h 15m".
 func formatDuration(d time.Duration) string {
 	if d < time.Minute {
 		return d.Round(time.Second).String()
