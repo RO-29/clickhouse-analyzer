@@ -1,5 +1,6 @@
 import { useCallback } from 'react'
 import { useStore } from './useStore'
+import { notifyDone, notifyError, requestNotifPermission } from '../lib/notify'
 import type { AnalysisEntry, AnalyzeOptions } from '../types/api'
 
 // Re-export so existing imports from this module keep working
@@ -35,6 +36,12 @@ export function useAIAnalysis(instance: string) {
 
       setEntries(prev => [newEntry, ...prev])
       setIsOpen(true)
+      requestNotifPermission()
+
+      // Track whether we've already notified so we don't double-fire
+      let notified = false
+      const fireNotifyDone = () => { if (!notified) { notified = true; notifyDone(label) } }
+      const fireNotifyError = () => { if (!notified) { notified = true; notifyError(label) } }
 
       try {
         const resp = await fetch(
@@ -64,6 +71,7 @@ export function useAIAnalysis(instance: string) {
               e.id === id ? { ...e, status: 'error', output: `Error: ${msg}` } : e,
             ),
           )
+          fireNotifyError()
           return
         }
 
@@ -97,6 +105,7 @@ export function useAIAnalysis(instance: string) {
                     : e,
                 ),
               )
+              fireNotifyError()
             } catch {}
           } else if (currentEvent === 'status' && currentData) {
             try {
@@ -141,6 +150,7 @@ export function useAIAnalysis(instance: string) {
               : e,
           ),
         )
+        fireNotifyDone()
       } catch (err: any) {
         setEntries(prev =>
           prev.map(e =>
@@ -149,6 +159,7 @@ export function useAIAnalysis(instance: string) {
               : e,
           ),
         )
+        fireNotifyError()
       }
     },
     [instance, setEntries, setIsOpen],

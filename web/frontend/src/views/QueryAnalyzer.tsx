@@ -6,6 +6,7 @@ import {
 import { marked } from 'marked'
 import { useStore } from '../hooks/useStore'
 import { cn } from '../lib/utils'
+import { notifyDone, notifyError, requestNotifPermission } from '../lib/notify'
 import type { AnalysisEntry } from '../types/api'
 
 /* ─── marked config ──────────────────────────────────────────────────────── */
@@ -280,7 +281,7 @@ function RunningInfoCard({ mode, instance, timeWindow, phase, steps, linesReceiv
 /* ─── Main component ─────────────────────────────────────────────────────── */
 
 export default function QueryAnalyzer() {
-  const { instances, selectedInstance, aiEntries } = useStore()
+  const { instances, selectedInstance, aiEntries, setAiEntries } = useStore()
 
   const [instance, setInstance] = useState(selectedInstance || instances[0] || '')
   const [mode, setMode] = useState<ModeId>('full')
@@ -299,6 +300,9 @@ export default function QueryAnalyzer() {
 
   const abortRef = useRef<AbortController | null>(null)
   const outputRef = useRef<HTMLDivElement>(null)
+  // Accumulate full output text so we can save to history on completion
+  const outputAccRef = useRef('')
+  const analysisStartRef = useRef<Date>(new Date())
 
   // Sync instance when store changes
   useEffect(() => {
@@ -330,13 +334,38 @@ export default function QueryAnalyzer() {
   const runAnalysis = useCallback((appendQuestion?: string) => {
     if (!instance) return
     stopStream()
+    requestNotifPermission()
+    setSelectedEntry(null)
 
     const q = appendQuestion ?? (question || '')
+    const modeLabel = MODES.find((m) => m.id === mode)?.label ?? mode
+    const entryLabel = `${modeLabel} — ${instance}`
+    outputAccRef.current = ''
+    analysisStartRef.current = new Date()
+
     setSteps(STEPS_BY_MODE[mode].map((label) => ({ label, status: 'pending' as const })))
     setPhase('collecting')
     setOutput('')
     setErrorMsg('')
     setLinesReceived(0)
+
+    // Deduplication flag — only notify once per run
+    let notified = false
+    const fireNotifyDone = () => { if (!notified) { notified = true; notifyDone(entryLabel) } }
+    const fireNotifyError = (msg?: string) => { if (!notified) { notified = true; notifyError(msg ? `${entryLabel}: ${msg}` : entryLabel) } }
+
+    const saveToHistory = (status: 'done' | 'error') => {
+      const entry: AnalysisEntry = {
+        id: Date.now().toString(36) + Math.random().toString(36).slice(2),
+        label: entryLabel,
+        contextType: 'tab',
+        tab: 'analyzer',
+        status,
+        output: outputAccRef.current,
+        timestamp: analysisStartRef.current,
+      }
+      setAiEntries((prev) => [entry, ...prev])
+    }
 
     const ctrl = new AbortController()
     abortRef.current = ctrl
@@ -375,7 +404,9 @@ export default function QueryAnalyzer() {
               }
             } else if (event === 'chunk') {
               setLinesReceived((n) => n + 1)
-              setOutput((prev) => prev + (payload as string))
+              const chunk = payload as string
+              outputAccRef.current += chunk
+              setOutput((prev) => prev + chunk)
               setSteps((prev) => {
                 const idx = prev.findIndex((s) => s.status === 'running')
                 if (idx === -1) return prev
@@ -396,8 +427,11 @@ export default function QueryAnalyzer() {
               console.log('Prompt tail (400 chars):', (payload as {prompt_tail:string}).prompt_tail)
               console.groupEnd()
             } else if (event === 'error') {
-              setErrorMsg(payload as string)
+              const errMsg = payload as string
+              setErrorMsg(errMsg)
               setPhase('error')
+              saveToHistory('error')
+              fireNotifyError(errMsg)
             } else if (event === 'stderr') {
               setErrorMsg((prev) => prev ? prev + '\n' + (payload as string) : 'Claude: ' + (payload as string))
             }
@@ -419,13 +453,17 @@ export default function QueryAnalyzer() {
       if (remainder) processLine(remainder)
       setSteps((prev) => prev.map((s) => ({ ...s, status: 'done' as const })))
       setPhase('done')
+      saveToHistory('done')
+      fireNotifyDone()
     }).catch((err: unknown) => {
       if (err instanceof Error && err.name !== 'AbortError') {
         setErrorMsg(err.message)
         setPhase('error')
+        saveToHistory('error')
+        fireNotifyError(err.message)
       }
     })
-  }, [instance, mode, timeWindow, question, stopStream])
+  }, [instance, mode, timeWindow, question, stopStream, setAiEntries])
 
   useEffect(() => () => stopStream(), [stopStream])
 
