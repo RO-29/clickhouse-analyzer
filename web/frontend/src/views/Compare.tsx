@@ -203,14 +203,32 @@ function NodeSelector({
 /*  Tables view — flat sortable grid + node selector + live search    */
 /* ------------------------------------------------------------------ */
 type SortKey = 'name' | 'rows' | 'bytes' | 'drift'
+type RowFilter = 'all' | 'missing' | 'divergent'
+
+const NODES_KEY = 'compare-selected-nodes'
 
 function TablesView({ data, instances }: { data: TablesData; instances: string[] }) {
-  const [selectedNodes, setSelectedNodes] = useState<string[]>(() => [...instances])
+  const [selectedNodes, setSelectedNodes] = useState<string[]>(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(NODES_KEY) ?? '[]') as string[]
+      const valid = stored.filter((n) => instances.includes(n))
+      return valid.length > 0 ? valid : [...instances]
+    } catch {
+      return [...instances]
+    }
+  })
   const [search, setSearch] = useState('')
   const [sortKey, setSortKey] = useState<SortKey>('name')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
+  const [rowFilter, setRowFilter] = useState<RowFilter>('all')
 
-  // Active nodes: intersection of user selection + current instances
+  // Persist selected nodes whenever they change
+  const handleSetNodes = useCallback((nodes: string[]) => {
+    setSelectedNodes(nodes)
+    try { localStorage.setItem(NODES_KEY, JSON.stringify(nodes)) } catch {}
+  }, [])
+
+  // Active nodes: intersection of stored selection + current instances
   const activeNodes = useMemo(() => {
     const valid = selectedNodes.filter((n) => instances.includes(n))
     return valid.length > 0 ? valid : instances
@@ -234,10 +252,16 @@ function TablesView({ data, instances }: { data: TablesData; instances: string[]
     let rows = data.tables
 
     // Only show tables that exist on at least one selected node.
-    // Tables present only on unselected nodes are irrelevant to the current comparison.
     rows = rows.filter((t) =>
       activeNodes.some((n) => !(t.missing_on ?? []).includes(n)),
     )
+
+    // Row filter: missing / divergent / all
+    if (rowFilter === 'missing') {
+      rows = rows.filter((t) => isRowMissing(t, activeNodes))
+    } else if (rowFilter === 'divergent') {
+      rows = rows.filter((t) => !isRowMissing(t, activeNodes) && rowDrift(t, activeNodes) > 0.01)
+    }
 
     if (search.trim()) {
       const q = search.toLowerCase()
@@ -302,12 +326,12 @@ function TablesView({ data, instances }: { data: TablesData; instances: string[]
     <div className="space-y-4">
       {/* Node selector */}
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl px-4 py-3">
-        <NodeSelector instances={instances} selected={activeNodes} onChange={setSelectedNodes} />
+        <NodeSelector instances={instances} selected={activeNodes} onChange={handleSetNodes} />
       </div>
 
-      {/* Search + summary row */}
-      <div className="flex items-center gap-3">
-        <div className="relative max-w-sm flex-1">
+      {/* Search + filter + summary row */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="relative max-w-sm flex-1 min-w-[180px]">
           <Search
             size={13}
             className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--dim)] pointer-events-none"
@@ -319,18 +343,44 @@ function TablesView({ data, instances }: { data: TablesData; instances: string[]
             className="w-full pl-8 pr-3 py-1.5 text-sm rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] placeholder-[var(--dim)] outline-none focus:border-[var(--accent)]/50 transition-colors"
           />
         </div>
+
+        {/* Row filter */}
+        <div className="flex items-center gap-0.5 bg-[var(--surface)] border border-[var(--border)] rounded-lg p-0.5">
+          {([
+            { key: 'all',       label: 'All',       count: null },
+            { key: 'missing',   label: 'Missing',   count: missingCount,  color: 'text-red-400' },
+            { key: 'divergent', label: 'Divergent', count: diffCount,     color: 'text-yellow-400' },
+          ] as { key: RowFilter; label: string; count: number | null; color?: string }[]).map(({ key, label, count, color }) => (
+            <button
+              key={key}
+              onClick={() => setRowFilter(key)}
+              className={cn(
+                'px-2.5 py-1 rounded text-xs font-medium transition-colors',
+                rowFilter === key
+                  ? 'bg-[var(--hover)] text-[var(--fg)]'
+                  : 'text-[var(--dim)] hover:text-[var(--fg)]',
+              )}
+            >
+              {label}
+              {count != null && count > 0 && (
+                <span className={cn('ml-1', color ?? '')}>{count}</span>
+              )}
+            </button>
+          ))}
+        </div>
+
         <div className="flex items-center gap-4 text-xs ml-auto">
-          {missingCount > 0 && (
-            <span className="flex items-center gap-1 text-red-400">
+          {missingCount > 0 && rowFilter === 'all' && (
+            <button onClick={() => setRowFilter('missing')} className="flex items-center gap-1 text-red-400 hover:underline">
               <XCircle size={11} />
               {missingCount} missing
-            </span>
+            </button>
           )}
-          {diffCount > 0 && (
-            <span className="flex items-center gap-1 text-yellow-400">
+          {diffCount > 0 && rowFilter === 'all' && (
+            <button onClick={() => setRowFilter('divergent')} className="flex items-center gap-1 text-yellow-400 hover:underline">
               <AlertTriangle size={11} />
               {diffCount} diverging
-            </span>
+            </button>
           )}
           <span className="text-[var(--dim)]">{filtered.length} tables</span>
         </div>

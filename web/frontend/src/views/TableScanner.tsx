@@ -1,5 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Search, RefreshCw, ChevronDown, ChevronRight, Database, HardDrive, Activity, Code } from 'lucide-react'
+import {
+  Search, RefreshCw, ChevronDown, ChevronRight,
+  Database, HardDrive, Activity, Code, AlertTriangle,
+} from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { api } from '../lib/api'
 import { cn } from '../lib/utils'
@@ -8,46 +11,64 @@ import type { TableScanResult, TableScanEntry, DiskUsageEntry } from '../types/a
 /* ─── Helpers ─────────────────────────────────────────────────────────────── */
 
 function fmtBytes(b: number): string {
-  if (b === 0) return '0 B'
+  if (b === 0) return '—'
   const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
   const i = Math.floor(Math.log(b) / Math.log(1024))
   return (b / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1) + ' ' + units[i]
 }
 
 function fmtRows(n: number): string {
+  if (n === 0) return '—'
   if (n >= 1_000_000_000) return (n / 1_000_000_000).toFixed(1) + 'B'
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M'
   if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K'
   return String(n)
 }
 
+function fmtCount(n: number): string {
+  if (n === 0) return '—'
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M'
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K'
+  return n.toLocaleString()
+}
+
+/** Returns a relative-time string for a ClickHouse datetime string, or '' if invalid/epoch. */
+function fmtActivityTs(s: string | undefined): string {
+  if (!s || s === '' || s.startsWith('1970-01-01') || s.startsWith('0000-00-00')) return ''
+  // ClickHouse datetimes come as "YYYY-MM-DD HH:MM:SS" in server local time.
+  // Treat as local to avoid timezone gymnastics.
+  const d = new Date(s.replace(' ', 'T'))
+  if (isNaN(d.getTime()) || d.getFullYear() < 2000) return ''
+  const diff = Date.now() - d.getTime()
+  if (diff < 60_000) return 'just now'
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`
+  if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)}d ago`
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+}
+
+/** Abbreviate long engine names so they fit in a compact column. */
+function abbrevEngine(e: string): string {
+  return e
+    .replace('VersionedCollapsingMergeTree', 'VersionedCMT')
+    .replace('ReplacingMergeTree', 'ReplacingMT')
+    .replace('CollapsingMergeTree', 'CollapsingMT')
+    .replace('SummingMergeTree', 'SummingMT')
+    .replace('AggregatingMergeTree', 'AggMT')
+    .replace('GraphiteMergeTree', 'GraphiteMT')
+    .replace('ReplicatedVersionedCollapsingMergeTree', 'RepVersionedCMT')
+    .replace('ReplicatedReplacingMergeTree', 'RepReplacingMT')
+    .replace('ReplicatedCollapsingMergeTree', 'RepCollapsingMT')
+    .replace('ReplicatedMergeTree', 'RepMT')
+    .replace('ReplicatedSummingMergeTree', 'RepSummingMT')
+    .replace('ReplicatedAggregatingMergeTree', 'RepAggMT')
+}
+
 const DISK_TYPE_COLORS: Record<string, string> = {
   local: 'text-blue-400',
   s3: 'text-yellow-400',
   hdfs: 'text-purple-400',
-  azure_blob: 'text-cyan-400',
-}
-
-function DiskTypeBadge({ type }: { type: string }) {
-  const color = DISK_TYPE_COLORS[type?.toLowerCase()] ?? 'text-[var(--dim)]'
-  return (
-    <span className={cn('text-[10px] font-mono uppercase', color)}>
-      {type || 'local'}
-    </span>
-  )
-}
-
-function ActivityBadge({ active }: { active: boolean }) {
-  return active ? (
-    <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-green-500/15 text-green-400 border border-green-500/30">
-      <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
-      active
-    </span>
-  ) : (
-    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--surface)] text-[var(--dim)] border border-[var(--border)]">
-      idle
-    </span>
-  )
+  azure_blob_storage: 'text-cyan-400',
 }
 
 /* ─── Time range presets ──────────────────────────────────────────────────── */
@@ -60,81 +81,96 @@ const RANGE_PRESETS = [
   { label: '30d', secs: 2592000 },
 ]
 
-/* ─── Expanded table detail ───────────────────────────────────────────────── */
+/* ─── Expanded detail panel ───────────────────────────────────────────────── */
 
 function TableDetail({ entry }: { entry: TableScanEntry }) {
   const [showQuery, setShowQuery] = useState(false)
+  const act = entry.query_activity
+  const lastSel = fmtActivityTs(act.last_select)
+  const lastIns = fmtActivityTs(act.last_insert)
+
+  const keys = [
+    { label: 'Sorting Key',    value: entry.sorting_key },
+    { label: 'Primary Key',   value: entry.primary_key },
+    { label: 'Partition Key', value: entry.partition_key },
+    { label: 'Sampling Key',  value: entry.sampling_key },
+    { label: 'Storage Policy',value: entry.storage_policy },
+  ].filter(k => k.value)
 
   return (
-    <div className="px-4 pb-4 pt-2 border-t border-[var(--border)] bg-[var(--surface)]/40 space-y-3">
-      {/* Keys */}
-      <div className="grid grid-cols-2 gap-3 text-xs">
-        {[
-          { label: 'Sorting Key', value: entry.sorting_key },
-          { label: 'Primary Key', value: entry.primary_key },
-          { label: 'Partition Key', value: entry.partition_key },
-          { label: 'Sampling Key', value: entry.sampling_key },
-          { label: 'Storage Policy', value: entry.storage_policy },
-        ].map(({ label, value }) => value ? (
-          <div key={label}>
-            <span className="text-[10px] text-[var(--dim)] uppercase tracking-wider">{label}</span>
-            <p className="font-mono text-[11px] text-[var(--fg)] mt-0.5 break-all">{value}</p>
+    <div className="px-4 py-3 border-t border-[var(--border)] bg-[var(--surface)]/30 space-y-3 text-xs">
+      {/* Keys + Activity side by side */}
+      <div className="flex gap-6">
+        {/* Keys */}
+        {keys.length > 0 && (
+          <div className="flex-1 min-w-0 grid grid-cols-2 gap-x-6 gap-y-1.5">
+            {keys.map(({ label, value }) => (
+              <div key={label} className="min-w-0">
+                <span className="text-[9px] text-[var(--dim)] uppercase tracking-widest">{label}</span>
+                <p className="font-mono text-[10px] text-[var(--fg)] truncate">{value}</p>
+              </div>
+            ))}
           </div>
-        ) : null)}
+        )}
+
+        {/* Activity */}
+        <div className="shrink-0 space-y-1 text-right min-w-[140px]">
+          <p className="text-[9px] text-[var(--dim)] uppercase tracking-widest mb-1">Activity (window)</p>
+          <div className="flex items-center justify-end gap-2">
+            <span className="text-blue-400 font-mono font-medium">
+              {act.select_count > 0 ? fmtCount(act.select_count) : '—'}
+            </span>
+            <span className="text-[var(--dim)]">SELECTs</span>
+            {lastSel && act.select_count > 0 && (
+              <span className="text-[9px] text-[var(--dim)]">{lastSel}</span>
+            )}
+          </div>
+          <div className="flex items-center justify-end gap-2">
+            <span className="text-green-400 font-mono font-medium">
+              {act.insert_count > 0 ? fmtCount(act.insert_count) : '—'}
+            </span>
+            <span className="text-[var(--dim)]">INSERTs</span>
+            {lastIns && act.insert_count > 0 && (
+              <span className="text-[9px] text-[var(--dim)]">{lastIns}</span>
+            )}
+          </div>
+        </div>
       </div>
 
       {/* Disk breakdown */}
       {entry.disk_usage && entry.disk_usage.length > 0 && (
-        <div>
-          <p className="text-[10px] text-[var(--dim)] uppercase tracking-wider mb-1.5">Disk Breakdown</p>
-          <div className="flex flex-wrap gap-2">
-            {entry.disk_usage.map((d: DiskUsageEntry) => (
-              <div key={d.disk_name} className="flex items-center gap-1.5 px-2 py-1 rounded border border-[var(--border)] bg-[var(--hover)] text-xs">
-                <HardDrive size={10} className="text-[var(--dim)] shrink-0" />
-                <span className="font-mono text-[var(--fg)]">{d.disk_name}</span>
-                <DiskTypeBadge type={d.disk_type} />
-                <span className="text-[var(--dim)]">{d.readable_size}</span>
-                <span className="text-[var(--dim)]">{d.parts.toLocaleString()} parts</span>
-              </div>
-            ))}
-          </div>
+        <div className="flex flex-wrap gap-1.5">
+          <span className="text-[9px] text-[var(--dim)] uppercase tracking-widest self-center mr-1">Disks</span>
+          {entry.disk_usage.map((d: DiskUsageEntry) => (
+            <span
+              key={d.disk_name}
+              className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded border border-[var(--border)] bg-[var(--hover)] text-[10px]"
+            >
+              <HardDrive size={9} className="text-[var(--dim)] shrink-0" />
+              <span className="font-mono text-[var(--fg)]">{d.disk_name}</span>
+              <span className={cn('uppercase', DISK_TYPE_COLORS[d.disk_type?.toLowerCase()] ?? 'text-[var(--dim)]')}>
+                {d.disk_type || 'local'}
+              </span>
+              <span className="text-[var(--dim)]">{d.readable_size}</span>
+              <span className="text-[var(--dim)]">{d.parts.toLocaleString()} parts</span>
+            </span>
+          ))}
         </div>
       )}
 
-      {/* Query activity */}
-      <div>
-        <p className="text-[10px] text-[var(--dim)] uppercase tracking-wider mb-1.5">Query Activity (window)</p>
-        <div className="flex flex-wrap gap-4 text-xs">
-          <div>
-            <span className="text-[var(--dim)]">SELECTs: </span>
-            <span className="font-mono text-[var(--fg)]">{entry.query_activity.select_count.toLocaleString()}</span>
-            {entry.query_activity.last_select && (
-              <span className="text-[var(--dim)] ml-2">last {entry.query_activity.last_select}</span>
-            )}
-          </div>
-          <div>
-            <span className="text-[var(--dim)]">INSERTs: </span>
-            <span className="font-mono text-[var(--fg)]">{entry.query_activity.insert_count.toLocaleString()}</span>
-            {entry.query_activity.last_insert && (
-              <span className="text-[var(--dim)] ml-2">last {entry.query_activity.last_insert}</span>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* CREATE TABLE toggle */}
+      {/* CREATE TABLE */}
       {entry.create_query && (
         <div>
           <button
             onClick={() => setShowQuery(v => !v)}
-            className="flex items-center gap-1.5 text-[10px] text-[var(--dim)] hover:text-[var(--fg)] transition-colors"
+            className="inline-flex items-center gap-1 text-[10px] text-[var(--dim)] hover:text-[var(--fg)] transition-colors"
           >
             <Code size={10} />
             {showQuery ? 'Hide' : 'Show'} CREATE TABLE
-            {showQuery ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+            {showQuery ? <ChevronDown size={9} /> : <ChevronRight size={9} />}
           </button>
           {showQuery && (
-            <pre className="mt-1.5 text-[10px] font-mono bg-[var(--code-bg)] border border-[var(--border)] rounded p-3 overflow-x-auto whitespace-pre-wrap break-all leading-relaxed">
+            <pre className="mt-1.5 text-[10px] font-mono bg-[var(--code-bg,var(--hover))] border border-[var(--border)] rounded p-2.5 overflow-x-auto whitespace-pre-wrap break-all leading-relaxed max-h-48">
               {entry.create_query}
             </pre>
           )}
@@ -148,58 +184,100 @@ function TableDetail({ entry }: { entry: TableScanEntry }) {
 
 function TableRow({ entry, filter }: { entry: TableScanEntry; filter: string }) {
   const [expanded, setExpanded] = useState(false)
+  const act = entry.query_activity
 
   const f = filter.toLowerCase()
-  if (f && !entry.database.toLowerCase().includes(f) && !entry.table.toLowerCase().includes(f) && !entry.engine.toLowerCase().includes(f)) {
+  if (f && !entry.database.toLowerCase().includes(f)
+        && !entry.table.toLowerCase().includes(f)
+        && !entry.engine.toLowerCase().includes(f)) {
     return null
   }
+
+  const lastSel = fmtActivityTs(act.last_select)
+  const lastIns = fmtActivityTs(act.last_insert)
 
   return (
     <>
       <tr
         className={cn(
-          'border-b border-[var(--border)] cursor-pointer',
+          'border-b border-[var(--border)] cursor-pointer group transition-colors',
           expanded ? 'bg-[var(--surface)]' : 'hover:bg-[var(--hover)]',
-          'transition-colors',
         )}
         onClick={() => setExpanded(v => !v)}
       >
-        <td className="px-3 py-2.5 w-5">
+        {/* Expand */}
+        <td className="w-7 pl-2 pr-0">
           {expanded
-            ? <ChevronDown size={12} className="text-[var(--dim)]" />
-            : <ChevronRight size={12} className="text-[var(--dim)]" />
+            ? <ChevronDown size={11} className="text-[var(--dim)]" />
+            : <ChevronRight size={11} className="text-[var(--dim)] opacity-0 group-hover:opacity-100 transition-opacity" />
           }
         </td>
-        <td className="px-3 py-2.5 text-xs">
-          <span className="text-[var(--dim)]">{entry.database}.</span>
+
+        {/* Table name */}
+        <td className="px-2 py-1.5 text-xs max-w-[220px]">
+          <span className="text-[var(--dim)] text-[10px]">{entry.database}.</span>
           <span className="font-medium text-[var(--fg)]">{entry.table}</span>
         </td>
-        <td className="px-3 py-2.5 text-xs font-mono text-[var(--dim)]">{entry.engine}</td>
-        <td className="px-3 py-2.5 text-xs font-mono text-right tabular-nums">{fmtRows(entry.total_rows)}</td>
-        <td className="px-3 py-2.5 text-xs font-mono text-right tabular-nums">{fmtBytes(entry.total_bytes)}</td>
-        <td className="px-3 py-2.5 text-xs font-mono text-right tabular-nums">{entry.parts_count.toLocaleString()}</td>
-        <td className="px-3 py-2.5 text-xs">
-          <div className="flex flex-wrap gap-1">
-            {entry.disk_usage?.map(d => (
-              <span key={d.disk_name} className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-[var(--hover)] border border-[var(--border)] text-[10px]">
-                <DiskTypeBadge type={d.disk_type} />
-                <span className="text-[var(--dim)]">{d.disk_name}</span>
-              </span>
-            ))}
-          </div>
+
+        {/* Engine */}
+        <td className="px-2 py-1.5 text-[10px] font-mono text-[var(--dim)] max-w-[130px] truncate">
+          {abbrevEngine(entry.engine)}
         </td>
-        <td className="px-3 py-2.5 text-right">
-          <ActivityBadge active={entry.query_activity.is_active} />
+
+        {/* Rows */}
+        <td className="px-2 py-1.5 text-[11px] font-mono text-right tabular-nums text-[var(--fg)]">
+          {fmtRows(entry.total_rows)}
         </td>
-        <td className="px-3 py-2.5 text-xs text-right tabular-nums text-[var(--dim)]">
-          {entry.query_activity.select_count > 0 && (
-            <span className="text-blue-400 mr-2">↓{entry.query_activity.select_count.toLocaleString()}</span>
+
+        {/* Size */}
+        <td className="px-2 py-1.5 text-[11px] font-mono text-right tabular-nums text-[var(--fg)]">
+          {fmtBytes(entry.total_bytes)}
+        </td>
+
+        {/* Parts */}
+        <td className="px-2 py-1.5 text-[11px] font-mono text-right tabular-nums text-[var(--dim)]">
+          {entry.parts_count > 0 ? entry.parts_count.toLocaleString() : '—'}
+        </td>
+
+        {/* Activity badge */}
+        <td className="px-2 py-1.5 text-center">
+          {act.is_active ? (
+            <span className="inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded-full bg-green-500/15 text-green-400 border border-green-500/25 whitespace-nowrap">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+              active
+            </span>
+          ) : (
+            <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-[var(--surface)] text-[var(--dim)] border border-[var(--border)]">
+              idle
+            </span>
           )}
-          {entry.query_activity.insert_count > 0 && (
-            <span className="text-green-400">↑{entry.query_activity.insert_count.toLocaleString()}</span>
+        </td>
+
+        {/* SELECTs */}
+        <td className="px-2 py-1.5 text-right">
+          {act.select_count > 0 ? (
+            <div>
+              <span className="text-[11px] font-mono text-blue-400 tabular-nums">{fmtCount(act.select_count)}</span>
+              {lastSel && <div className="text-[9px] text-[var(--dim)]">{lastSel}</div>}
+            </div>
+          ) : (
+            <span className="text-[10px] text-[var(--dim)]">—</span>
+          )}
+        </td>
+
+        {/* INSERTs */}
+        <td className="px-2 py-1.5 text-right">
+          {act.insert_count > 0 ? (
+            <div>
+              <span className="text-[11px] font-mono text-green-400 tabular-nums">{fmtCount(act.insert_count)}</span>
+              {lastIns && <div className="text-[9px] text-[var(--dim)]">{lastIns}</div>}
+            </div>
+          ) : (
+            <span className="text-[10px] text-[var(--dim)]">—</span>
           )}
         </td>
       </tr>
+
       {expanded && (
         <tr className="border-b border-[var(--border)]">
           <td colSpan={9} className="p-0">
@@ -224,11 +302,10 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [filter, setFilter] = useState('')
-  const [rangePreset, setRangePreset] = useState(604800) // 7d default
+  const [rangePreset, setRangePreset] = useState(604800)
   const [sortCol, setSortCol] = useState<'bytes' | 'rows' | 'parts' | 'selects' | 'inserts'>('bytes')
   const [activityFilter, setActivityFilter] = useState<'all' | 'active' | 'idle'>('all')
 
-  // Auto-select: prefer global selectedInstance, fall back to first available instance
   useEffect(() => {
     if (!instance) {
       const target = selectedInstance || instances[0] || ''
@@ -255,14 +332,15 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
 
   const tables = result?.tables ?? []
 
-  // Filter by activity
   const filtered = tables.filter(t => {
     if (activityFilter === 'active') return t.query_activity.is_active
     if (activityFilter === 'idle') return !t.query_activity.is_active
     return true
+  }).filter(t => {
+    const f = filter.toLowerCase()
+    return !f || t.database.toLowerCase().includes(f) || t.table.toLowerCase().includes(f) || t.engine.toLowerCase().includes(f)
   })
 
-  // Sort
   const sorted = [...filtered].sort((a, b) => {
     switch (sortCol) {
       case 'rows':    return b.total_rows - a.total_rows
@@ -277,33 +355,77 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
   const activeTables = tables.filter(t => t.query_activity.is_active).length
 
   return (
-    <div className="space-y-4">
-      {/* Header stats */}
-      <div className="flex items-center gap-4 flex-wrap">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <h2 className="text-sm font-semibold text-[var(--fg)]">Table Scanner</h2>
-            {/* Instance selector */}
-            <select
-              value={instance}
-              onChange={e => { setInstance(e.target.value); setResult(null) }}
-              className="bg-[var(--surface)] border border-[var(--border)] rounded-lg px-2 py-0.5 text-xs focus:outline-none focus:border-[var(--accent)] transition-colors"
-            >
-              {instances.length === 0 && <option value="">No instances</option>}
-              {instances.map(n => <option key={n} value={n}>{n}</option>)}
-            </select>
-          </div>
-          {result && (
-            <p className="text-xs text-[var(--dim)] mt-0.5">
-              {tables.length} tables · {fmtBytes(totalBytes)} total · {activeTables} active
-              · {result.activity_rows} qlog rows matched
-              · scanned {new Date(result.scanned_at).toLocaleTimeString()}
-            </p>
-          )}
+    <div className="flex flex-col gap-3 h-full">
+
+      {/* ── Toolbar ── */}
+      <div className="flex items-center gap-2 flex-wrap shrink-0">
+        {/* Instance selector */}
+        <select
+          value={instance}
+          onChange={e => { setInstance(e.target.value); setResult(null) }}
+          className="bg-[var(--surface)] border border-[var(--border)] rounded px-2 py-1 text-xs focus:outline-none focus:border-[var(--accent)] transition-colors"
+        >
+          {instances.length === 0 && <option value="">No instances</option>}
+          {instances.map(n => <option key={n} value={n}>{n}</option>)}
+        </select>
+
+        {/* Search */}
+        <div className="relative">
+          <Search size={11} className="absolute left-2 top-1/2 -translate-y-1/2 text-[var(--dim)]" />
+          <input
+            value={filter}
+            onChange={e => setFilter(e.target.value)}
+            placeholder="Filter tables…"
+            className="pl-6 pr-3 py-1 rounded border border-[var(--border)] bg-[var(--surface)] text-xs focus:outline-none focus:border-[var(--accent)] transition-colors w-44"
+          />
         </div>
 
+        {/* Divider */}
+        <span className="h-4 w-px bg-[var(--border)]" />
+
+        {/* Activity filter */}
+        <div className="flex items-center gap-0.5">
+          {(['all', 'active', 'idle'] as const).map(f => (
+            <button
+              key={f}
+              onClick={() => setActivityFilter(f)}
+              className={cn(
+                'px-2 py-0.5 rounded text-xs capitalize transition-colors',
+                activityFilter === f
+                  ? 'bg-[var(--accent)]/15 text-[var(--accent)]'
+                  : 'text-[var(--dim)] hover:text-[var(--fg)] hover:bg-[var(--hover)]',
+              )}
+            >
+              {f}
+            </button>
+          ))}
+        </div>
+
+        {/* Divider */}
+        <span className="h-4 w-px bg-[var(--border)]" />
+
+        {/* Sort */}
+        <div className="flex items-center gap-0.5 text-xs text-[var(--dim)]">
+          <span className="mr-0.5">Sort:</span>
+          {(['bytes', 'rows', 'parts', 'selects', 'inserts'] as const).map(col => (
+            <button
+              key={col}
+              onClick={() => setSortCol(col)}
+              className={cn(
+                'px-1.5 py-0.5 rounded transition-colors capitalize',
+                sortCol === col ? 'text-[var(--accent)] bg-[var(--accent)]/10' : 'hover:text-[var(--fg)] hover:bg-[var(--hover)]',
+              )}
+            >
+              {col}
+            </button>
+          ))}
+        </div>
+
+        {/* Divider */}
+        <span className="h-4 w-px bg-[var(--border)]" />
+
         {/* Time range */}
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-0.5">
           {RANGE_PRESETS.map(p => (
             <button
               key={p.secs}
@@ -323,112 +445,84 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
         <button
           onClick={load}
           disabled={loading}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[var(--border)] text-xs text-[var(--dim)] hover:text-[var(--fg)] hover:bg-[var(--hover)] transition-colors disabled:opacity-50"
+          className="ml-auto flex items-center gap-1 px-2.5 py-1 rounded border border-[var(--border)] text-xs text-[var(--dim)] hover:text-[var(--fg)] hover:bg-[var(--hover)] transition-colors disabled:opacity-50"
         >
-          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
+          <RefreshCw size={11} className={loading ? 'animate-spin' : ''} />
           {loading ? 'Scanning…' : 'Refresh'}
         </button>
       </div>
 
-      {/* Filters row */}
-      <div className="flex items-center gap-3 flex-wrap">
-        {/* Search */}
-        <div className="relative flex-1 min-w-[200px] max-w-xs">
-          <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--dim)]" />
-          <input
-            value={filter}
-            onChange={e => setFilter(e.target.value)}
-            placeholder="Filter by database, table, engine…"
-            className="w-full pl-8 pr-3 py-1.5 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-xs focus:outline-none focus:border-[var(--accent)] transition-colors"
-          />
+      {/* ── Stats bar ── */}
+      {result && (
+        <div className="flex items-center gap-3 text-[10px] text-[var(--dim)] shrink-0">
+          <span>{tables.length} tables</span>
+          <span className="w-px h-3 bg-[var(--border)]" />
+          <span>{fmtBytes(totalBytes)} total</span>
+          <span className="w-px h-3 bg-[var(--border)]" />
+          <span className="text-green-400">{activeTables} active</span>
+          <span className="w-px h-3 bg-[var(--border)]" />
+          <span>{result.activity_rows} qlog rows</span>
+          <span className="w-px h-3 bg-[var(--border)]" />
+          <span>scanned {new Date(result.scanned_at).toLocaleTimeString()}</span>
+          {sorted.length !== tables.length && (
+            <>
+              <span className="w-px h-3 bg-[var(--border)]" />
+              <span className="text-[var(--accent)]">{sorted.length} shown</span>
+            </>
+          )}
         </div>
+      )}
 
-        {/* Activity filter */}
-        <div className="flex items-center gap-1">
-          {(['all', 'active', 'idle'] as const).map(f => (
-            <button
-              key={f}
-              onClick={() => setActivityFilter(f)}
-              className={cn(
-                'px-2.5 py-1 rounded-lg text-xs capitalize transition-colors',
-                activityFilter === f
-                  ? 'bg-[var(--accent)]/15 text-[var(--accent)] border border-[var(--accent)]/30'
-                  : 'text-[var(--dim)] hover:text-[var(--fg)] hover:bg-[var(--hover)] border border-transparent',
-              )}
-            >
-              {f}
-            </button>
-          ))}
+      {/* ── Warnings ── */}
+      {result?.warnings && result.warnings.length > 0 && (
+        <div className="flex items-start gap-2 px-3 py-2 rounded border border-yellow-500/30 bg-yellow-500/10 text-xs text-yellow-300 shrink-0">
+          <AlertTriangle size={12} className="shrink-0 mt-0.5" />
+          <div className="space-y-0.5">
+            {result.warnings.map((w, i) => <p key={i}>{w}</p>)}
+          </div>
         </div>
+      )}
 
-        {/* Sort */}
-        <div className="flex items-center gap-1 text-xs text-[var(--dim)]">
-          <span>Sort:</span>
-          {(['bytes', 'rows', 'parts', 'selects', 'inserts'] as const).map(col => (
-            <button
-              key={col}
-              onClick={() => setSortCol(col)}
-              className={cn(
-                'px-2 py-0.5 rounded transition-colors capitalize',
-                sortCol === col
-                  ? 'text-[var(--accent)] bg-[var(--accent)]/10'
-                  : 'hover:text-[var(--fg)] hover:bg-[var(--hover)]',
-              )}
-            >
-              {col}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Error */}
+      {/* ── Error ── */}
       {error && (
-        <div className="px-4 py-3 rounded-lg border border-red-500/30 bg-red-500/10 text-sm text-red-400">
+        <div className="px-3 py-2 rounded border border-red-500/30 bg-red-500/10 text-xs text-red-400 shrink-0">
           {error}
         </div>
       )}
 
-      {/* Warnings from backend (e.g. activity query failed) */}
-      {result?.warnings && result.warnings.length > 0 && (
-        <div className="px-4 py-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 text-xs text-yellow-300 space-y-1">
-          <p className="font-semibold">Scan warnings (activity data may be incomplete):</p>
-          {result.warnings.map((w, i) => <p key={i} className="font-mono">{w}</p>)}
-        </div>
-      )}
-
-      {/* No instance */}
+      {/* ── No instance ── */}
       {!instance && (
-        <div className="flex items-center justify-center h-40 text-sm text-[var(--dim)]">
-          <Database size={16} className="mr-2" />
-          Select an instance above to scan tables
+        <div className="flex-1 flex items-center justify-center gap-2 text-sm text-[var(--dim)]">
+          <Database size={16} />
+          Select an instance above
         </div>
       )}
 
-      {/* Loading skeleton */}
+      {/* ── Loading skeleton ── */}
       {loading && !result && (
-        <div className="space-y-1">
-          {Array.from({ length: 8 }).map((_, i) => (
-            <div key={i} className="h-10 rounded bg-[var(--surface)] animate-pulse" style={{ opacity: 1 - i * 0.1 }} />
+        <div className="flex-1 space-y-px">
+          {Array.from({ length: 12 }).map((_, i) => (
+            <div key={i} className="h-8 rounded bg-[var(--surface)] animate-pulse" style={{ opacity: 1 - i * 0.07 }} />
           ))}
         </div>
       )}
 
-      {/* Table */}
+      {/* ── Table ── */}
       {sorted.length > 0 && (
-        <div className="rounded-xl border border-[var(--border)] overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-[var(--surface)] border-b border-[var(--border)]">
-                  <th className="w-5" />
-                  <th className="px-3 py-2.5 text-left text-xs font-semibold text-[var(--dim)] uppercase tracking-wider">Table</th>
-                  <th className="px-3 py-2.5 text-left text-xs font-semibold text-[var(--dim)] uppercase tracking-wider">Engine</th>
-                  <th className="px-3 py-2.5 text-right text-xs font-semibold text-[var(--dim)] uppercase tracking-wider">Rows</th>
-                  <th className="px-3 py-2.5 text-right text-xs font-semibold text-[var(--dim)] uppercase tracking-wider">Size</th>
-                  <th className="px-3 py-2.5 text-right text-xs font-semibold text-[var(--dim)] uppercase tracking-wider">Parts</th>
-                  <th className="px-3 py-2.5 text-left text-xs font-semibold text-[var(--dim)] uppercase tracking-wider">Disks</th>
-                  <th className="px-3 py-2.5 text-right text-xs font-semibold text-[var(--dim)] uppercase tracking-wider">Activity</th>
-                  <th className="px-3 py-2.5 text-right text-xs font-semibold text-[var(--dim)] uppercase tracking-wider">Queries</th>
+        <div className="flex-1 rounded-lg border border-[var(--border)] overflow-hidden min-h-0">
+          <div className="overflow-auto h-full">
+            <table className="w-full border-collapse text-xs">
+              <thead className="sticky top-0 z-10 bg-[var(--card)] border-b border-[var(--border)]">
+                <tr>
+                  <th className="w-7" />
+                  <th className="px-2 py-2 text-left text-[10px] font-semibold text-[var(--dim)] uppercase tracking-wider">Table</th>
+                  <th className="px-2 py-2 text-left text-[10px] font-semibold text-[var(--dim)] uppercase tracking-wider">Engine</th>
+                  <th className="px-2 py-2 text-right text-[10px] font-semibold text-[var(--dim)] uppercase tracking-wider">Rows</th>
+                  <th className="px-2 py-2 text-right text-[10px] font-semibold text-[var(--dim)] uppercase tracking-wider">Size</th>
+                  <th className="px-2 py-2 text-right text-[10px] font-semibold text-[var(--dim)] uppercase tracking-wider">Parts</th>
+                  <th className="px-2 py-2 text-center text-[10px] font-semibold text-[var(--dim)] uppercase tracking-wider">Status</th>
+                  <th className="px-2 py-2 text-right text-[10px] font-semibold text-blue-400/70 uppercase tracking-wider">SELECTs</th>
+                  <th className="px-2 py-2 text-right text-[10px] font-semibold text-green-400/70 uppercase tracking-wider">INSERTs</th>
                 </tr>
               </thead>
               <tbody>
@@ -436,7 +530,7 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
                   <TableRow
                     key={`${t.database}.${t.table}`}
                     entry={t}
-                    filter={filter}
+                    filter=""
                   />
                 ))}
               </tbody>
@@ -445,11 +539,11 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
         </div>
       )}
 
-      {/* Empty state */}
+      {/* ── Empty state ── */}
       {result && sorted.length === 0 && !loading && instance && (
-        <div className="flex flex-col items-center justify-center h-40 gap-2 text-[var(--dim)]">
-          <Activity size={24} className="opacity-50" />
-          <p className="text-sm">{filter ? 'No tables match your filter' : 'No tables found'}</p>
+        <div className="flex-1 flex flex-col items-center justify-center gap-2 text-[var(--dim)]">
+          <Activity size={20} className="opacity-40" />
+          <p className="text-xs">{filter || activityFilter !== 'all' ? 'No tables match your filters' : 'No tables found'}</p>
         </div>
       )}
     </div>
