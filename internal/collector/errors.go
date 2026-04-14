@@ -43,26 +43,26 @@ func (c *ErrorsCollector) Collect(ctx context.Context, client *chclient.Client) 
 // This table accumulates error counts since last restart — very useful for spotting
 // recurring internal ClickHouse errors.
 func (c *ErrorsCollector) collectSystemErrors(ctx context.Context, client *chclient.Client, result *CollectResult) {
-	sql := `
-		SELECT
-			name,
-			times,
-			last_error_time,
-			last_error_message
+	// CH 22+: column is `value`; older builds used `times`. Try modern schema first.
+	rows, err := client.Query(ctx, `
+		SELECT name, value AS cnt, last_error_time, last_error_message
 		FROM system.errors
-		WHERE times > 0
-		  AND last_error_time > now() - INTERVAL 1 HOUR
-		ORDER BY times DESC
-		LIMIT 20`
-
-	rows, err := client.Query(ctx, sql)
+		WHERE value > 0 AND last_error_time > now() - INTERVAL 1 HOUR
+		ORDER BY value DESC LIMIT 20`)
 	if err != nil {
-		// system.errors may not exist on very old CH versions
-		if strings.Contains(err.Error(), "UNKNOWN_TABLE") {
+		// Fall back to old schema (pre-22 builds that use `times`)
+		rows, err = client.Query(ctx, `
+			SELECT name, times AS cnt, last_error_time, last_error_message
+			FROM system.errors
+			WHERE times > 0 AND last_error_time > now() - INTERVAL 1 HOUR
+			ORDER BY times DESC LIMIT 20`)
+		if err != nil {
+			if strings.Contains(err.Error(), "UNKNOWN_TABLE") {
+				return
+			}
+			c.logger().Warn("failed to query system.errors", slog.String("error", err.Error()))
 			return
 		}
-		c.logger().Warn("failed to query system.errors", slog.String("error", err.Error()))
-		return
 	}
 
 	// Errors that indicate serious issues vs. normal operational noise
