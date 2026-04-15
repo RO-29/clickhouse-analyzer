@@ -1,0 +1,83 @@
+# Prometheus + Grafana stack for CH Analyzer
+#
+# Prerequisites on the server:
+#   1. Enable Prometheus export in /etc/ch-analyzer.env (or ch-analyzer.yaml):
+#        prometheus:
+#          enabled: true
+#          listen_addr: ":9100"   # use 9100 to avoid clash with node_exporter
+#      Then: sudo systemctl restart ch-analyzer
+#
+#   2. Docker + Docker Compose installed:
+#        sudo apt-get install -y docker.io docker-compose-plugin
+#        sudo systemctl enable --now docker
+#
+# Usage:
+#   cd /opt/ch-analyzer/deploy          # or wherever this file lives
+#   docker compose up -d
+#   docker compose logs -f              # watch startup
+#
+# Access:
+#   Grafana  → http://<server-ip>:3000  (admin / admin on first login)
+#   Prometheus → http://<server-ip>:9091/targets  (check scrape health)
+#
+# Updating the dashboard:
+#   Copy grafana-dashboard.json into grafana-dashboards/ then:
+#   docker compose restart grafana
+#   OR just edit in the Grafana UI and export.
+
+version: "3.9"
+
+services:
+
+  # ── Prometheus ──────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    container_name: ch-prom
+    restart: unless-stopped
+    ports:
+      - "9091:9090"    # 9091 on host so it doesn't conflict with ch-analyzer's exporter port
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=90d"
+      - "--web.enable-lifecycle"
+    extra_hosts:
+      # Lets Prometheus reach the ch-analyzer process running on the host OS
+      - "host.docker.internal:host-gateway"
+    networks:
+      - monitoring
+
+  # ── Grafana ─────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana-oss:10.4.2
+    container_name: ch-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_PASSWORD:-admin}"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/ch-analyzer.json
+      GF_SERVER_ROOT_URL: "%(protocol)s://%(domain)s:%(http_port)s/"
+      GF_LOG_LEVEL: warn
+    volumes:
+      - grafana_data:/var/lib/grafana
+      # Auto-provision datasource (Prometheus) and dashboard
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      # Dashboard JSON — Grafana reads from this dir via the provisioning config
+      - ./grafana-dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - monitoring
+    depends_on:
+      - prometheus
+
+volumes:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  monitoring:
+    driver: bridge

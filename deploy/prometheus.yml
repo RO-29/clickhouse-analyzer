@@ -1,22 +1,24 @@
 # Prometheus scrape configuration for CH Analyzer
 #
-# In docker-compose, ch-analyzer exposes its /metrics endpoint on port 9090
-# of the internal docker network (service name = "ch-analyzer").
+# ch-analyzer exposes /metrics on prometheus.listen_addr (set to ":9100" in
+# ch-analyzer.yaml — see README below).
 #
-# For a bare-metal / systemd setup, replace "ch-analyzer:9090" with
-# "localhost:9090" (or the host/IP where ch-analyzer runs).
+# When running via docker-compose the host is reachable as host.docker.internal
+# (mapped via extra_hosts in docker-compose.yml). For a bare-metal run without
+# Docker, change the target to localhost:9100.
 
 global:
-  scrape_interval:     60s   # Match ch-analyzer's poll interval (no point scraping faster)
+  scrape_interval:     60s   # match ch-analyzer poll interval — no point going faster
   evaluation_interval: 60s
   scrape_timeout:      15s
 
 scrape_configs:
   - job_name: ch-analyzer
+    honor_labels: true   # preserve instance/job labels from the metric itself
     static_configs:
       - targets:
-          - ch-analyzer:9090   # docker-compose service name + prometheus listen_addr
-    # Keep only ch_analyzer_* metrics — drop anything unexpected
+          - host.docker.internal:9100   # ch-analyzer /metrics on the host
+    # Discard anything that isn't a ch_analyzer_* metric
     metric_relabel_configs:
       - source_labels: [__name__]
         regex: 'ch_analyzer_.+'

@@ -25,36 +25,76 @@ const metricPrefix = "ch_analyzer_"
 // (excluding "instance", which is always present). This allows pre-registration
 // of well-known metrics with the correct label dimensions.
 var knownMetrics = map[string][]string{
+	// System
 	"memory_rss_bytes":        {},
 	"memory_tracked_bytes":    {},
 	"memory_total_bytes":      {},
 	"cpu_user_percent":        {},
 	"cpu_system_percent":      {},
 	"load_average":            {"period"},
+	// Queries (original)
 	"queries_running":         {},
-	"queries_failed_total":    {},
+	"queries_failed_5m":       {},
+	"queries_failed_total":    {}, // legacy alias kept for existing dashboards
+	// Queries (new)
+	"queries_p95_ms_current":       {},
+	"queries_p95_ms_baseline":      {},
+	"queries_zombie_count":         {},
+	"queries_timeouts_5m":          {"exception_code", "name"},
+	"queries_pattern_exec_count_5m": {"hash", "user"},
+	// Parts & merges
 	"parts_count":             {"database", "table"},
-	"table_size_bytes":        {"database", "table", "disk"},
+	"parts_oldest_hours":      {"database", "table"},
+	"tables_detached_parts_count": {},
 	"merges_active":           {},
 	"mutations_stuck":         {},
+	// TTL
+	"ttl_stuck_mutations": {"database", "table"},
+	"ttl_stale_table_days": {"database", "table"},
+	// Async inserts
+	"async_inserts_total_5m":  {},
+	"async_inserts_errors_5m": {},
+	"async_inserts_queue_depth": {},
+	// Replication
+	"replication_max_delay_sec":      {},
+	"replication_replicated_tables":  {},
+	"replication_absolute_delay_sec": {"database", "table"},
+	"replication_queue_size":         {"database", "table"},
+	"replication_inserts_in_queue":   {"database", "table"},
+	"replication_merges_in_queue":    {"database", "table"},
+	"replication_parts_to_check":     {"database", "table"},
+	"replication_future_parts":       {"database", "table"},
+	"replication_log_lag":            {"database", "table"},
+	// Errors
+	"errors_system_count":        {"error"},
+	"errors_system_total_recent": {},
+	// Keeper / ZooKeeper
+	"keeper_connected_nodes":     {},
+	"keeper_outstanding_requests": {},
+	"keeper_max_avg_latency_ms":  {},
+	// Storage / inserts / tables
+	"table_size_bytes":        {"database", "table", "disk"},
 	"disk_used_bytes":         {"disk"},
 	"disk_total_bytes":        {"disk"},
 	"insert_rows_total":       {"database", "table"},
 	"s3_read_latency_seconds": {},
-	"health_score":            {},
-	"active_alerts":           {"severity"},
-	"uptime_seconds":          {},
+	// Health
+	"health_score":    {},
+	"active_alerts":   {"severity"},
+	"uptime_seconds":  {},
 }
 
 // Exporter exposes collected ClickHouse metrics as Prometheus gauges on an
 // HTTP /metrics endpoint.
 type Exporter struct {
-	addr       string
-	metrics    map[string]*prometheus.GaugeVec
-	mu         sync.RWMutex
-	registered map[string]bool
-	registry   *prometheus.Registry
-	server     *http.Server
+	addr          string
+	metrics       map[string]*prometheus.GaugeVec
+	mu            sync.RWMutex
+	registered    map[string]bool
+	registry      *prometheus.Registry
+	server        *http.Server
+	instanceCache sync.Map   // map[string][]collector.Metric — latest metrics per instance
+	updateMu      sync.Mutex // serialises reset+republish cycles
 }
 
 // New creates a new Exporter that will listen on addr (e.g. ":9090").
@@ -129,29 +169,46 @@ func (e *Exporter) Stop(ctx context.Context) error {
 	return nil
 }
 
-// Update replaces all gauge values with the latest metrics from a poll cycle.
-// It is safe to call concurrently.
+// Update replaces the gauge values for the instance(s) represented in metrics.
+// It caches the latest metrics per instance so that a concurrent Update for
+// one instance does not wipe another instance's data. Safe to call concurrently.
 func (e *Exporter) Update(metrics []collector.Metric) {
-	// Reset all existing gauges so stale series disappear when an instance
-	// or label combination is no longer reported.
+	if len(metrics) == 0 {
+		return
+	}
+
+	// Store the latest snapshot for this instance.
+	instance := metrics[0].Instance
+	cached := make([]collector.Metric, len(metrics))
+	copy(cached, metrics)
+	e.instanceCache.Store(instance, cached)
+
+	// Serialise the reset+republish cycle so concurrent calls don't interleave.
+	e.updateMu.Lock()
+	defer e.updateMu.Unlock()
+
+	// Reset all existing gauges.
 	e.mu.RLock()
 	for _, gv := range e.metrics {
 		gv.Reset()
 	}
 	e.mu.RUnlock()
 
-	for i := range metrics {
-		m := &metrics[i]
-		extraLabels := sortedExtraLabelNames(m.Labels)
-		gv := e.getOrCreateMetric(m.Name, extraLabels)
+	// Republish every instance's latest metrics from the cache.
+	e.instanceCache.Range(func(_, value any) bool {
+		for i := range value.([]collector.Metric) {
+			m := &value.([]collector.Metric)[i]
+			extraLabels := sortedExtraLabelNames(m.Labels)
+			gv := e.getOrCreateMetric(m.Name, extraLabels)
 
-		labels := prometheus.Labels{"instance": m.Instance}
-		for k, v := range m.Labels {
-			labels[k] = v
+			labels := prometheus.Labels{"instance": m.Instance}
+			for k, v := range m.Labels {
+				labels[k] = v
+			}
+			gv.With(labels).Set(m.Value)
 		}
-
-		gv.With(labels).Set(m.Value)
-	}
+		return true
+	})
 }
 
 // getOrCreateMetric returns the GaugeVec for the given metric name, creating

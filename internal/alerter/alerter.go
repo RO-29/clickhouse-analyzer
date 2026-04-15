@@ -690,6 +690,23 @@ func (am *AlertManager) ActiveAlertCount() int {
 	return len(am.activeAlerts)
 }
 
+// ActiveAlertCountsForInstance returns a map of severity → count for all
+// currently-firing alerts on the given instance. Always returns keys for
+// "critical", "warn", and "info" (with zero values when none are firing)
+// so Prometheus gauges reset to 0 when alerts clear.
+func (am *AlertManager) ActiveAlertCountsForInstance(instance string) map[string]int {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	counts := map[string]int{"critical": 0, "warn": 0, "info": 0}
+	for _, active := range am.activeAlerts {
+		if active.Alert.Instance == instance {
+			sev := string(active.Alert.Severity)
+			counts[sev]++
+		}
+	}
+	return counts
+}
+
 // ActiveAlertKeys returns the dedup keys of all currently-firing alerts.
 func (am *AlertManager) ActiveAlertKeys() []string {
 	am.mu.Lock()

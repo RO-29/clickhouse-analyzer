@@ -538,16 +538,6 @@ func runCollectionCB(
 			}
 		}
 
-		// Update prometheus.
-		if promExporter != nil {
-			var collectorMetrics []collector.Metric
-			for _, r := range allResults {
-				collectorMetrics = append(collectorMetrics, r.Metrics...)
-			}
-			collectorMetrics = append(collectorMetrics, analysisResult.Metrics...)
-			promExporter.Update(collectorMetrics)
-		}
-
 		// Process alerts.
 		var allAlerts []collector.Alert
 		for _, r := range allResults {
@@ -557,6 +547,31 @@ func runCollectionCB(
 		allAlerts = append(allAlerts, analysisResult.CrossAlerts...)
 
 		alertMgr.Process(allAlerts)
+
+		// Update prometheus — done after alert processing so active_alerts
+		// reflects the current in-memory alert state.
+		if promExporter != nil {
+			var collectorMetrics []collector.Metric
+			for _, r := range allResults {
+				collectorMetrics = append(collectorMetrics, r.Metrics...)
+			}
+			collectorMetrics = append(collectorMetrics, analysisResult.Metrics...)
+
+			// Emit active_alerts{severity=...} for each severity level.
+			alertCounts := alertMgr.ActiveAlertCountsForInstance(instanceName)
+			now := time.Now()
+			for sev, count := range alertCounts {
+				collectorMetrics = append(collectorMetrics, collector.Metric{
+					Instance:  instanceName,
+					Name:      "active_alerts",
+					Value:     float64(count),
+					Labels:    map[string]string{"severity": sev},
+					Timestamp: now,
+				})
+			}
+
+			promExporter.Update(collectorMetrics)
+		}
 
 		slog.Debug("collection complete",
 			"instance", instanceName,
