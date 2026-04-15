@@ -18,34 +18,59 @@ import (
 // Compare Tables
 // ---------------------------------------------------------------------------
 
+// cmpDiskSlice is one disk's contribution to a table's storage.
+type cmpDiskSlice struct {
+	Disk  string  `json:"disk"`
+	Type  string  `json:"type"`  // "local", "s3", "hdfs", …
+	Bytes float64 `json:"bytes"`
+	Parts int     `json:"parts"`
+}
+
+// cmpPartsDetail holds per-table part health metrics.
+type cmpPartsDetail struct {
+	OldestH      float64 `json:"oldest_h"`
+	AvgBytes     float64 `json:"avg_bytes"`
+	WideParts    int     `json:"wide_parts"`
+	CompactParts int     `json:"compact_parts"`
+}
+
+// cmpTableRaw is the internal accumulation struct per instance per table.
+type cmpTableRaw struct {
+	Rows         float64
+	Bytes        float64
+	Size         string
+	Parts        float64
+	PKBytes      float64
+	MarksBytes   float64
+	OldestHours  float64
+	AvgPartBytes float64
+	WideParts    int
+	CompactParts int
+}
+
+// cmpInstanceData holds everything collected from one instance.
+type cmpInstanceData struct {
+	tables    map[string]cmpTableRaw            // key: "db.table"
+	engine    map[string]string
+	diskDist  map[string][]cmpDiskSlice         // key: "db.table"
+	columns   map[string]map[string]string      // key: "db.table" -> col name -> type
+	tblStruct map[string][2]string              // key: "db.table" -> [partitionKey, sortingKey]
+}
+
 // handleCompareTables returns table metadata across all instances, merged by
-// database.table with row-drift percentages and missing-node annotations.
+// database.table with row-drift percentages, DDL criticality, disk
+// distribution, and parts health.
 func (s *Server) handleCompareTables(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
 	defer cancel()
 
 	instances := s.manager.Names()
 
-	type tableInfo struct {
-		Rows       float64 `json:"rows"`
-		Bytes      float64 `json:"bytes"`
-		Size       string  `json:"size"`
-		Parts      float64 `json:"parts"`
-		PKBytes    float64 `json:"pk_bytes"`
-		MarksBytes float64 `json:"marks_bytes"`
-	}
-
-	// Per-instance results collected in parallel.
-	type instanceData struct {
-		tables map[string]tableInfo // key: "database.table"
-		engine map[string]string    // key: "database.table" -> engine
-	}
-
 	var mu sync.Mutex
-	perInstance := make(map[string]*instanceData, len(instances))
+	perInstance := make(map[string]*cmpInstanceData, len(instances))
 
 	errs := s.manager.ForEachParallel(ctx, func(ctx context.Context, name string, client *chclient.Client) error {
-		// Query 1: table metadata.
+		// ── Q1: table metadata ────────────────────────────────────────
 		tableRows, err := client.Query(ctx, `
 			SELECT database, name as table_name, engine,
 				COALESCE(total_rows, 0) as total_rows,
@@ -61,30 +86,116 @@ func (s *Server) handleCompareTables(w http.ResponseWriter, r *http.Request) {
 			return fmt.Errorf("query tables: %w", err)
 		}
 
-		// Query 2: parts + primary key memory.
+		// ── Q2: extended parts query (with age + format type) ────────
 		partsRows, err := client.Query(ctx, `
-			SELECT database, ` + "`table`" + ` as table_name,
+			SELECT database, `+"`table`"+` as table_name,
 				count() as parts,
 				sum(primary_key_bytes_in_memory) as pk_bytes,
 				sum(marks_bytes) as marks_bytes_total,
-				sum(marks) as mark_count
+				toUInt64(dateDiff('hour', min(modification_time), now())) as oldest_h,
+				round(avg(bytes_on_disk)) as avg_part_bytes,
+				countIf(part_type = 'Wide') as wide_parts,
+				countIf(part_type = 'Compact') as compact_parts
 			FROM system.parts WHERE active
 			GROUP BY database, table_name
 		`)
 		if err != nil {
-			return fmt.Errorf("query parts: %w", err)
+			// part_type not available on older CH — fallback without format breakdown
+			partsRows, _ = client.Query(ctx, `
+				SELECT database, `+"`table`"+` as table_name,
+					count() as parts,
+					sum(primary_key_bytes_in_memory) as pk_bytes,
+					sum(marks_bytes) as marks_bytes_total,
+					toUInt64(dateDiff('hour', min(modification_time), now())) as oldest_h,
+					round(avg(bytes_on_disk)) as avg_part_bytes,
+					0 as wide_parts,
+					0 as compact_parts
+				FROM system.parts WHERE active
+				GROUP BY database, table_name
+			`)
 		}
 
-		data := &instanceData{
-			tables: make(map[string]tableInfo),
-			engine: make(map[string]string),
+		// ── Q3: disk type lookup ──────────────────────────────────────
+		diskTypeMap := make(map[string]string) // disk name -> type
+		if diskTypeRows, e := client.Query(ctx, `SELECT name, type FROM system.disks`); e == nil {
+			for _, row := range diskTypeRows {
+				diskTypeMap[toString(row["name"])] = toString(row["type"])
+			}
+		}
+
+		// ── Q4: disk distribution per table ──────────────────────────
+		diskDistMap := make(map[string][]cmpDiskSlice)
+		diskDistRows, e := client.Query(ctx, `
+			SELECT database, `+"`table`"+`,
+				disk_name,
+				sum(bytes_on_disk) AS bytes,
+				count() AS parts_cnt
+			FROM system.parts
+			WHERE active
+			GROUP BY database, `+"`table`"+`, disk_name
+			ORDER BY bytes DESC
+		`)
+		if e == nil {
+			for _, row := range diskDistRows {
+				key := toString(row["database"]) + "." + toString(row["table"])
+				diskName := toString(row["disk_name"])
+				diskDistMap[key] = append(diskDistMap[key], cmpDiskSlice{
+					Disk:  diskName,
+					Type:  diskTypeMap[diskName],
+					Bytes: toFloat64(row["bytes"]),
+					Parts: int(toFloat64(row["parts_cnt"])),
+				})
+			}
+		}
+
+		// ── Q5: column types for DDL diff ────────────────────────────
+		colMap := make(map[string]map[string]string) // "db.table" -> col -> type
+		colRows, e := client.Query(ctx, `
+			SELECT database, `+"`table`"+`, name, type
+			FROM system.columns
+			WHERE database NOT IN ('system','INFORMATION_SCHEMA','information_schema','ch_analyzer')
+			ORDER BY database, `+"`table`"+`, position
+		`)
+		if e == nil {
+			for _, row := range colRows {
+				key := toString(row["database"]) + "." + toString(row["table"])
+				if colMap[key] == nil {
+					colMap[key] = make(map[string]string)
+				}
+				colMap[key][toString(row["name"])] = toString(row["type"])
+			}
+		}
+
+		// ── Q6: partition + sort keys for DDL diff ───────────────────
+		tblStructMap := make(map[string][2]string) // "db.table" -> [partKey, sortKey]
+		structRows, e := client.Query(ctx, `
+			SELECT database, name AS tbl, partition_key, sorting_key
+			FROM system.tables
+			WHERE database NOT IN ('system','INFORMATION_SCHEMA','information_schema','ch_analyzer')
+				AND engine NOT IN ('Dictionary','LiveView','WindowView')
+		`)
+		if e == nil {
+			for _, row := range structRows {
+				key := toString(row["database"]) + "." + toString(row["tbl"])
+				tblStructMap[key] = [2]string{
+					toString(row["partition_key"]),
+					toString(row["sorting_key"]),
+				}
+			}
+		}
+
+		// ── assemble ─────────────────────────────────────────────────
+		data := &cmpInstanceData{
+			tables:    make(map[string]cmpTableRaw),
+			engine:    make(map[string]string),
+			diskDist:  diskDistMap,
+			columns:   colMap,
+			tblStruct: tblStructMap,
 		}
 
 		for _, row := range tableRows {
-			db := toString(row["database"])
-			tbl := toString(row["table_name"])
-			key := db + "." + tbl
-			data.tables[key] = tableInfo{
+			key := toString(row["database"]) + "." + toString(row["table_name"])
+			data.tables[key] = cmpTableRaw{
 				Rows:  toFloat64(row["total_rows"]),
 				Bytes: toFloat64(row["total_bytes"]),
 				Size:  toString(row["size_readable"]),
@@ -92,15 +203,16 @@ func (s *Server) handleCompareTables(w http.ResponseWriter, r *http.Request) {
 			data.engine[key] = toString(row["engine"])
 		}
 
-		// Merge parts data.
 		for _, row := range partsRows {
-			db := toString(row["database"])
-			tbl := toString(row["table_name"])
-			key := db + "." + tbl
+			key := toString(row["database"]) + "." + toString(row["table_name"])
 			if ti, ok := data.tables[key]; ok {
 				ti.Parts = toFloat64(row["parts"])
 				ti.PKBytes = toFloat64(row["pk_bytes"])
 				ti.MarksBytes = toFloat64(row["marks_bytes_total"])
+				ti.OldestHours = toFloat64(row["oldest_h"])
+				ti.AvgPartBytes = toFloat64(row["avg_part_bytes"])
+				ti.WideParts = int(toFloat64(row["wide_parts"]))
+				ti.CompactParts = int(toFloat64(row["compact_parts"]))
 				data.tables[key] = ti
 			}
 		}
@@ -117,7 +229,7 @@ func (s *Server) handleCompareTables(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Collect all unique table keys and engines.
+	// ── collect all unique table keys ─────────────────────────────────
 	allKeys := make(map[string]string) // key -> engine
 	for _, data := range perInstance {
 		for key, eng := range data.engine {
@@ -125,20 +237,22 @@ func (s *Server) handleCompareTables(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Sort keys for deterministic output.
 	sortedKeys := make([]string, 0, len(allKeys))
 	for k := range allKeys {
 		sortedKeys = append(sortedKeys, k)
 	}
 	sort.Strings(sortedKeys)
 
+	// ── output types ─────────────────────────────────────────────────
 	type nodeInfo struct {
-		Rows       float64 `json:"rows"`
-		Bytes      float64 `json:"bytes"`
-		Size       string  `json:"size"`
-		Parts      float64 `json:"parts"`
-		PKBytes    float64 `json:"pk_bytes"`
-		MarksBytes float64 `json:"marks_bytes"`
+		Rows        float64          `json:"rows"`
+		Bytes       float64          `json:"bytes"`
+		Size        string           `json:"size"`
+		Parts       float64          `json:"parts"`
+		PKBytes     float64          `json:"pk_bytes"`
+		MarksBytes  float64          `json:"marks_bytes"`
+		DiskDist    []cmpDiskSlice   `json:"disk_dist,omitempty"`
+		PartsDetail *cmpPartsDetail  `json:"parts_detail,omitempty"`
 	}
 
 	type tableEntry struct {
@@ -148,15 +262,17 @@ func (s *Server) handleCompareTables(w http.ResponseWriter, r *http.Request) {
 		Nodes          map[string]nodeInfo `json:"nodes"`
 		MaxRowDiffPct  float64             `json:"max_row_diff_pct"`
 		MissingOn      []string            `json:"missing_on,omitempty"`
+		DDLCriticality string              `json:"ddl_criticality,omitempty"`
+		DDLChanges     []string            `json:"ddl_changes,omitempty"`
 	}
 
 	tables := make([]tableEntry, 0, len(sortedKeys))
 	for _, key := range sortedKeys {
-		parts := strings.SplitN(key, ".", 2)
-		if len(parts) != 2 {
+		keyParts := strings.SplitN(key, ".", 2)
+		if len(keyParts) != 2 {
 			continue
 		}
-		db, tbl := parts[0], parts[1]
+		db, tbl := keyParts[0], keyParts[1]
 
 		entry := tableEntry{
 			Database: db,
@@ -180,25 +296,33 @@ func (s *Server) handleCompareTables(w http.ResponseWriter, r *http.Request) {
 				missingOn = append(missingOn, inst)
 				continue
 			}
-			entry.Nodes[inst] = nodeInfo{
+
+			ni := nodeInfo{
 				Rows:       ti.Rows,
 				Bytes:      ti.Bytes,
 				Size:       ti.Size,
 				Parts:      ti.Parts,
 				PKBytes:    ti.PKBytes,
 				MarksBytes: ti.MarksBytes,
+				DiskDist:   data.diskDist[key],
 			}
+			if ti.Parts > 0 {
+				ni.PartsDetail = &cmpPartsDetail{
+					OldestH:      ti.OldestHours,
+					AvgBytes:     ti.AvgPartBytes,
+					WideParts:    ti.WideParts,
+					CompactParts: ti.CompactParts,
+				}
+			}
+
+			entry.Nodes[inst] = ni
+
 			if first {
-				maxRows = ti.Rows
-				minRows = ti.Rows
+				maxRows, minRows = ti.Rows, ti.Rows
 				first = false
 			} else {
-				if ti.Rows > maxRows {
-					maxRows = ti.Rows
-				}
-				if ti.Rows < minRows {
-					minRows = ti.Rows
-				}
+				if ti.Rows > maxRows { maxRows = ti.Rows }
+				if ti.Rows < minRows { minRows = ti.Rows }
 			}
 		}
 
@@ -209,6 +333,9 @@ func (s *Server) handleCompareTables(w http.ResponseWriter, r *http.Request) {
 			entry.MissingOn = missingOn
 		}
 
+		// ── DDL criticality ──────────────────────────────────────────
+		entry.DDLCriticality, entry.DDLChanges = compareDDL(instances, perInstance, key)
+
 		tables = append(tables, entry)
 	}
 
@@ -216,6 +343,123 @@ func (s *Server) handleCompareTables(w http.ResponseWriter, r *http.Request) {
 		"tables":    tables,
 		"instances": instances,
 	})
+}
+
+// compareDDL returns a criticality level ("critical"|"high"|"") and a list of
+// human-readable change descriptions for a given table key across instances.
+//
+//   - critical: PARTITION BY or ORDER BY differ (replication breaks)
+//   - high:     column missing on some nodes, or column type differs
+func compareDDL(
+	instances []string,
+	perInstance map[string]*cmpInstanceData,
+	key string,
+) (string, []string) {
+	type snapshot struct {
+		inst         string
+		partitionKey string
+		sortingKey   string
+		cols         map[string]string // col name -> type
+	}
+
+	var present []snapshot
+	for _, inst := range instances {
+		d, ok := perInstance[inst]
+		if !ok {
+			continue
+		}
+		if _, has := d.tables[key]; !has {
+			continue
+		}
+		sk := d.tblStruct[key]
+		present = append(present, snapshot{
+			inst:         inst,
+			partitionKey: sk[0],
+			sortingKey:   sk[1],
+			cols:         d.columns[key],
+		})
+	}
+
+	if len(present) < 2 {
+		return "", nil
+	}
+
+	var changes []string
+	crit := ""
+
+	ref := present[0]
+
+	// ── structural keys ───────────────────────────────────────────────
+	for _, other := range present[1:] {
+		if other.partitionKey != ref.partitionKey {
+			pk1 := ref.partitionKey
+			if pk1 == "" { pk1 = "(none)" }
+			pk2 := other.partitionKey
+			if pk2 == "" { pk2 = "(none)" }
+			changes = append(changes, "PARTITION BY: "+pk1+" vs "+pk2)
+			crit = "critical"
+		}
+		if other.sortingKey != ref.sortingKey {
+			sk1 := ref.sortingKey
+			if sk1 == "" { sk1 = "(none)" }
+			sk2 := other.sortingKey
+			if sk2 == "" { sk2 = "(none)" }
+			changes = append(changes, "ORDER BY: "+sk1+" vs "+sk2)
+			if crit == "" { crit = "critical" }
+		}
+	}
+
+	// ── column differences ────────────────────────────────────────────
+	// Only compare if column data was successfully fetched (non-empty on ref).
+	if len(ref.cols) == 0 {
+		return crit, changes
+	}
+
+	allCols := make(map[string]struct{})
+	for _, p := range present {
+		for col := range p.cols {
+			allCols[col] = struct{}{}
+		}
+	}
+
+	colNames := make([]string, 0, len(allCols))
+	for col := range allCols {
+		colNames = append(colNames, col)
+	}
+	sort.Strings(colNames)
+
+	for _, col := range colNames {
+		if len(changes) >= 8 { // cap list length
+			changes = append(changes, fmt.Sprintf("… and more"))
+			break
+		}
+		types := make(map[string]bool) // distinct types seen
+		missing := false
+		for _, p := range present {
+			if t, ok := p.cols[col]; ok {
+				types[t] = true
+			} else {
+				missing = true
+			}
+		}
+		if missing || len(types) > 1 {
+			if missing {
+				changes = append(changes, fmt.Sprintf("col %s missing on some nodes", col))
+			} else {
+				var ts []string
+				for t := range types {
+					ts = append(ts, t)
+				}
+				sort.Strings(ts)
+				changes = append(changes, fmt.Sprintf("col %s: %s", col, strings.Join(ts, " vs ")))
+			}
+			if crit != "critical" {
+				crit = "high"
+			}
+		}
+	}
+
+	return crit, changes
 }
 
 // ---------------------------------------------------------------------------

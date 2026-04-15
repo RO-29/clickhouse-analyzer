@@ -20,7 +20,26 @@ ChartJS.register(CategoryScale, LinearScale, BarElement, ChartTooltip)
 /* ------------------------------------------------------------------ */
 /*  Types                                                             */
 /* ------------------------------------------------------------------ */
-interface NodeData { rows: number; bytes: number; size: string; parts: number }
+interface DiskSlice { disk: string; type: string; bytes: number; parts: number }
+interface PartsDetail {
+  oldest_h: number
+  avg_bytes: number
+  wide_parts: number
+  compact_parts: number
+}
+
+interface NodeData {
+  rows: number
+  bytes: number
+  size: string
+  parts: number
+  pk_bytes?: number
+  marks_bytes?: number
+  disk_dist?: DiskSlice[]
+  parts_detail?: PartsDetail
+}
+
+type DDLCriticality = 'high' | 'critical'
 
 interface TableRow {
   database: string
@@ -29,6 +48,8 @@ interface TableRow {
   nodes: Record<string, NodeData>
   missing_on?: string[]
   max_row_diff_pct?: number
+  ddl_criticality?: DDLCriticality
+  ddl_changes?: string[]
 }
 
 interface TablesData { instances: string[]; tables: TableRow[] }
@@ -203,7 +224,7 @@ function NodeSelector({
 /*  Tables view — flat sortable grid + node selector + live search    */
 /* ------------------------------------------------------------------ */
 type SortKey = 'name' | 'rows' | 'bytes' | 'drift'
-type RowFilter = 'all' | 'missing' | 'divergent'
+type RowFilter = 'all' | 'missing' | 'divergent' | 'ddl'
 
 const NODES_KEY = 'compare-selected-nodes'
 
@@ -267,6 +288,8 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
       rows = rows.filter((t) => isRowMissing(t, activeNodes))
     } else if (rowFilter === 'divergent') {
       rows = rows.filter((t) => !isRowMissing(t, activeNodes) && rowDrift(t, activeNodes) > 0.01)
+    } else if (rowFilter === 'ddl') {
+      rows = rows.filter((t) => !!t.ddl_criticality)
     }
 
     return [...rows].sort((a, b) => {
@@ -316,6 +339,10 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
     () => baseRows.filter((t) => !isRowMissing(t, activeNodes) && rowDrift(t, activeNodes) > 0.01).length,
     [baseRows, activeNodes, isRowMissing, rowDrift],
   )
+  const ddlCount = useMemo(
+    () => baseRows.filter((t) => !!t.ddl_criticality).length,
+    [baseRows],
+  )
 
   return (
     <div className="space-y-4">
@@ -345,6 +372,7 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
             { key: 'all',       label: 'All',       count: null },
             { key: 'missing',   label: 'Missing',   count: missingCount,  color: 'text-red-400' },
             { key: 'divergent', label: 'Divergent', count: diffCount,     color: 'text-yellow-400' },
+            { key: 'ddl',       label: 'DDL diff',  count: ddlCount,      color: 'text-orange-400' },
           ] as { key: RowFilter; label: string; count: number | null; color?: string }[]).map(({ key, label, count, color }) => (
             <button
               key={key}
@@ -458,9 +486,12 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
                           ? 'bg-red-500/5 hover:bg-red-500/[0.08]'
                           : diverging
                             ? 'bg-yellow-500/5 hover:bg-yellow-500/[0.08]'
-                            : 'hover:bg-[var(--hover)]/50',
+                            : t.ddl_criticality
+                              ? 'bg-orange-500/5 hover:bg-orange-500/[0.08]'
+                              : 'hover:bg-[var(--hover)]/50',
                       )}
                     >
+                      {/* Table name + engine + DDL badge */}
                       <td className="py-2.5 px-4">
                         <div className="font-mono text-xs leading-snug">
                           <span className="text-[var(--dim)]">{t.database}.</span>
@@ -469,7 +500,29 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
                         <div className="text-[10px] text-[var(--dim)] font-mono mt-0.5">
                           {t.engine}
                         </div>
+                        {t.ddl_criticality && (
+                          <div
+                            className="mt-1 flex items-center gap-1"
+                            title={t.ddl_changes?.join('\n')}
+                          >
+                            <span className={cn(
+                              'inline-flex items-center text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded border',
+                              t.ddl_criticality === 'critical'
+                                ? 'bg-red-500/15 text-red-400 border-red-500/30'
+                                : 'bg-orange-500/15 text-orange-400 border-orange-500/30',
+                            )}>
+                              DDL {t.ddl_criticality}
+                            </span>
+                            {t.ddl_changes && t.ddl_changes.length > 0 && (
+                              <span className="text-[9px] text-[var(--dim)] truncate max-w-[140px]">
+                                {t.ddl_changes[0]}
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </td>
+
+                      {/* Per-node: size, rows, parts detail, disk distribution */}
                       {activeNodes.map((inst) => {
                         const nodeMissing = t.missing_on?.includes(inst)
                         const node = t.nodes?.[inst]
@@ -485,8 +538,43 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
                                   {node.size}
                                 </div>
                                 <div className="text-[var(--dim)] tabular-nums">
-                                  {fmtNum(node.rows)} rows
+                                  {fmtNum(node.rows)} rows · {node.parts} parts
                                 </div>
+                                {/* Parts detail: age + format breakdown */}
+                                {node.parts_detail && node.parts_detail.oldest_h > 0 && (
+                                  <div className="text-[9px] text-[var(--dim)] tabular-nums leading-tight">
+                                    oldest {node.parts_detail.oldest_h.toFixed(0)}h
+                                    {node.parts_detail.avg_bytes > 0 && (
+                                      <> · avg {fmtBytes(node.parts_detail.avg_bytes)}/part</>
+                                    )}
+                                    {node.parts_detail.compact_parts > 0 && (
+                                      <> · {node.parts_detail.compact_parts} compact</>
+                                    )}
+                                  </div>
+                                )}
+                                {/* Disk distribution pills */}
+                                {node.disk_dist && node.disk_dist.length > 0 && (
+                                  <div className="flex flex-wrap gap-0.5 mt-0.5">
+                                    {node.disk_dist.map((d) => {
+                                      const isRemote = d.type === 's3' || d.type === 's3_plain' || d.type === 'object_storage' || d.type === 'hdfs'
+                                      return (
+                                        <span
+                                          key={d.disk}
+                                          title={`${d.disk} (${d.type || 'local'}): ${d.parts} parts`}
+                                          className={cn(
+                                            'inline-flex items-center text-[9px] px-1 py-0.5 rounded font-mono',
+                                            isRemote
+                                              ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20'
+                                              : 'bg-[var(--hover)] text-[var(--dim)] border border-[var(--border)]',
+                                          )}
+                                        >
+                                          {isRemote ? '☁ ' : '💾 '}
+                                          {d.disk.length > 7 ? d.disk.slice(0, 7) + '…' : d.disk}: {fmtBytes(d.bytes)}
+                                        </span>
+                                      )
+                                    })}
+                                  </div>
+                                )}
                               </div>
                             ) : (
                               <span className="text-xs text-[var(--dim)]">—</span>
