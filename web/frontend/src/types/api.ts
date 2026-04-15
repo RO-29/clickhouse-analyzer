@@ -212,12 +212,28 @@ export interface DiskUsageEntry {
   readable_size: string
 }
 
+export interface TableQueryPattern {
+  query_prefix: string
+  exec_count: number
+  avg_ms: number
+  max_ms: number
+}
+
+export interface TableSlowStats {
+  avg_ms: number
+  max_ms: number
+  p95_ms: number
+  slow_count: number
+}
+
 export interface TableQueryActivity {
   select_count: number
   insert_count: number
   last_select?: string
   last_insert?: string
   is_active: boolean
+  slow_stats?: TableSlowStats
+  top_patterns?: TableQueryPattern[]
 }
 
 export interface TableScanEntry {
@@ -235,6 +251,7 @@ export interface TableScanEntry {
   create_query: string
   disk_usage: DiskUsageEntry[]
   query_activity: TableQueryActivity
+  schema_issues?: string[]
 }
 
 export interface TableScanResult {

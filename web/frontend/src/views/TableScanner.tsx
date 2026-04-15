@@ -8,7 +8,7 @@ import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
 import { cn } from '../lib/utils'
-import type { TableScanResult, TableScanEntry, DiskUsageEntry } from '../types/api'
+import type { TableScanResult, TableScanEntry, DiskUsageEntry, TableQueryPattern } from '../types/api'
 
 /* ─── Helpers ─────────────────────────────────────────────────────────────── */
 
@@ -72,10 +72,32 @@ const RANGE_PRESETS = [
   { label: '30d', secs: 2592000 },
 ]
 
+/* ─── Issue helpers ───────────────────────────────────────────────────────── */
+
+type IssueStyle = { label: string; color: string }
+
+function getIssueStyle(issue: string): IssueStyle {
+  if (issue === 'no_partition_key')  return { label: 'No Partition', color: 'bg-orange-500/15 text-orange-400 border-orange-500/30' }
+  if (issue === 'no_sort_key')       return { label: 'No Sort Key',  color: 'bg-orange-500/15 text-orange-400 border-orange-500/30' }
+  if (issue.startsWith('high_parts_')) return { label: 'High Parts', color: 'bg-red-500/15 text-red-400 border-red-500/30' }
+  if (issue === 'no_recent_inserts') return { label: 'No Writes',    color: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30' }
+  return { label: issue, color: 'bg-[var(--surface)] text-[var(--dim)] border-[var(--border)]' }
+}
+
+function IssueBadge({ issue }: { issue: string }) {
+  const { label, color } = getIssueStyle(issue)
+  return (
+    <span className={cn('inline-flex items-center text-[8px] font-bold uppercase tracking-wide px-1 py-px rounded border', color)}>
+      {label}
+    </span>
+  )
+}
+
 /* ─── Sort types ──────────────────────────────────────────────────────────── */
 
 type SortCol = 'table' | 'engine' | 'rows' | 'bytes' | 'parts' | 'selects' | 'inserts'
 type SortDir = 'asc' | 'desc'
+type RowFilter = 'all' | 'active' | 'idle' | 'issues'
 
 /* ─── Disk usage visual section ──────────────────────────────────────────── */
 
@@ -182,6 +204,38 @@ function DiskUsageSection({ disks }: { disks: DiskUsageEntry[] }) {
             </div>
           )
         })}
+      </div>
+    </div>
+  )
+}
+
+/* ─── Query patterns section ─────────────────────────────────────────────── */
+
+function QueryPatternsSection({ patterns }: { patterns: TableQueryPattern[] }) {
+  return (
+    <div className="space-y-2">
+      <div className="text-xs font-semibold uppercase tracking-wider text-[var(--dim)]">Top Query Patterns</div>
+      <div className="space-y-1.5">
+        {patterns.map((p, i) => (
+          <div key={i} className="rounded-lg bg-[var(--surface)] border border-[var(--border)] px-3 py-2.5 space-y-1.5">
+            <div className="flex items-center gap-2 text-[10px]">
+              <span className={cn(
+                'font-mono font-semibold',
+                p.avg_ms >= 5000 ? 'text-red-400' : p.avg_ms >= 1000 ? 'text-orange-400' : 'text-blue-400',
+              )}>
+                {p.avg_ms >= 1000 ? `${(p.avg_ms / 1000).toFixed(1)}s` : `${p.avg_ms.toFixed(0)}ms`} avg
+              </span>
+              <span className="text-[var(--dim)]">·</span>
+              <span className="text-[var(--dim)]">{p.exec_count.toLocaleString()}×</span>
+              <span className="text-[var(--dim)] ml-auto">
+                max {p.max_ms >= 1000 ? `${(p.max_ms / 1000).toFixed(1)}s` : `${p.max_ms.toFixed(0)}ms`}
+              </span>
+            </div>
+            <pre className="font-mono text-[10px] text-[var(--fg)] opacity-75 whitespace-pre-wrap break-all leading-relaxed">
+              {p.query_prefix}
+            </pre>
+          </div>
+        ))}
       </div>
     </div>
   )
@@ -315,6 +369,52 @@ function TableDetailModal({
             </div>
           </div>
 
+          {/* Query performance — only shown when timing data exists */}
+          {act.slow_stats && (
+            <div className="space-y-2">
+              <div className="text-xs font-semibold uppercase tracking-wider text-[var(--dim)]">SELECT Performance</div>
+              <div className="grid grid-cols-3 gap-3">
+                {[
+                  { label: 'Avg', value: act.slow_stats.avg_ms },
+                  { label: 'P95', value: act.slow_stats.p95_ms },
+                  { label: 'Max', value: act.slow_stats.max_ms },
+                ].map(({ label, value }) => (
+                  <div key={label} className="rounded-lg bg-[var(--surface)] px-3 py-2.5 space-y-0.5">
+                    <div className="text-[10px] text-[var(--dim)]">{label}</div>
+                    <div className={cn(
+                      'text-base font-mono font-semibold',
+                      value >= 5000 ? 'text-red-400' : value >= 1000 ? 'text-orange-400' : 'text-[var(--fg)]',
+                    )}>
+                      {value >= 1000 ? `${(value / 1000).toFixed(1)}s` : `${value.toFixed(0)}ms`}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {act.slow_stats.slow_count > 0 && (
+                <p className="text-[11px] text-orange-400">
+                  {act.slow_stats.slow_count.toLocaleString()} quer{act.slow_stats.slow_count === 1 ? 'y' : 'ies'} exceeded 1s
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Schema issues */}
+          {entry.schema_issues && entry.schema_issues.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs font-semibold uppercase tracking-wider text-[var(--dim)]">Schema Issues</div>
+              <div className="flex flex-wrap gap-1.5">
+                {entry.schema_issues.map(issue => (
+                  <IssueBadge key={issue} issue={issue} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Top query patterns */}
+          {act.top_patterns && act.top_patterns.length > 0 && (
+            <QueryPatternsSection patterns={act.top_patterns} />
+          )}
+
           {/* Disk breakdown — visual bars */}
           {entry.disk_usage && entry.disk_usage.length > 0 && (
             <DiskUsageSection disks={entry.disk_usage} />
@@ -406,12 +506,17 @@ function TableRow({
         <ChevronRight size={10} className="text-[var(--dim)] opacity-0 group-hover:opacity-60 transition-opacity" />
       </td>
 
-      {/* Table name */}
-      <td className={cn('px-2 py-1.5 text-xs max-w-[200px]', hl('table'))}>
+      {/* Table name + issue badges */}
+      <td className={cn('px-2 py-1.5 text-xs max-w-[220px]', hl('table'))}>
         <div className="flex items-baseline gap-0.5 min-w-0">
           <span className="text-[var(--dim)] text-[10px] shrink-0">{entry.database}.</span>
           <span className="font-medium text-[var(--fg)] truncate">{entry.table}</span>
         </div>
+        {entry.schema_issues && entry.schema_issues.length > 0 && (
+          <div className="flex flex-wrap gap-0.5 mt-0.5">
+            {entry.schema_issues.map(issue => <IssueBadge key={issue} issue={issue} />)}
+          </div>
+        )}
       </td>
 
       {/* Engine */}
@@ -500,7 +605,7 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
   const [rangePreset, setRangePreset] = useState(604800)
   const [sortCol, setSortCol] = useState<SortCol>('bytes')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
-  const [activityFilter, setActivityFilter] = useState<'all' | 'active' | 'idle'>('all')
+  const [rowFilter, setRowFilter] = useState<RowFilter>('all')
   const [modalEntry, setModalEntry] = useState<TableScanEntry | null>(null)
 
   const { analyze } = useAIAnalysis(instance)
@@ -563,10 +668,13 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
 
   const tables = result?.tables ?? []
 
+  const issueCount = tables.filter(t => (t.schema_issues?.length ?? 0) > 0).length
+
   const sorted = [...tables]
     .filter(t => {
-      if (activityFilter === 'active') return t.query_activity.is_active
-      if (activityFilter === 'idle') return !t.query_activity.is_active
+      if (rowFilter === 'active') return t.query_activity.is_active
+      if (rowFilter === 'idle') return !t.query_activity.is_active
+      if (rowFilter === 'issues') return (t.schema_issues?.length ?? 0) > 0
       return true
     })
     .filter(t => {
@@ -618,14 +726,14 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
 
         <span className="h-4 w-px bg-[var(--border)]" />
 
-        {/* Activity filter */}
+        {/* Row filter */}
         {(['all', 'active', 'idle'] as const).map(f => (
           <button
             key={f}
-            onClick={() => setActivityFilter(f)}
+            onClick={() => setRowFilter(f)}
             className={cn(
               'px-2 py-0.5 rounded text-xs capitalize transition-colors',
-              activityFilter === f
+              rowFilter === f
                 ? 'bg-[var(--accent)]/15 text-[var(--accent)]'
                 : 'text-[var(--dim)] hover:text-[var(--fg)] hover:bg-[var(--hover)]',
             )}
@@ -633,6 +741,25 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
             {f}
           </button>
         ))}
+        <button
+          onClick={() => setRowFilter('issues')}
+          className={cn(
+            'px-2 py-0.5 rounded text-xs transition-colors flex items-center gap-1',
+            rowFilter === 'issues'
+              ? 'bg-orange-500/15 text-orange-400'
+              : 'text-[var(--dim)] hover:text-[var(--fg)] hover:bg-[var(--hover)]',
+          )}
+        >
+          issues
+          {issueCount > 0 && (
+            <span className={cn(
+              'text-[9px] font-bold px-1 rounded-full',
+              rowFilter === 'issues' ? 'bg-orange-500/30' : 'bg-[var(--hover)]',
+            )}>
+              {issueCount}
+            </span>
+          )}
+        </button>
 
         <span className="h-4 w-px bg-[var(--border)]" />
 
@@ -736,7 +863,7 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
       {result && sorted.length === 0 && !loading && instance && (
         <div className="flex-1 flex flex-col items-center justify-center gap-2 text-[var(--dim)]">
           <Activity size={20} className="opacity-40" />
-          <p className="text-xs">{filter || activityFilter !== 'all' ? 'No tables match your filters' : 'No tables found'}</p>
+          <p className="text-xs">{filter || rowFilter !== 'all' ? 'No tables match your filters' : 'No tables found'}</p>
         </div>
       )}
 

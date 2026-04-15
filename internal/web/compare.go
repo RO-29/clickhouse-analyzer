@@ -34,6 +34,14 @@ type cmpPartsDetail struct {
 	CompactParts int     `json:"compact_parts"`
 }
 
+// cmpQueryStats holds query-log performance data for a table on one instance.
+type cmpQueryStats struct {
+	SelectCount int64   `json:"select_count"`
+	AvgMs       float64 `json:"avg_ms"`
+	MaxMs       float64 `json:"max_ms"`
+	P95Ms       float64 `json:"p95_ms"`
+}
+
 // cmpTableRaw is the internal accumulation struct per instance per table.
 type cmpTableRaw struct {
 	Rows         float64
@@ -50,11 +58,12 @@ type cmpTableRaw struct {
 
 // cmpInstanceData holds everything collected from one instance.
 type cmpInstanceData struct {
-	tables    map[string]cmpTableRaw            // key: "db.table"
-	engine    map[string]string
-	diskDist  map[string][]cmpDiskSlice         // key: "db.table"
-	columns   map[string]map[string]string      // key: "db.table" -> col name -> type
-	tblStruct map[string][2]string              // key: "db.table" -> [partitionKey, sortingKey]
+	tables     map[string]cmpTableRaw       // key: "db.table"
+	engine     map[string]string
+	diskDist   map[string][]cmpDiskSlice    // key: "db.table"
+	columns    map[string]map[string]string // key: "db.table" -> col name -> type
+	tblStruct  map[string][2]string         // key: "db.table" -> [partitionKey, sortingKey]
+	queryStats map[string]cmpQueryStats     // key: "db.table"
 }
 
 // handleCompareTables returns table metadata across all instances, merged by
@@ -184,13 +193,52 @@ func (s *Server) handleCompareTables(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// ── Q7: query stats per table (last 7 days) ──────────────────
+		const qlogSel = `(upper(left(ltrim(query), 6)) = 'SELECT' OR upper(left(ltrim(query), 4)) = 'WITH')`
+		queryStatsMap := make(map[string]cmpQueryStats)
+		qsRows, qse := client.Query(ctx, `
+			SELECT
+			  if(position(t, '.') > 0,
+			     substring(t, 1, position(t, '.') - 1), '') AS db,
+			  if(position(t, '.') > 0,
+			     substring(t, position(t, '.') + 1), t) AS tbl,
+			  countIf(`+qlogSel+`) AS select_count,
+			  toFloat64(avgIf(query_duration_ms, `+qlogSel+`)) AS avg_ms,
+			  toFloat64(maxIf(query_duration_ms, `+qlogSel+`)) AS max_ms,
+			  toFloat64(quantileIf(0.95)(query_duration_ms, `+qlogSel+`)) AS p95_ms
+			FROM system.query_log
+			ARRAY JOIN tables AS t
+			WHERE type = 'QueryFinish'
+			  AND is_initial_query = 1
+			  AND length(tables) > 0
+			  AND event_time > now() - 7 * 86400
+			GROUP BY db, tbl
+			HAVING db NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA',
+			                  '_temporary_and_external_tables', '')
+			  AND tbl != ''
+		`)
+		if qse == nil {
+			for _, row := range qsRows {
+				db := toString(row["db"])
+				tbl := toString(row["tbl"])
+				key := db + "." + tbl
+				queryStatsMap[key] = cmpQueryStats{
+					SelectCount: int64(toFloat64(row["select_count"])),
+					AvgMs:       toFloat64(row["avg_ms"]),
+					MaxMs:       toFloat64(row["max_ms"]),
+					P95Ms:       toFloat64(row["p95_ms"]),
+				}
+			}
+		}
+
 		// ── assemble ─────────────────────────────────────────────────
 		data := &cmpInstanceData{
-			tables:    make(map[string]cmpTableRaw),
-			engine:    make(map[string]string),
-			diskDist:  diskDistMap,
-			columns:   colMap,
-			tblStruct: tblStructMap,
+			tables:     make(map[string]cmpTableRaw),
+			engine:     make(map[string]string),
+			diskDist:   diskDistMap,
+			columns:    colMap,
+			tblStruct:  tblStructMap,
+			queryStats: queryStatsMap,
 		}
 
 		for _, row := range tableRows {
@@ -253,6 +301,7 @@ func (s *Server) handleCompareTables(w http.ResponseWriter, r *http.Request) {
 		MarksBytes  float64          `json:"marks_bytes"`
 		DiskDist    []cmpDiskSlice   `json:"disk_dist,omitempty"`
 		PartsDetail *cmpPartsDetail  `json:"parts_detail,omitempty"`
+		QueryStats  *cmpQueryStats   `json:"query_stats,omitempty"`
 	}
 
 	type tableEntry struct {
@@ -313,6 +362,9 @@ func (s *Server) handleCompareTables(w http.ResponseWriter, r *http.Request) {
 					WideParts:    ti.WideParts,
 					CompactParts: ti.CompactParts,
 				}
+			}
+			if qs, ok := data.queryStats[key]; ok && qs.SelectCount > 0 {
+				ni.QueryStats = &qs
 			}
 
 			entry.Nodes[inst] = ni

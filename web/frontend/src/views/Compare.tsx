@@ -28,6 +28,13 @@ interface PartsDetail {
   compact_parts: number
 }
 
+interface QueryStats {
+  select_count: number
+  avg_ms: number
+  max_ms: number
+  p95_ms: number
+}
+
 interface NodeData {
   rows: number
   bytes: number
@@ -37,6 +44,7 @@ interface NodeData {
   marks_bytes?: number
   disk_dist?: DiskSlice[]
   parts_detail?: PartsDetail
+  query_stats?: QueryStats
 }
 
 type DDLCriticality = 'high' | 'critical'
@@ -573,6 +581,30 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
                                         </span>
                                       )
                                     })}
+                                  </div>
+                                )}
+                                {/* Query stats */}
+                                {node.query_stats && node.query_stats.select_count > 0 && (
+                                  <div className="text-[9px] text-[var(--dim)] tabular-nums mt-0.5 leading-tight">
+                                    <span className="text-blue-400">{node.query_stats.select_count.toLocaleString()} SELs</span>
+                                    {' · avg '}
+                                    <span className={cn(
+                                      node.query_stats.avg_ms >= 5000 ? 'text-red-400' :
+                                      node.query_stats.avg_ms >= 1000 ? 'text-orange-400' : '',
+                                    )}>
+                                      {node.query_stats.avg_ms >= 1000
+                                        ? `${(node.query_stats.avg_ms / 1000).toFixed(1)}s`
+                                        : `${node.query_stats.avg_ms.toFixed(0)}ms`}
+                                    </span>
+                                    {' · p95 '}
+                                    <span className={cn(
+                                      node.query_stats.p95_ms >= 5000 ? 'text-red-400' :
+                                      node.query_stats.p95_ms >= 1000 ? 'text-orange-400' : '',
+                                    )}>
+                                      {node.query_stats.p95_ms >= 1000
+                                        ? `${(node.query_stats.p95_ms / 1000).toFixed(1)}s`
+                                        : `${node.query_stats.p95_ms.toFixed(0)}ms`}
+                                    </span>
                                   </div>
                                 )}
                               </div>
