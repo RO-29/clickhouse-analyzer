@@ -46,6 +46,10 @@ interface NodeData {
   parts_detail?: PartsDetail
   s3_pct?: number
   query_stats?: QueryStats
+  // DDL fields — per node, so frontend can diff only selected nodes
+  partition_key?: string
+  sorting_key?: string
+  col_hash?: string
 }
 
 type DDLCriticality = 'high' | 'critical'
@@ -233,6 +237,36 @@ function NodeSelector({
 }
 
 /* ------------------------------------------------------------------ */
+/*  DDL diff helper — scoped to active nodes only                     */
+/* ------------------------------------------------------------------ */
+function computeNodeDDL(t: TableRow, activeNodes: string[]): { criticality: DDLCriticality | ''; changes: string[] } {
+  const present = activeNodes.filter(n => !t.missing_on?.includes(n) && t.nodes?.[n])
+  if (present.length < 2) return { criticality: '', changes: [] }
+
+  const ref = t.nodes[present[0]]
+  const changes: string[] = []
+  let crit: DDLCriticality | '' = ''
+
+  for (const inst of present.slice(1)) {
+    const node = t.nodes[inst]
+    if ((ref.partition_key ?? '') !== (node.partition_key ?? '')) {
+      changes.push(`PARTITION BY: ${ref.partition_key || '(none)'} vs ${node.partition_key || '(none)'}`)
+      crit = 'critical'
+    }
+    if ((ref.sorting_key ?? '') !== (node.sorting_key ?? '')) {
+      changes.push(`ORDER BY: ${ref.sorting_key || '(none)'} vs ${node.sorting_key || '(none)'}`)
+      if (!crit) crit = 'critical'
+    }
+    if (ref.col_hash && node.col_hash && ref.col_hash !== node.col_hash) {
+      changes.push('Column schema differs')
+      if (crit !== 'critical') crit = 'high'
+    }
+  }
+
+  return { criticality: crit, changes }
+}
+
+/* ------------------------------------------------------------------ */
 /*  Tables view — flat sortable grid + node selector + live search    */
 /* ------------------------------------------------------------------ */
 type SortKey = 'name' | 'rows' | 'bytes' | 'drift' | 'total'
@@ -316,7 +350,7 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
     } else if (rowFilter === 'divergent') {
       rows = rows.filter((t) => !isRowMissing(t, activeNodes) && rowDrift(t, activeNodes) > 0.01)
     } else if (rowFilter === 'ddl') {
-      rows = rows.filter((t) => !!t.ddl_criticality)
+      rows = rows.filter((t) => !!computeNodeDDL(t, activeNodes).criticality)
     } else if (rowFilter === 'disk') {
       rows = rows.filter((t) => !!t.disk_discrepancy)
     }
@@ -371,8 +405,8 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
     [baseRows, activeNodes, isRowMissing, rowDrift],
   )
   const ddlCount = useMemo(
-    () => baseRows.filter((t) => !!t.ddl_criticality).length,
-    [baseRows],
+    () => baseRows.filter((t) => !!computeNodeDDL(t, activeNodes).criticality).length,
+    [baseRows, activeNodes],
   )
   const diskCount = useMemo(
     () => baseRows.filter((t) => !!t.disk_discrepancy).length,
@@ -485,8 +519,8 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
                   </button>
                 </th>
                 {activeNodes.map((inst) => (
-                  <th key={inst} className="text-left py-2 px-4">
-                    <div className="text-xs font-medium text-[var(--text)] truncate max-w-[150px] mb-0.5">
+                  <th key={inst} className="text-left py-2 px-4 min-w-[140px]">
+                    <div className="text-xs font-medium text-[var(--text)] mb-0.5 break-all leading-tight" title={inst}>
                       {inst}
                     </div>
                     <div className="flex items-center gap-3">
@@ -545,6 +579,7 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
                   const missing = isRowMissing(t, activeNodes)
                   const drift = rowDrift(t, activeNodes)
                   const diverging = !missing && drift > 0.01
+                  const ddl = computeNodeDDL(t, activeNodes)
 
                   return (
                     <tr
@@ -557,12 +592,12 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
                             ? 'bg-yellow-500/5 hover:bg-yellow-500/[0.08]'
                             : t.disk_discrepancy
                               ? 'bg-blue-500/5 hover:bg-blue-500/[0.08]'
-                              : t.ddl_criticality
+                              : ddl.criticality
                                 ? 'bg-orange-500/5 hover:bg-orange-500/[0.08]'
                                 : 'hover:bg-[var(--hover)]/50',
                       )}
                     >
-                      {/* Table name + engine + DDL badge */}
+                      {/* Table name + engine + badges */}
                       <td className="py-2.5 px-4">
                         <div className="font-mono text-xs leading-snug">
                           <span className="text-[var(--dim)]">{t.database}.</span>
@@ -571,39 +606,33 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
                         <div className="text-[10px] text-[var(--dim)] font-mono mt-0.5">
                           {t.engine}
                         </div>
-                        {t.ddl_criticality && (
-                          <div
-                            className="mt-1 flex items-center gap-1"
-                            title={t.ddl_changes?.join('\n')}
-                          >
-                            <span className={cn(
-                              'inline-flex items-center text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded border',
-                              t.ddl_criticality === 'critical'
-                                ? 'bg-red-500/15 text-red-400 border-red-500/30'
-                                : 'bg-orange-500/15 text-orange-400 border-orange-500/30',
-                            )}>
-                              DDL {t.ddl_criticality}
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {ddl.criticality && (
+                            <span
+                              title={ddl.changes.join('\n')}
+                              className={cn(
+                                'inline-flex items-center text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded border cursor-help',
+                                ddl.criticality === 'critical'
+                                  ? 'bg-red-500/15 text-red-400 border-red-500/30'
+                                  : 'bg-orange-500/15 text-orange-400 border-orange-500/30',
+                              )}
+                            >
+                              DDL {ddl.criticality}
                             </span>
-                            {t.ddl_changes && t.ddl_changes.length > 0 && (
-                              <span className="text-[9px] text-[var(--dim)] truncate max-w-[140px]">
-                                {t.ddl_changes[0]}
-                              </span>
-                            )}
-                          </div>
-                        )}
-                        {t.disk_discrepancy && (
-                          <div
-                            className="mt-1 flex items-center gap-1"
-                            title={t.disk_disc_details}
-                          >
-                            <span className="inline-flex items-center text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded border bg-blue-500/15 text-blue-400 border-blue-500/30">
-                              Disk disc.
+                          )}
+                          {t.disk_discrepancy && (
+                            <span
+                              title={t.disk_disc_details}
+                              className="inline-flex items-center text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded border bg-blue-500/15 text-blue-400 border-blue-500/30 cursor-help"
+                            >
+                              ☁ Disk disc.
                             </span>
-                            {t.disk_disc_details && (
-                              <span className="text-[9px] text-[var(--dim)] truncate max-w-[160px]">
-                                {t.disk_disc_details}
-                              </span>
-                            )}
+                          )}
+                        </div>
+                        {ddl.criticality && ddl.changes.length > 0 && (
+                          <div className="text-[9px] text-[var(--dim)] mt-0.5 leading-tight">
+                            {ddl.changes[0]}
+                            {ddl.changes.length > 1 && <> +{ddl.changes.length - 1} more</>}
                           </div>
                         )}
                       </td>
@@ -720,6 +749,17 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
                               </span>
                             ) : (
                               <Check size={13} className="text-green-400" />
+                            )}
+                            {t.disk_discrepancy && (
+                              <span
+                                className="text-[9px] text-blue-400 tabular-nums leading-tight"
+                                title={t.disk_disc_details}
+                              >
+                                {activeNodes
+                                  .filter(n => !t.missing_on?.includes(n) && t.nodes?.[n]?.s3_pct != null)
+                                  .map(n => `${t.nodes[n].s3_pct!.toFixed(0)}%S3`)
+                                  .join(' vs ')}
+                              </span>
                             )}
                             {t.total_bytes != null && t.total_bytes > 0 && (
                               <span className="text-[9px] text-[var(--dim)] tabular-nums">
@@ -1131,10 +1171,11 @@ export default function Compare() {
       .finally(() => setSettingsLoading(false))
   }, [])
 
-  // Prefer store instances; fall back to API response
-  const instances = storeInstances.length > 0
-    ? storeInstances
-    : tablesData?.instances ?? []
+  // Use compare API instances as authoritative (they have actual data).
+  // Fall back to store instances if compare hasn't loaded yet.
+  const instances = tablesData?.instances?.length
+    ? tablesData.instances
+    : storeInstances
 
   // Effective baseline for Settings / Metrics / Memory tabs
   const effectiveBaseline = (baseline && instances.includes(baseline))

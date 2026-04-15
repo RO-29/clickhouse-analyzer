@@ -84,9 +84,13 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // POST /api/auth/login — start the claude.ai OAuth login flow.
-// Streams output as SSE so the browser can display the login URL the user
-// must open. Uses BROWSER=echo so the CLI prints the URL instead of
-// trying to launch a GUI browser (which doesn't exist on a headless server).
+//
+// Streams output as SSE. The subprocess runs in a background context (not
+// tied to r.Context()) so that a transient proxy disconnect or keep-alive
+// hiccup doesn't kill the auth process mid-flow.
+//
+// The BROWSER=/usr/bin/echo trick makes the claude CLI print the OAuth URL
+// to stdout instead of trying to open a GUI browser on the headless server.
 func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	bin, err := claudeBinary()
 	if err != nil {
@@ -95,15 +99,15 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	home := findClaudeHome()
 	if home == "" {
-		// Default service state directory.
 		home = "/var/lib/ch-analyzer"
 		_ = os.MkdirAll(home, 0o755)
 	}
 
-	// Set up SSE.
+	// ── SSE headers ────────────────────────────────────────────────────────
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no") // nginx: don't buffer SSE
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -115,20 +119,50 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 
-	// 3-minute window — user needs to open the URL and complete the flow.
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+	// ── Background context — 5 min window, not tied to r.Context() ────────
+	// This prevents a proxy timeout or transient browser disconnect from
+	// sending SIGKILL to the claude process before the user completes auth.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
+	// Cancel if client disconnects AND no URL has been delivered yet.
+	// Once the URL is shown the user can complete auth independently, so we
+	// keep the process alive even if they close the modal and reopen it.
+	urlSent := make(chan struct{})
+	go func() {
+		select {
+		case <-r.Context().Done():
+			// Client gone — only kill if no URL sent yet
+			select {
+			case <-urlSent:
+				// URL delivered — let auth complete in background
+			default:
+				cancel()
+			}
+		case <-ctx.Done():
+		}
+	}()
+
+	// ── Build subprocess ────────────────────────────────────────────────────
 	cmd := exec.CommandContext(ctx, bin, "auth", "login")
 	env := os.Environ()
 	env = setEnv(env, "HOME", home)
-	// BROWSER=echo: makes xdg-open/open print the URL to stdout instead of
-	// launching a GUI browser — this is the headless-server trick.
-	env = setEnv(env, "BROWSER", "echo")
-	// Clear display variables so no GUI can launch.
+	// BROWSER=/usr/bin/echo: when claude tries to open the browser, it runs
+	// `echo <url>` which prints the URL to its own stdout. That output is
+	// captured because exec.Command inherits the subprocess's stdout through
+	// the StdoutPipe. Using the full path avoids shell-builtin ambiguity.
+	echoPath := "/usr/bin/echo"
+	if _, e := os.Stat(echoPath); e != nil {
+		echoPath = "echo" // fallback to PATH resolution
+	}
+	env = setEnv(env, "BROWSER", echoPath)
 	env = setEnv(env, "DISPLAY", "")
 	env = setEnv(env, "WAYLAND_DISPLAY", "")
 	cmd.Env = env
+
+	// Keep stdin open so the process doesn't get SIGPIPE or EOF-triggered exit.
+	stdin, _ := cmd.StdinPipe()
+	defer stdin.Close()
 
 	stdout, _ := cmd.StdoutPipe()
 	stderr, _ := cmd.StderrPipe()
@@ -146,6 +180,11 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		}
 		// URLs get their own event type for special client rendering.
 		if strings.HasPrefix(line, "https://") || strings.HasPrefix(line, "http://") {
+			select {
+			case <-urlSent:
+			default:
+				close(urlSent)
+			}
 			sendEvent("url", jsonStr(line))
 		} else {
 			sendEvent("output", jsonStr(line))
@@ -167,9 +206,29 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
+	// ── Heartbeat — keeps SSE connection alive through idle proxies ────────
+	go func() {
+		ticker := time.NewTicker(20 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				sendEvent("heartbeat", `""`)
+			case <-ctx.Done():
+				return
+			case <-stdoutDone:
+				return
+			}
+		}
+	}()
+
 	<-stdoutDone
 	if err := cmd.Wait(); err != nil {
 		slog.Warn("auth login: process exited with error", "err", err)
+		// Send the error to the browser so the user isn't left staring at
+		// a spinner. Include the raw error string for diagnostics.
+		sendEvent("error", jsonStr("Login process exited: "+err.Error()+
+			". SSH into the server and run: HOME=/var/lib/ch-analyzer claude auth login"))
 	} else {
 		slog.Info("auth login: completed successfully")
 		sendEvent("done", `{"success":true}`)

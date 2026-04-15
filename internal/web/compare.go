@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"crypto/md5"
 	"fmt"
 	"log/slog"
 	"math"
@@ -253,16 +254,21 @@ func (s *Server) handleCompareTables(w http.ResponseWriter, r *http.Request) {
 
 	// ── output types ─────────────────────────────────────────────────
 	type nodeInfo struct {
-		Rows        float64         `json:"rows"`
-		Bytes       float64         `json:"bytes"`
-		Size        string          `json:"size"`
-		Parts       float64         `json:"parts"`
-		PKBytes     float64         `json:"pk_bytes"`
-		MarksBytes  float64         `json:"marks_bytes"`
-		DiskDist    []cmpDiskSlice  `json:"disk_dist,omitempty"`
-		PartsDetail *cmpPartsDetail `json:"parts_detail,omitempty"`
-		S3Pct       float64         `json:"s3_pct"`      // % of table bytes on S3/object storage
-		QueryStats  *cmpQueryStats  `json:"query_stats,omitempty"` // populated by on-demand endpoint
+		Rows         float64         `json:"rows"`
+		Bytes        float64         `json:"bytes"`
+		Size         string          `json:"size"`
+		Parts        float64         `json:"parts"`
+		PKBytes      float64         `json:"pk_bytes"`
+		MarksBytes   float64         `json:"marks_bytes"`
+		DiskDist     []cmpDiskSlice  `json:"disk_dist,omitempty"`
+		PartsDetail  *cmpPartsDetail `json:"parts_detail,omitempty"`
+		S3Pct        float64         `json:"s3_pct"`
+		QueryStats   *cmpQueryStats  `json:"query_stats,omitempty"`
+		// DDL fields — exposed so the frontend can recompute diff for only the
+		// selected nodes (the pre-computed DDLCriticality covers all instances).
+		PartitionKey string `json:"partition_key,omitempty"`
+		SortingKey   string `json:"sorting_key,omitempty"`
+		ColHash      string `json:"col_hash,omitempty"` // 8-hex-char MD5 of sorted col:type pairs
 	}
 
 	type tableEntry struct {
@@ -325,15 +331,19 @@ func (s *Server) handleCompareTables(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
+			sk := data.tblStruct[key]
 			ni := nodeInfo{
-				Rows:       ti.Rows,
-				Bytes:      ti.Bytes,
-				Size:       ti.Size,
-				Parts:      ti.Parts,
-				PKBytes:    ti.PKBytes,
-				MarksBytes: ti.MarksBytes,
-				DiskDist:   data.diskDist[key],
-				S3Pct:      s3Pct,
+				Rows:         ti.Rows,
+				Bytes:        ti.Bytes,
+				Size:         ti.Size,
+				Parts:        ti.Parts,
+				PKBytes:      ti.PKBytes,
+				MarksBytes:   ti.MarksBytes,
+				DiskDist:     data.diskDist[key],
+				S3Pct:        s3Pct,
+				PartitionKey: sk[0],
+				SortingKey:   sk[1],
+				ColHash:      cmpColHash(data.columns[key]),
 			}
 			if ti.Parts > 0 {
 				ni.PartsDetail = &cmpPartsDetail{
@@ -406,6 +416,28 @@ func (s *Server) handleCompareTables(w http.ResponseWriter, r *http.Request) {
 		"tables":    tables,
 		"instances": instances,
 	})
+}
+
+// cmpColHash returns an 8-char hex fingerprint of a table's column schema.
+// Columns with the same set of col:type pairs produce the same hash.
+func cmpColHash(cols map[string]string) string {
+	if len(cols) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(cols))
+	for col := range cols {
+		names = append(names, col)
+	}
+	sort.Strings(names)
+	var sb strings.Builder
+	for _, col := range names {
+		sb.WriteString(col)
+		sb.WriteByte(':')
+		sb.WriteString(cols[col])
+		sb.WriteByte(';')
+	}
+	sum := md5.Sum([]byte(sb.String()))
+	return fmt.Sprintf("%x", sum[:4])
 }
 
 // compareDDL returns a criticality level ("critical"|"high"|"") and a list of
