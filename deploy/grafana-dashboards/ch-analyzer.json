@@ -1139,7 +1139,7 @@
       "datasource": "${datasource}",
       "targets": [
         {
-          "expr": "topk(10, ch_analyzer_inserts_total_rows{instance=~\"$instance\",database=~\"$database\"})",
+          "expr": "topk(10, ch_analyzer_inserts_table_rows{instance=~\"$instance\",database=~\"$database\"})",
           "legendFormat": "{{instance}} {{database}}.{{table}}"
         }
       ],
@@ -1174,7 +1174,7 @@
       "datasource": "${datasource}",
       "targets": [
         {
-          "expr": "topk(20, ch_analyzer_storage_distribution_bytes{instance=~\"$instance\",database=~\"$database\"})",
+          "expr": "topk(20, ch_analyzer_storage_distribution_bytes{instance=~\"$instance\"})",
           "format": "table",
           "instant": true
         }
@@ -1227,7 +1227,7 @@
       "datasource": "${datasource}",
       "targets": [
         {
-          "expr": "topk(10, ch_analyzer_storage_distribution_bytes{instance=~\"$instance\",database=~\"$database\"})",
+          "expr": "topk(10, ch_analyzer_storage_distribution_bytes{instance=~\"$instance\"})",
           "legendFormat": "{{instance}} {{database}}.{{table}} ({{disk}})"
         }
       ],
