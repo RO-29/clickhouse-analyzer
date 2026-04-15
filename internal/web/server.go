@@ -153,6 +153,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 
 	// Compare endpoints (from compare.go).
 	mux.HandleFunc("GET /api/compare/tables", s.handleCompareTables)
+	mux.HandleFunc("GET /api/compare/query-stats", s.handleCompareQueryStats)
 	mux.HandleFunc("GET /api/compare/settings", s.handleCompareSettings)
 	mux.HandleFunc("GET /api/compare/metrics", s.handleCompareMetrics)
 	mux.HandleFunc("GET /api/instances/{name}/table-memory", s.handleTableMemory)
@@ -202,6 +203,10 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 
 	// Health and maintenance endpoints.
 	mux.HandleFunc("GET /health", s.handleHealth)
+
+	// Claude auth management (check status, start re-login flow).
+	mux.HandleFunc("GET /api/auth/status", s.handleAuthStatus)
+	mux.HandleFunc("POST /api/auth/login", s.handleAuthLogin)
 	mux.HandleFunc("GET /api/maintenance", s.handleMaintenanceList)
 	mux.HandleFunc("POST /api/maintenance", s.handleMaintenanceCreate)
 	mux.HandleFunc("DELETE /api/maintenance/{id}", s.handleMaintenanceDelete)

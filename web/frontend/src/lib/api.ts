@@ -121,6 +121,7 @@ export const api = {
     tables: () => get<any>('/api/compare/tables'),
     settings: () => get<any>('/api/compare/settings'),
     metrics: () => get<any>('/api/compare/metrics'),
+    queryStats: () => get<any>('/api/compare/query-stats'),
   },
   tableMemory: (inst: string) => get<any[]>(`/api/instances/${inst}/table-memory`),
   cacheStats: (inst: string) => get<any>(`/api/instances/${inst}/cache-stats`),

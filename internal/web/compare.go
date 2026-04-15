@@ -58,12 +58,11 @@ type cmpTableRaw struct {
 
 // cmpInstanceData holds everything collected from one instance.
 type cmpInstanceData struct {
-	tables     map[string]cmpTableRaw       // key: "db.table"
-	engine     map[string]string
-	diskDist   map[string][]cmpDiskSlice    // key: "db.table"
-	columns    map[string]map[string]string // key: "db.table" -> col name -> type
-	tblStruct  map[string][2]string         // key: "db.table" -> [partitionKey, sortingKey]
-	queryStats map[string]cmpQueryStats     // key: "db.table"
+	tables    map[string]cmpTableRaw       // key: "db.table"
+	engine    map[string]string
+	diskDist  map[string][]cmpDiskSlice    // key: "db.table"
+	columns   map[string]map[string]string // key: "db.table" -> col name -> type
+	tblStruct map[string][2]string         // key: "db.table" -> [partitionKey, sortingKey]
 }
 
 // handleCompareTables returns table metadata across all instances, merged by
@@ -193,52 +192,13 @@ func (s *Server) handleCompareTables(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// ── Q7: query stats per table (last 7 days) ──────────────────
-		const qlogSel = `(upper(left(ltrim(query), 6)) = 'SELECT' OR upper(left(ltrim(query), 4)) = 'WITH')`
-		queryStatsMap := make(map[string]cmpQueryStats)
-		qsRows, qse := client.Query(ctx, `
-			SELECT
-			  if(position(t, '.') > 0,
-			     substring(t, 1, position(t, '.') - 1), '') AS db,
-			  if(position(t, '.') > 0,
-			     substring(t, position(t, '.') + 1), t) AS tbl,
-			  countIf(`+qlogSel+`) AS select_count,
-			  toFloat64(avgIf(query_duration_ms, `+qlogSel+`)) AS avg_ms,
-			  toFloat64(maxIf(query_duration_ms, `+qlogSel+`)) AS max_ms,
-			  toFloat64(quantileIf(0.95)(query_duration_ms, `+qlogSel+`)) AS p95_ms
-			FROM system.query_log
-			ARRAY JOIN tables AS t
-			WHERE type = 'QueryFinish'
-			  AND is_initial_query = 1
-			  AND length(tables) > 0
-			  AND event_time > now() - 7 * 86400
-			GROUP BY db, tbl
-			HAVING db NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA',
-			                  '_temporary_and_external_tables', '')
-			  AND tbl != ''
-		`)
-		if qse == nil {
-			for _, row := range qsRows {
-				db := toString(row["db"])
-				tbl := toString(row["tbl"])
-				key := db + "." + tbl
-				queryStatsMap[key] = cmpQueryStats{
-					SelectCount: int64(toFloat64(row["select_count"])),
-					AvgMs:       toFloat64(row["avg_ms"]),
-					MaxMs:       toFloat64(row["max_ms"]),
-					P95Ms:       toFloat64(row["p95_ms"]),
-				}
-			}
-		}
-
 		// ── assemble ─────────────────────────────────────────────────
 		data := &cmpInstanceData{
-			tables:     make(map[string]cmpTableRaw),
-			engine:     make(map[string]string),
-			diskDist:   diskDistMap,
-			columns:    colMap,
-			tblStruct:  tblStructMap,
-			queryStats: queryStatsMap,
+			tables:    make(map[string]cmpTableRaw),
+			engine:    make(map[string]string),
+			diskDist:  diskDistMap,
+			columns:   colMap,
+			tblStruct: tblStructMap,
 		}
 
 		for _, row := range tableRows {
@@ -293,26 +253,30 @@ func (s *Server) handleCompareTables(w http.ResponseWriter, r *http.Request) {
 
 	// ── output types ─────────────────────────────────────────────────
 	type nodeInfo struct {
-		Rows        float64          `json:"rows"`
-		Bytes       float64          `json:"bytes"`
-		Size        string           `json:"size"`
-		Parts       float64          `json:"parts"`
-		PKBytes     float64          `json:"pk_bytes"`
-		MarksBytes  float64          `json:"marks_bytes"`
-		DiskDist    []cmpDiskSlice   `json:"disk_dist,omitempty"`
-		PartsDetail *cmpPartsDetail  `json:"parts_detail,omitempty"`
-		QueryStats  *cmpQueryStats   `json:"query_stats,omitempty"`
+		Rows        float64         `json:"rows"`
+		Bytes       float64         `json:"bytes"`
+		Size        string          `json:"size"`
+		Parts       float64         `json:"parts"`
+		PKBytes     float64         `json:"pk_bytes"`
+		MarksBytes  float64         `json:"marks_bytes"`
+		DiskDist    []cmpDiskSlice  `json:"disk_dist,omitempty"`
+		PartsDetail *cmpPartsDetail `json:"parts_detail,omitempty"`
+		S3Pct       float64         `json:"s3_pct"`      // % of table bytes on S3/object storage
+		QueryStats  *cmpQueryStats  `json:"query_stats,omitempty"` // populated by on-demand endpoint
 	}
 
 	type tableEntry struct {
-		Database       string              `json:"database"`
-		Table          string              `json:"table"`
-		Engine         string              `json:"engine"`
-		Nodes          map[string]nodeInfo `json:"nodes"`
-		MaxRowDiffPct  float64             `json:"max_row_diff_pct"`
-		MissingOn      []string            `json:"missing_on,omitempty"`
-		DDLCriticality string              `json:"ddl_criticality,omitempty"`
-		DDLChanges     []string            `json:"ddl_changes,omitempty"`
+		Database           string              `json:"database"`
+		Table              string              `json:"table"`
+		Engine             string              `json:"engine"`
+		Nodes              map[string]nodeInfo `json:"nodes"`
+		MaxRowDiffPct      float64             `json:"max_row_diff_pct"`
+		TotalBytes         float64             `json:"total_bytes"`         // sum across all instances
+		MissingOn          []string            `json:"missing_on,omitempty"`
+		DDLCriticality     string              `json:"ddl_criticality,omitempty"`
+		DDLChanges         []string            `json:"ddl_changes,omitempty"`
+		DiskDiscrepancy    bool                `json:"disk_discrepancy,omitempty"` // S3% differs >20% across nodes
+		DiskDiscDetails    string              `json:"disk_disc_details,omitempty"`
 	}
 
 	tables := make([]tableEntry, 0, len(sortedKeys))
@@ -346,6 +310,21 @@ func (s *Server) handleCompareTables(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
+			// Compute S3% for this node's table.
+			var s3Pct float64
+			if dd := data.diskDist[key]; len(dd) > 0 {
+				var totalB, s3B float64
+				for _, d := range dd {
+					totalB += d.Bytes
+					if isCmpS3Type(d.Type) {
+						s3B += d.Bytes
+					}
+				}
+				if totalB > 0 {
+					s3Pct = s3B / totalB * 100
+				}
+			}
+
 			ni := nodeInfo{
 				Rows:       ti.Rows,
 				Bytes:      ti.Bytes,
@@ -354,6 +333,7 @@ func (s *Server) handleCompareTables(w http.ResponseWriter, r *http.Request) {
 				PKBytes:    ti.PKBytes,
 				MarksBytes: ti.MarksBytes,
 				DiskDist:   data.diskDist[key],
+				S3Pct:      s3Pct,
 			}
 			if ti.Parts > 0 {
 				ni.PartsDetail = &cmpPartsDetail{
@@ -362,9 +342,6 @@ func (s *Server) handleCompareTables(w http.ResponseWriter, r *http.Request) {
 					WideParts:    ti.WideParts,
 					CompactParts: ti.CompactParts,
 				}
-			}
-			if qs, ok := data.queryStats[key]; ok && qs.SelectCount > 0 {
-				ni.QueryStats = &qs
 			}
 
 			entry.Nodes[inst] = ni
@@ -387,6 +364,40 @@ func (s *Server) handleCompareTables(w http.ResponseWriter, r *http.Request) {
 
 		// ── DDL criticality ──────────────────────────────────────────
 		entry.DDLCriticality, entry.DDLChanges = compareDDL(instances, perInstance, key)
+
+		// ── Cumulative size ───────────────────────────────────────────
+		for _, ni := range entry.Nodes {
+			entry.TotalBytes += ni.Bytes
+		}
+
+		// ── Disk discrepancy ──────────────────────────────────────────
+		// Flag when S3% differs by >20 percentage points across nodes that
+		// have disk data — e.g. 90% S3 on one node vs 10% on another.
+		var minS3, maxS3 float64
+		s3First := true
+		var diskDetails []string
+		for inst, ni := range entry.Nodes {
+			if len(ni.DiskDist) == 0 {
+				continue
+			}
+			if s3First {
+				minS3, maxS3 = ni.S3Pct, ni.S3Pct
+				s3First = false
+			} else {
+				if ni.S3Pct < minS3 {
+					minS3 = ni.S3Pct
+				}
+				if ni.S3Pct > maxS3 {
+					maxS3 = ni.S3Pct
+				}
+			}
+			diskDetails = append(diskDetails, fmt.Sprintf("%s: %.0f%% S3", inst, ni.S3Pct))
+		}
+		if !s3First && maxS3-minS3 > 20 {
+			entry.DiskDiscrepancy = true
+			sort.Strings(diskDetails)
+			entry.DiskDiscDetails = strings.Join(diskDetails, " vs ")
+		}
 
 		tables = append(tables, entry)
 	}
@@ -512,6 +523,88 @@ func compareDDL(
 	}
 
 	return crit, changes
+}
+
+// isCmpS3Type returns true for disk types that represent object/cloud storage.
+func isCmpS3Type(t string) bool {
+	l := strings.ToLower(t)
+	return l == "s3" || l == "s3_plain" || l == "s3_plain_rewritable" ||
+		strings.Contains(l, "object") || strings.Contains(l, "azure") || l == "hdfs"
+}
+
+// ---------------------------------------------------------------------------
+// Compare Query Stats (on-demand — heavy qlog scan, not part of auto-load)
+// ---------------------------------------------------------------------------
+
+// GET /api/compare/query-stats — runs the qlog scan per instance and returns
+// SELECT latency stats per table. Called only when the user explicitly requests
+// it, because the ARRAY JOIN scan is expensive.
+func (s *Server) handleCompareQueryStats(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+
+	instances := s.manager.Names()
+
+	const qlogSel = `(upper(left(ltrim(query), 6)) = 'SELECT' OR upper(left(ltrim(query), 4)) = 'WITH')`
+
+	var mu sync.Mutex
+	// result: instance -> "db.table" -> stats
+	result := make(map[string]map[string]cmpQueryStats, len(instances))
+
+	errs := s.manager.ForEachParallel(ctx, func(ctx context.Context, name string, client *chclient.Client) error {
+		rows, err := client.Query(ctx, `
+			SELECT
+			  if(position(t, '.') > 0,
+			     substring(t, 1, position(t, '.') - 1), '') AS db,
+			  if(position(t, '.') > 0,
+			     substring(t, position(t, '.') + 1), t) AS tbl,
+			  countIf(`+qlogSel+`) AS select_count,
+			  toFloat64(avgIf(query_duration_ms, `+qlogSel+`)) AS avg_ms,
+			  toFloat64(maxIf(query_duration_ms, `+qlogSel+`)) AS max_ms,
+			  toFloat64(quantileIf(0.95)(query_duration_ms, `+qlogSel+`)) AS p95_ms
+			FROM system.query_log
+			ARRAY JOIN tables AS t
+			WHERE type = 'QueryFinish'
+			  AND is_initial_query = 1
+			  AND length(tables) > 0
+			  AND event_time > now() - 7 * 86400
+			GROUP BY db, tbl
+			HAVING db NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA',
+			                  '_temporary_and_external_tables', '')
+			  AND tbl != ''
+		`)
+		if err != nil {
+			return fmt.Errorf("query_log: %w", err)
+		}
+
+		m := make(map[string]cmpQueryStats, len(rows))
+		for _, row := range rows {
+			db := toString(row["db"])
+			tbl := toString(row["tbl"])
+			m[db+"."+tbl] = cmpQueryStats{
+				SelectCount: int64(toFloat64(row["select_count"])),
+				AvgMs:       toFloat64(row["avg_ms"]),
+				MaxMs:       toFloat64(row["max_ms"]),
+				P95Ms:       toFloat64(row["p95_ms"]),
+			}
+		}
+
+		mu.Lock()
+		result[name] = m
+		mu.Unlock()
+		return nil
+	})
+
+	if len(errs) > 0 {
+		for name, err := range errs {
+			slog.Warn("compare query-stats: instance error", "instance", name, "err", err)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"instances": instances,
+		"stats":     result, // map[instance]map["db.table"]cmpQueryStats
+	})
 }
 
 // ---------------------------------------------------------------------------

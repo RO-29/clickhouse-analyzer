@@ -51,6 +51,8 @@ export interface Store {
   setChatSessions: (updater: ChatSession[] | ((prev: ChatSession[]) => ChatSession[])) => void
   setActiveChatId: (id: string | null) => void
   setAiPanelOpen: (v: boolean) => void
+  authExpired: boolean
+  setAuthExpired: (v: boolean) => void
 }
 
 const StoreContext = createContext<Store | null>(null)
@@ -126,6 +128,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const [aiPanelOpen, setAiPanelOpen] = useState(false)
+  const [authExpired, setAuthExpired] = useState(false)
 
   const toggleTheme = useCallback(() => {
     setTheme(prev => {
@@ -203,6 +206,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     chatSessions, setChatSessions,
     activeChatId, setActiveChatId,
     aiPanelOpen, setAiPanelOpen,
+    authExpired, setAuthExpired,
     navToDetail, navToAlerts, alertPreset, setAlertPreset,
     navToTerminal,
     openTableDetail, closeTableDetail,

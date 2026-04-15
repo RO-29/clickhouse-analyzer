@@ -352,6 +352,14 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		for scanner.Scan() {
 			stdoutLines++
 			line := scanner.Text()
+			// Detect auth errors — kill early and tell the user to re-authenticate.
+			if strings.Contains(line, "API Error: 401") ||
+				strings.Contains(line, `"authentication_error"`) ||
+				strings.Contains(line, "Invalid authentication credentials") {
+				sendEvent("auth_error", jsonStr("Your Claude session has expired. Click the lock icon in the top bar to re-authenticate."))
+				claudeCancel()
+				return
+			}
 			// Detect rate-limit errors immediately — claude CLI retries
 			// internally for ~3 minutes before printing this, so killing the
 			// process early saves the user a 3-minute wait.
@@ -901,6 +909,13 @@ func (s *Server) handleAnalyzeElement(w http.ResponseWriter, r *http.Request) {
 		scanner.Buffer(make([]byte, 128*1024), 128*1024)
 		for scanner.Scan() {
 			line := scanner.Text()
+			if strings.Contains(line, "API Error: 401") ||
+				strings.Contains(line, `"authentication_error"`) ||
+				strings.Contains(line, "Invalid authentication credentials") {
+				sendEvent("auth_error", jsonStr("Your Claude session has expired. Click the lock icon in the top bar to re-authenticate."))
+				claudeCancel()
+				return
+			}
 			if strings.Contains(line, "API Error: 429") || strings.Contains(line, `"code":"1302"`) {
 				sendEvent("error", jsonStr("Rate limited (429) — wait ~60 seconds and retry."))
 				claudeCancel()

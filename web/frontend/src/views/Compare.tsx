@@ -7,7 +7,7 @@ import {
   Tooltip as ChartTooltip,
 } from 'chart.js'
 import { Bar } from 'react-chartjs-2'
-import { Check, AlertTriangle, XCircle, Sparkles, Search } from 'lucide-react'
+import { Check, AlertTriangle, XCircle, Sparkles, Search, Loader2 } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
@@ -44,6 +44,7 @@ interface NodeData {
   marks_bytes?: number
   disk_dist?: DiskSlice[]
   parts_detail?: PartsDetail
+  s3_pct?: number
   query_stats?: QueryStats
 }
 
@@ -56,8 +57,11 @@ interface TableRow {
   nodes: Record<string, NodeData>
   missing_on?: string[]
   max_row_diff_pct?: number
+  total_bytes?: number
   ddl_criticality?: DDLCriticality
   ddl_changes?: string[]
+  disk_discrepancy?: boolean
+  disk_disc_details?: string
 }
 
 interface TablesData { instances: string[]; tables: TableRow[] }
@@ -231,8 +235,8 @@ function NodeSelector({
 /* ------------------------------------------------------------------ */
 /*  Tables view — flat sortable grid + node selector + live search    */
 /* ------------------------------------------------------------------ */
-type SortKey = 'name' | 'rows' | 'bytes' | 'drift'
-type RowFilter = 'all' | 'missing' | 'divergent' | 'ddl'
+type SortKey = 'name' | 'rows' | 'bytes' | 'drift' | 'total'
+type RowFilter = 'all' | 'missing' | 'divergent' | 'ddl' | 'disk'
 
 const NODES_KEY = 'compare-selected-nodes'
 
@@ -250,6 +254,21 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
   const [sortKey, setSortKey] = useState<SortKey>('name')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
   const [rowFilter, setRowFilter] = useState<RowFilter>('all')
+  // On-demand query stats: instance → "db.table" → stats
+  const [queryStatsData, setQueryStatsData] = useState<Record<string, Record<string, QueryStats>> | null>(null)
+  const [queryStatsLoading, setQueryStatsLoading] = useState(false)
+
+  const loadQueryStats = useCallback(async () => {
+    setQueryStatsLoading(true)
+    try {
+      const resp = await api.compare.queryStats()
+      setQueryStatsData(resp.stats ?? null)
+    } catch (e: any) {
+      console.error('Failed to load query stats:', e.message)
+    } finally {
+      setQueryStatsLoading(false)
+    }
+  }, [])
 
   // Persist selected nodes whenever they change
   const handleSetNodes = useCallback((nodes: string[]) => {
@@ -298,6 +317,8 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
       rows = rows.filter((t) => !isRowMissing(t, activeNodes) && rowDrift(t, activeNodes) > 0.01)
     } else if (rowFilter === 'ddl') {
       rows = rows.filter((t) => !!t.ddl_criticality)
+    } else if (rowFilter === 'disk') {
+      rows = rows.filter((t) => !!t.disk_discrepancy)
     }
 
     return [...rows].sort((a, b) => {
@@ -314,6 +335,8 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
         cmp = aMax - bMax
       } else if (sortKey === 'drift') {
         cmp = rowDrift(a, activeNodes) - rowDrift(b, activeNodes)
+      } else if (sortKey === 'total') {
+        cmp = (a.total_bytes ?? 0) - (b.total_bytes ?? 0)
       }
       return sortDir === 'asc' ? cmp : -cmp
     })
@@ -351,6 +374,14 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
     () => baseRows.filter((t) => !!t.ddl_criticality).length,
     [baseRows],
   )
+  const diskCount = useMemo(
+    () => baseRows.filter((t) => !!t.disk_discrepancy).length,
+    [baseRows],
+  )
+  const totalBytes = useMemo(
+    () => baseRows.reduce((acc, t) => acc + (t.total_bytes ?? 0), 0),
+    [baseRows],
+  )
 
   return (
     <div className="space-y-4">
@@ -377,10 +408,11 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
         {/* Row filter */}
         <div className="flex items-center gap-0.5 bg-[var(--surface)] border border-[var(--border)] rounded-lg p-0.5">
           {([
-            { key: 'all',       label: 'All',       count: null },
-            { key: 'missing',   label: 'Missing',   count: missingCount,  color: 'text-red-400' },
-            { key: 'divergent', label: 'Divergent', count: diffCount,     color: 'text-yellow-400' },
-            { key: 'ddl',       label: 'DDL diff',  count: ddlCount,      color: 'text-orange-400' },
+            { key: 'all',       label: 'All',        count: null },
+            { key: 'missing',   label: 'Missing',    count: missingCount, color: 'text-red-400' },
+            { key: 'divergent', label: 'Divergent',  count: diffCount,    color: 'text-yellow-400' },
+            { key: 'ddl',       label: 'DDL diff',   count: ddlCount,     color: 'text-orange-400' },
+            { key: 'disk',      label: 'Disk disc.', count: diskCount,    color: 'text-blue-400' },
           ] as { key: RowFilter; label: string; count: number | null; color?: string }[]).map(({ key, label, count, color }) => (
             <button
               key={key}
@@ -400,7 +432,27 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
           ))}
         </div>
 
+        {/* Load Query Stats on demand */}
+        <button
+          onClick={loadQueryStats}
+          disabled={queryStatsLoading}
+          className={cn(
+            'flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium border transition-colors',
+            queryStatsData
+              ? 'text-green-400 border-green-500/30 hover:bg-green-500/10'
+              : 'text-[var(--dim)] border-[var(--border)] hover:text-[var(--text)] hover:bg-[var(--surface)]',
+            queryStatsLoading && 'opacity-60 cursor-not-allowed',
+          )}
+          title="Load SELECT latency stats from query_log (expensive — runs on demand)"
+        >
+          {queryStatsLoading && <Loader2 size={11} className="animate-spin" />}
+          {queryStatsLoading ? 'Loading stats…' : queryStatsData ? '✓ Query stats' : 'Load query stats'}
+        </button>
+
         <div className="flex items-center gap-4 text-xs ml-auto">
+          {totalBytes > 0 && (
+            <span className="text-[var(--dim)]">cumulative {fmtBytes(totalBytes)}</span>
+          )}
           {missingCount > 0 && rowFilter === 'all' && (
             <button onClick={() => setRowFilter('missing')} className="flex items-center gap-1 text-red-400 hover:underline">
               <XCircle size={11} />
@@ -456,14 +508,23 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
                   </th>
                 ))}
                 {activeNodes.length > 1 && (
-                  <th className="text-right py-2.5 px-4 w-20">
-                    <button
-                      onClick={() => handleSort('drift')}
-                      className="flex items-center justify-end text-xs font-medium uppercase tracking-wider text-[var(--dim)] hover:text-[var(--text)] transition-colors ml-auto"
-                    >
-                      Drift
-                      <SortIndicator k="drift" />
-                    </button>
+                  <th className="text-right py-2.5 px-4 w-28">
+                    <div className="flex flex-col items-end gap-0.5">
+                      <button
+                        onClick={() => handleSort('drift')}
+                        className="flex items-center text-xs font-medium uppercase tracking-wider text-[var(--dim)] hover:text-[var(--text)] transition-colors"
+                      >
+                        Drift
+                        <SortIndicator k="drift" />
+                      </button>
+                      <button
+                        onClick={() => handleSort('total')}
+                        className="flex items-center text-[10px] text-[var(--dim)] hover:text-[var(--text)] transition-colors"
+                      >
+                        Total
+                        <SortIndicator k="total" />
+                      </button>
+                    </div>
                   </th>
                 )}
                 <th className="w-8 px-2" />
@@ -494,9 +555,11 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
                           ? 'bg-red-500/5 hover:bg-red-500/[0.08]'
                           : diverging
                             ? 'bg-yellow-500/5 hover:bg-yellow-500/[0.08]'
-                            : t.ddl_criticality
-                              ? 'bg-orange-500/5 hover:bg-orange-500/[0.08]'
-                              : 'hover:bg-[var(--hover)]/50',
+                            : t.disk_discrepancy
+                              ? 'bg-blue-500/5 hover:bg-blue-500/[0.08]'
+                              : t.ddl_criticality
+                                ? 'bg-orange-500/5 hover:bg-orange-500/[0.08]'
+                                : 'hover:bg-[var(--hover)]/50',
                       )}
                     >
                       {/* Table name + engine + DDL badge */}
@@ -528,12 +591,29 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
                             )}
                           </div>
                         )}
+                        {t.disk_discrepancy && (
+                          <div
+                            className="mt-1 flex items-center gap-1"
+                            title={t.disk_disc_details}
+                          >
+                            <span className="inline-flex items-center text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded border bg-blue-500/15 text-blue-400 border-blue-500/30">
+                              Disk disc.
+                            </span>
+                            {t.disk_disc_details && (
+                              <span className="text-[9px] text-[var(--dim)] truncate max-w-[160px]">
+                                {t.disk_disc_details}
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </td>
 
-                      {/* Per-node: size, rows, parts detail, disk distribution */}
+                      {/* Per-node: size, rows, parts detail, disk distribution, on-demand query stats */}
                       {activeNodes.map((inst) => {
                         const nodeMissing = t.missing_on?.includes(inst)
                         const node = t.nodes?.[inst]
+                        const tableKey = `${t.database}.${t.table}`
+                        const qs = queryStatsData?.[inst]?.[tableKey]
                         return (
                           <td key={inst} className="py-2.5 px-4">
                             {nodeMissing ? (
@@ -560,6 +640,12 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
                                     )}
                                   </div>
                                 )}
+                                {/* S3 % label when non-zero */}
+                                {node.s3_pct != null && node.s3_pct > 0 && (
+                                  <div className="text-[9px] text-blue-400 tabular-nums leading-tight">
+                                    {node.s3_pct.toFixed(0)}% S3
+                                  </div>
+                                )}
                                 {/* Disk distribution pills */}
                                 {node.disk_dist && node.disk_dist.length > 0 && (
                                   <div className="flex flex-wrap gap-0.5 mt-0.5">
@@ -583,27 +669,27 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
                                     })}
                                   </div>
                                 )}
-                                {/* Query stats */}
-                                {node.query_stats && node.query_stats.select_count > 0 && (
+                                {/* On-demand query stats */}
+                                {qs && qs.select_count > 0 && (
                                   <div className="text-[9px] text-[var(--dim)] tabular-nums mt-0.5 leading-tight">
-                                    <span className="text-blue-400">{node.query_stats.select_count.toLocaleString()} SELs</span>
+                                    <span className="text-blue-400">{qs.select_count.toLocaleString()} SELs</span>
                                     {' · avg '}
                                     <span className={cn(
-                                      node.query_stats.avg_ms >= 5000 ? 'text-red-400' :
-                                      node.query_stats.avg_ms >= 1000 ? 'text-orange-400' : '',
+                                      qs.avg_ms >= 5000 ? 'text-red-400' :
+                                      qs.avg_ms >= 1000 ? 'text-orange-400' : '',
                                     )}>
-                                      {node.query_stats.avg_ms >= 1000
-                                        ? `${(node.query_stats.avg_ms / 1000).toFixed(1)}s`
-                                        : `${node.query_stats.avg_ms.toFixed(0)}ms`}
+                                      {qs.avg_ms >= 1000
+                                        ? `${(qs.avg_ms / 1000).toFixed(1)}s`
+                                        : `${qs.avg_ms.toFixed(0)}ms`}
                                     </span>
                                     {' · p95 '}
                                     <span className={cn(
-                                      node.query_stats.p95_ms >= 5000 ? 'text-red-400' :
-                                      node.query_stats.p95_ms >= 1000 ? 'text-orange-400' : '',
+                                      qs.p95_ms >= 5000 ? 'text-red-400' :
+                                      qs.p95_ms >= 1000 ? 'text-orange-400' : '',
                                     )}>
-                                      {node.query_stats.p95_ms >= 1000
-                                        ? `${(node.query_stats.p95_ms / 1000).toFixed(1)}s`
-                                        : `${node.query_stats.p95_ms.toFixed(0)}ms`}
+                                      {qs.p95_ms >= 1000
+                                        ? `${(qs.p95_ms / 1000).toFixed(1)}s`
+                                        : `${qs.p95_ms.toFixed(0)}ms`}
                                     </span>
                                   </div>
                                 )}
@@ -616,24 +702,31 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
                       })}
                       {activeNodes.length > 1 && (
                         <td className="py-2.5 px-4 text-right">
-                          {missing ? (
-                            <XCircle size={13} className="text-red-400 inline" />
-                          ) : drift > 0.001 ? (
-                            <span
-                              className={cn(
-                                'text-xs font-medium tabular-nums',
-                                drift > 0.1
-                                  ? 'text-red-400'
-                                  : drift > 0.01
-                                    ? 'text-yellow-400'
-                                    : 'text-[var(--dim)]',
-                              )}
-                            >
-                              {(drift * 100).toFixed(1)}%
-                            </span>
-                          ) : (
-                            <Check size={13} className="text-green-400 inline" />
-                          )}
+                          <div className="flex flex-col items-end gap-0.5">
+                            {missing ? (
+                              <XCircle size={13} className="text-red-400" />
+                            ) : drift > 0.001 ? (
+                              <span
+                                className={cn(
+                                  'text-xs font-medium tabular-nums',
+                                  drift > 0.1
+                                    ? 'text-red-400'
+                                    : drift > 0.01
+                                      ? 'text-yellow-400'
+                                      : 'text-[var(--dim)]',
+                                )}
+                              >
+                                {(drift * 100).toFixed(1)}%
+                              </span>
+                            ) : (
+                              <Check size={13} className="text-green-400" />
+                            )}
+                            {t.total_bytes != null && t.total_bytes > 0 && (
+                              <span className="text-[9px] text-[var(--dim)] tabular-nums">
+                                {fmtBytes(t.total_bytes)}
+                              </span>
+                            )}
+                          </div>
                         </td>
                       )}
                       <td className="px-2 w-8">

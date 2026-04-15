@@ -20,6 +20,7 @@ async function readStream(
   onError: (msg: string) => void,
   onDone: () => void,
   onDebug?: (payload: any) => void,
+  onAuthError?: (msg: string) => void,
 ): Promise<void> {
   const reader = resp.body!.getReader()
   const decoder = new TextDecoder()
@@ -32,6 +33,12 @@ async function readStream(
       try { onChunk(JSON.parse(currentData) as string) } catch {}
     } else if (currentEvent === 'error' && currentData) {
       try { onError(JSON.parse(currentData) as string) } catch {}
+    } else if (currentEvent === 'auth_error' && currentData) {
+      try {
+        const msg = JSON.parse(currentData) as string
+        if (onAuthError) onAuthError(msg)
+        else onError(msg)
+      } catch {}
     } else if (currentEvent === 'status' && currentData) {
       try {
         const s = JSON.parse(currentData) as { phase: string }
@@ -64,6 +71,7 @@ export function useAIAnalysis(instance: string) {
     activeChatId, setActiveChatId,
     aiPanelOpen: isOpen, setAiPanelOpen: setIsOpen,
     instances: storeInstances,
+    setAuthExpired,
   } = useStore()
 
   // Resolve which instance to use for API calls.
@@ -202,6 +210,15 @@ export function useAIAnalysis(instance: string) {
             },
           }))
         },
+        msg => {
+          setAuthExpired(true)
+          updateMessage(sessionId!, assistantMsgId, m => ({
+            ...m,
+            status: 'error',
+            content: `**Session expired** — ${msg}`,
+          }))
+          fireNotifyError()
+        },
       )
       if (!doneSignaled) updateMessage(sessionId!, assistantMsgId, m => m.status === 'streaming' ? { ...m, status: 'done', phase: 'done' } : m)
       fireNotifyDone()
@@ -209,7 +226,7 @@ export function useAIAnalysis(instance: string) {
       updateMessage(sessionId!, assistantMsgId, m => ({ ...m, status: 'error', content: `Error: ${err.message}` }))
       fireNotifyError()
     }
-  }, [instance, chatSessions, activeChatId, setChatSessions, setActiveChatId, setIsOpen, updateMessage, resolveInstance])
+  }, [instance, chatSessions, activeChatId, setChatSessions, setActiveChatId, setIsOpen, updateMessage, resolveInstance, setAuthExpired])
 
   const followUp = useCallback(async (question: string) => {
     if (!question.trim() || !activeChatId) return

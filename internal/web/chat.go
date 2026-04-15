@@ -1003,6 +1003,13 @@ Provide specific SQL recommendations where applicable.
 		scanner.Buffer(make([]byte, 128*1024), 128*1024)
 		for scanner.Scan() {
 			line := scanner.Text()
+			if strings.Contains(line, "API Error: 401") ||
+				strings.Contains(line, `"authentication_error"`) ||
+				strings.Contains(line, "Invalid authentication credentials") {
+				sendEvent("auth_error", jsonStr("Your Claude session has expired. Click the lock icon in the top bar to re-authenticate."))
+				streamCancel()
+				return
+			}
 			if strings.Contains(line, "API Error: 429") || strings.Contains(line, `"code":"1302"`) {
 				sendEvent("error", jsonStr("Rate limited (429) — wait ~60 seconds and retry."))
 				streamCancel()
