@@ -277,7 +277,7 @@ const NODES_KEY = 'compare-selected-nodes'
 function TablesView({ data, instances, onAnalyze }: { data: TablesData; instances: string[]; onAnalyze: (data: Record<string, any>) => void }) {
   const [selectedNodes, setSelectedNodes] = useState<string[]>(() => {
     try {
-      const stored = JSON.parse(localStorage.getItem(NODES_KEY) ?? '[]') as string[]
+      const stored = JSON.parse(localStorage.getItem(NODES_KEY) || '[]') as string[]
       const valid = stored.filter((n) => instances.includes(n))
       return valid.length > 0 ? valid : [...instances]
     } catch {
