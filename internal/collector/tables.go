@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -144,6 +145,12 @@ func (c *TableCollector) collectMerges(ctx context.Context, client *chclient.Cli
 	rows, err := client.Query(ctx, sql)
 	if err != nil {
 		c.logger().Warn("failed to query system.merges", slog.String("error", err.Error()))
+		// Emit the count via a simpler fallback so the metric always appears.
+		if cnt, ferr := client.QuerySingleValue(ctx, "SELECT count() FROM system.merges WHERE is_mutation = 0"); ferr == nil {
+			if n, perr := strconv.ParseFloat(strings.TrimSpace(cnt), 64); perr == nil {
+				result.AddMetric(client.Name(), "tables.merges.active_count", n, nil)
+			}
+		}
 		return
 	}
 

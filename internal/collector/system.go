@@ -88,8 +88,14 @@ func (c *SystemCollector) collectAsyncMetrics(ctx context.Context, client *chcli
 	}
 
 	// --- Memory ---
+	// Prefer OS-level totals (standard CH). Fall back to CGroup values on
+	// Altinity/cloud builds where OSMemoryTotal is absent.
 	memTotal := values["OSMemoryTotal"]
 	memAvail := values["OSMemoryAvailable"]
+	if memTotal == 0 && values["CGroupMemoryTotal"] > 0 {
+		memTotal = values["CGroupMemoryTotal"]
+		memAvail = values["CGroupMemoryTotal"] - values["CGroupMemoryUsed"]
+	}
 
 	// RSS: try MemoryResident first (Altinity), fall back to OSProcessRSSMemory (OSS)
 	rss := values["MemoryResident"]

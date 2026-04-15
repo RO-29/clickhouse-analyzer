@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,6 +56,12 @@ func (c *QueryCollector) collectRunningQueries(ctx context.Context, client *chcl
 	rows, err := client.Query(ctx, sql)
 	if err != nil {
 		c.logger().Warn("failed to query system.processes", slog.String("error", err.Error()))
+		// Emit the count via a simpler fallback so the metric always appears.
+		if cnt, ferr := client.QuerySingleValue(ctx, "SELECT count() FROM system.processes"); ferr == nil {
+			if n, perr := strconv.ParseFloat(strings.TrimSpace(cnt), 64); perr == nil {
+				result.AddMetric(client.Name(), "queries.running_count", n, nil)
+			}
+		}
 		return
 	}
 
