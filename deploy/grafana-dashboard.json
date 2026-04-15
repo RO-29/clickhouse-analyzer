@@ -441,7 +441,7 @@
       "datasource": "${datasource}",
       "targets": [
         {
-          "expr": "ch_analyzer_system_metrics_memorytracking{instance=~\"$instance\"}",
+          "expr": "ch_analyzer_system_metrics_MemoryTracking{instance=~\"$instance\"}",
           "legendFormat": "{{instance}}"
         }
       ],
@@ -524,15 +524,15 @@
       "datasource": "${datasource}",
       "targets": [
         {
-          "expr": "ch_analyzer_system_async_loadaverage1{instance=~\"$instance\",period=\"1\"}",
+          "expr": "ch_analyzer_system_async_LoadAverage1{instance=~\"$instance\"}",
           "legendFormat": "1m {{instance}}"
         },
         {
-          "expr": "ch_analyzer_system_async_loadaverage1{instance=~\"$instance\",period=\"5\"}",
+          "expr": "ch_analyzer_system_async_LoadAverage5{instance=~\"$instance\"}",
           "legendFormat": "5m {{instance}}"
         },
         {
-          "expr": "ch_analyzer_system_async_loadaverage1{instance=~\"$instance\",period=\"15\"}",
+          "expr": "ch_analyzer_system_async_LoadAverage15{instance=~\"$instance\"}",
           "legendFormat": "15m {{instance}}"
         }
       ],

@@ -31,7 +31,7 @@ for HOST in "${CH_HOSTS[@]}"; do
     --multiquery -q "
     CREATE USER IF NOT EXISTS ${CH_MONITOR_USER} IDENTIFIED BY '${CH_MONITOR_PASS}';
     GRANT SELECT ON system.* TO ${CH_MONITOR_USER};
-    GRANT SELECT ON chains.* TO ${CH_MONITOR_USER};
+    GRANT SELECT ON *.* TO ${CH_MONITOR_USER};
     GRANT SELECT, INSERT ON ch_analyzer.* TO ${CH_MONITOR_USER};
   " 2>&1 | grep -v "^$" || true
 done

@@ -4,6 +4,9 @@
 # ---------------------------------------------------------------------------
 # ClickHouse instances to monitor
 # ---------------------------------------------------------------------------
+
+
+
 instances:
   - name: "node-a"
     host: ""
@@ -11,7 +14,7 @@ instances:
     username: "monitoring"
     password: "CHANGE_ME"           # Rotate and use env var in production
     secure: true
-    database: "chains"
+    database: "default"
 
   - name: "node-b"
     host: ""
@@ -19,7 +22,7 @@ instances:
     username: "monitoring"
     password: "CHANGE_ME"
     secure: true
-    database: "chains"
+    database: "default"
 
   - name: "node-c"
     host: ""
@@ -27,7 +30,7 @@ instances:
     username: "monitoring"
     password: "CHANGE_ME"
     secure: true
-    database: "chains"
+    database: "default"
 
   - name: "node-d"
     host: ""
@@ -35,7 +38,7 @@ instances:
     username: "monitoring"
     password: "CHANGE_ME"
     secure: true
-    database: "chains"
+    database: "default"
 
   - name: "node-e"
     host: ""
@@ -43,7 +46,7 @@ instances:
     username: "monitoring"
     password: "CHANGE_ME"
     secure: true
-    database: "chains"
+    database: "default"
 
 # ---------------------------------------------------------------------------
 # Polling

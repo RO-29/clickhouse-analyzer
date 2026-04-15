@@ -11,41 +11,41 @@ metadata:
 stringData:
   config.yaml: |
     instances:
-      - name: "single-node-a"
-        host: "single-node-a.vpce.your-cluster.altinity.cloud"
+      - name: "node-a"
+        host: ""
         port: 8443
         username: "monitoring"
         password: "CHANGE_ME"
         secure: true
-        database: "chains"
-      - name: "single-node-b"
-        host: "single-node-b.vpce.your-cluster.altinity.cloud"
+        database: "default"
+      - name: "node-b"
+        host: ""
         port: 8443
         username: "monitoring"
         password: "CHANGE_ME"
         secure: true
-        database: "chains"
-      - name: "single-node-c"
-        host: "single-node-c.vpce.your-cluster.altinity.cloud"
+        database: "default"
+      - name: "node-c"
+        host: ""
         port: 8443
         username: "monitoring"
         password: "CHANGE_ME"
         secure: true
-        database: "chains"
-      - name: "single-node-d"
-        host: "single-node-d.vpce.your-cluster.altinity.cloud"
+        database: "default"
+      - name: "node-d"
+        host: ""
         port: 8443
         username: "monitoring"
         password: "CHANGE_ME"
         secure: true
-        database: "chains"
-      - name: "single-node-e"
-        host: "single-node-e.vpce.your-cluster.altinity.cloud"
+        database: "default"
+      - name: "node-e"
+        host: ""
         port: 8443
         username: "monitoring"
         password: "CHANGE_ME"
         secure: true
-        database: "chains"
+        database: "default"
 
     polling:
       interval: "1m"
