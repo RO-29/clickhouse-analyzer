@@ -25,37 +25,37 @@ const metricPrefix = "ch_analyzer_"
 // (excluding "instance", which is always present). This allows pre-registration
 // of well-known metrics with the correct label dimensions.
 var knownMetrics = map[string][]string{
-	// System
-	"memory_rss_bytes":        {},
-	"memory_tracked_bytes":    {},
-	"memory_total_bytes":      {},
-	"cpu_user_percent":        {},
-	"cpu_system_percent":      {},
-	"load_average":            {"period"},
-	// Queries (original)
-	"queries_running":         {},
-	"queries_failed_5m":       {},
-	"queries_failed_total":    {}, // legacy alias kept for existing dashboards
-	// Queries (new)
-	"queries_p95_ms_current":       {},
-	"queries_p95_ms_baseline":      {},
-	"queries_zombie_count":         {},
-	"queries_timeouts_5m":          {"exception_code", "name"},
-	"queries_pattern_exec_count_5m": {"hash", "user"},
+	// System — actual collector names (dots → underscores via sanitizeName)
+	"system_memory_rss_bytes":        {},
+	"system_memory_total_bytes":      {},
+	"system_memory_available_bytes":  {},
+	"system_memory_used_percent":     {},
+	"system_cpu_busy_percent":        {},
+	"system_uptime_seconds":          {},
+	// system.async.* metrics are dynamic (LoadAverage1, LoadAverage5, etc.)
+	// system.metrics.* metrics are dynamic (MemoryTracking, etc.)
+	// Queries
+	"queries_running_count":          {},
+	"queries_failed_5m":              {},
+	"queries_p95_ms_current":         {},
+	"queries_p95_ms_baseline":        {},
+	"queries_zombie_count":           {},
+	"queries_timeouts_5m":            {"exception_code", "name"},
+	"queries_pattern_exec_count_5m":  {"hash", "user"},
 	// Parts & merges
-	"parts_count":             {"database", "table"},
-	"parts_oldest_hours":      {"database", "table"},
-	"tables_detached_parts_count": {},
-	"merges_active":           {},
-	"mutations_stuck":         {},
+	"tables_parts_count":             {"database", "table"},
+	"parts_oldest_hours":             {"database", "table"},
+	"tables_detached_parts_count":    {},
+	"tables_merges_active_count":     {},
+	"tables_mutations_stuck_count":   {},
 	// TTL
-	"ttl_stuck_mutations": {"database", "table"},
-	"ttl_stale_table_days": {"database", "table"},
+	"ttl_stuck_mutations":            {"database", "table"},
+	"ttl_stale_table_days":           {"database", "table"},
 	// Async inserts
-	"async_inserts_total_5m":  {},
-	"async_inserts_errors_5m": {},
-	"async_inserts_queue_depth": {},
-	// Replication
+	"async_inserts_total_5m":         {},
+	"async_inserts_errors_5m":        {},
+	"async_inserts_queue_depth":      {},
+	// Replication (names already match)
 	"replication_max_delay_sec":      {},
 	"replication_replicated_tables":  {},
 	"replication_absolute_delay_sec": {"database", "table"},
@@ -66,22 +66,64 @@ var knownMetrics = map[string][]string{
 	"replication_future_parts":       {"database", "table"},
 	"replication_log_lag":            {"database", "table"},
 	// Errors
-	"errors_system_count":        {"error"},
-	"errors_system_total_recent": {},
+	"errors_system_count":            {"error"},
+	"errors_system_total_recent":     {},
 	// Keeper / ZooKeeper
-	"keeper_connected_nodes":     {},
-	"keeper_outstanding_requests": {},
-	"keeper_max_avg_latency_ms":  {},
-	// Storage / inserts / tables
-	"table_size_bytes":        {"database", "table", "disk"},
-	"disk_used_bytes":         {"disk"},
-	"disk_total_bytes":        {"disk"},
-	"insert_rows_total":       {"database", "table"},
-	"s3_read_latency_seconds": {},
+	"keeper_connected_nodes":         {},
+	"keeper_outstanding_requests":    {},
+	"keeper_max_avg_latency_ms":      {},
+	// Storage
+	"storage_disk_free_space":        {"disk", "path", "type"},
+	"storage_disk_total_space":       {"disk", "path", "type"},
+	"storage_disk_used_percent":      {"disk", "path", "type"},
+	"storage_distribution_bytes":     {"disk"},
+	"storage_distribution_part_count": {"disk"},
+	"storage_distribution_rows":      {"disk"},
+	"storage_s3_avg_latency_ms":      {},
+	"storage_s3_max_latency_ms":      {},
+	"storage_s3_total_requests":      {},
+	"storage_s3_concurrent_reads":    {},
+	// Inserts
+	"inserts_total_rows":             {},
+	"inserts_total_count":            {},
+	"inserts_total_bytes":            {},
+	"inserts_table_rows":             {"database", "table"},
+	"inserts_table_count":            {"database", "table"},
+	"inserts_table_bytes":            {"database", "table"},
+	"inserts_rolling_avg_rows":       {},
+	"inserts_throughput_drop_percent": {},
+	// Dictionaries
+	"dictionaries_total_count":       {},
+	"dictionaries_not_loaded_count":  {},
+	"dictionaries_element_count":     {"database", "dictionary", "status"},
+	"dictionaries_loading_duration_sec": {"database", "dictionary", "status"},
+	"dictionaries_bytes_allocated":   {"database", "dictionary", "status"},
+	"dictionaries_loaded":            {"database", "dictionary", "status"},
+	// Materialized views
+	"mvs_total_count":                {},
+	"mvs_total_failures_5m":          {},
+	"mvs_chained_count":              {},
+	"mvs_failures":                   {"view", "target"},
+	"mvs_timing_executions":          {"view", "target"},
+	"mvs_timing_avg_ms":              {"view", "target"},
+	"mvs_timing_max_ms":              {"view", "target"},
+	"mvs_timing_p95_ms":              {"view", "target"},
+	"mvs_target_bytes":               {"database", "mv"},
+	"mvs_target_rows":                {"database", "mv"},
+	// Cache
+	"system_cache_mark_hits":         {},
+	"system_cache_mark_misses":       {},
+	"system_cache_mark_hit_rate":     {},
+	// Background pools
+	"system_bg_pool_merges_mutations_used_pct": {},
+	"system_bg_pool_fetches_used_pct":          {},
+	"system_bg_pool_processing_used_pct":       {},
+	// Table freshness & schema drift
+	"tables_freshness_minutes_since_insert": {"database", "table"},
+	"tables_schema_changes_detected":        {},
 	// Health
-	"health_score":    {},
-	"active_alerts":   {"severity"},
-	"uptime_seconds":  {},
+	"health_score":                   {},
+	"active_alerts":                  {"severity"},
 }
 
 // Exporter exposes collected ClickHouse metrics as Prometheus gauges on an

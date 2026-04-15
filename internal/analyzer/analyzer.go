@@ -288,6 +288,11 @@ func (a *Analyzer) crossCollectorAnalysis(instance string, m map[string]float64,
 
 func (a *Analyzer) computeHealthScore(instance string, alerts, crossAlerts []collector.Alert) HealthScore {
 	score := 100
+
+	// Deduplicate by title+severity so repeated alerts for the same issue
+	// (e.g. one alert per table) only deduct once from the score.
+	type dedupKey struct{ title, severity string }
+	seen := make(map[dedupKey]bool)
 	issueSet := make(map[string]bool)
 
 	allAlerts := append(alerts, crossAlerts...)
@@ -295,6 +300,13 @@ func (a *Analyzer) computeHealthScore(instance string, alerts, crossAlerts []col
 		if alert.Instance != instance && alert.Instance != "" {
 			continue
 		}
+		k := dedupKey{alert.Title, string(alert.Severity)}
+		if seen[k] {
+			issueSet[alert.Title] = true
+			continue
+		}
+		seen[k] = true
+		issueSet[alert.Title] = true
 		switch alert.Severity {
 		case collector.SeverityCritical:
 			score -= 25
@@ -303,7 +315,6 @@ func (a *Analyzer) computeHealthScore(instance string, alerts, crossAlerts []col
 		case collector.SeverityInfo:
 			score -= 2
 		}
-		issueSet[alert.Title] = true
 	}
 
 	if score < 0 {
