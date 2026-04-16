@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
@@ -558,6 +559,11 @@ func uint64Val(v interface{}) uint64 {
 			return 0
 		}
 		return uint64(t)
+	case json.Number:
+		if f, err := t.Float64(); err == nil && f >= 0 {
+			return uint64(f)
+		}
+		return 0
 	case int:
 		if t < 0 {
 			return 0
@@ -578,6 +584,11 @@ func int64Val(v interface{}) int64 {
 		return int64(t)
 	case float64:
 		return int64(t)
+	case json.Number:
+		if f, err := t.Float64(); err == nil {
+			return int64(f)
+		}
+		return 0
 	case int:
 		return int64(t)
 	}
@@ -597,6 +608,9 @@ func float64Val(v interface{}) float64 {
 		return float64(t)
 	case uint64:
 		return float64(t)
+	case json.Number:
+		f, _ := t.Float64()
+		return f
 	case int:
 		return float64(t)
 	}

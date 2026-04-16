@@ -642,6 +642,9 @@ func getFloat(row map[string]interface{}, key string) float64 {
 	switch val := v.(type) {
 	case float64:
 		return val
+	case json.Number:
+		f, _ := val.Float64()
+		return f
 	case string:
 		var f float64
 		fmt.Sscanf(val, "%f", &f)
@@ -659,6 +662,8 @@ func getString(row map[string]interface{}, key string) string {
 	switch val := v.(type) {
 	case string:
 		return val
+	case json.Number:
+		return val.String()
 	case float64:
 		if val == float64(int64(val)) {
 			return fmt.Sprintf("%d", int64(val))

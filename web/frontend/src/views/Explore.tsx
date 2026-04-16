@@ -266,6 +266,7 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
   const [failHash, setFailHash] = useState<string | null>(null)
   const [failData, setFailData] = useState<{ byCode: Record<string, any>[]; byTs: Record<string, any>[] } | null>(null)
   const [failLoading, setFailLoading] = useState(false)
+  const [failTimeline, setFailTimeline] = useState<Record<string, any>[]>([])
 
   useEffect(() => {
     let c = false
@@ -297,6 +298,15 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
       .finally(() => { if (!c) setTlLoading(false) })
     return () => { c = true }
   }, [instance, selectedHash, from, to])
+
+  useEffect(() => {
+    if (!failHash) { setFailTimeline([]); return }
+    let c = false
+    api.history.queryPatternTimeline(instance, failHash, from, to)
+      .then(d => { if (!c) setFailTimeline(Array.isArray(d) ? d : []) })
+      .catch(() => { if (!c) setFailTimeline([]) })
+    return () => { c = true }
+  }, [instance, failHash, from, to])
 
   useEffect(() => {
     if (!failHash) { setFailData(null); return }
@@ -466,6 +476,7 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
     {
       key: 'sample_query',
       label: 'Sample Query',
+      tooltip: 'Example SQL from this query pattern (parameters stripped and normalized)',
       format: (v: any) => {
         const q = String(v ?? '')
         return (
@@ -599,12 +610,12 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
                   height={120}
                   onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
                 />
-                {/* Latency + memory charts from existing timeline if same hash selected */}
-                {selectedHash === failHash && timeline.length > 0 && (
+                {/* Latency + memory charts loaded independently for the selected fail hash */}
+                {failTimeline.length > 0 && (
                   <>
                     <HistoryChart
-                      title="Latency During Failures (Avg / P95 / Max)"
-                      data={timeline}
+                      title="Latency (Avg / P95 / Max)"
+                      data={failTimeline}
                       series={[
                         { key: 'avg_ms', label: 'Avg', color: C.green },
                         { key: 'p95_ms', label: 'P95', color: C.yellow },
@@ -615,8 +626,8 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
                       onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
                     />
                     <HistoryChart
-                      title="Memory & Read Bytes During Failures"
-                      data={timeline}
+                      title="Memory & Read Bytes"
+                      data={failTimeline}
                       series={[
                         { key: 'avg_memory', label: 'Memory', color: C.purple },
                         { key: 'avg_read_bytes', label: 'Read Bytes', color: C.cyan },
@@ -1498,11 +1509,11 @@ function MVTab({ instance, from, to, refreshKey, onAnalyze }: TabProps) {
         </div>
         <DataTable
           columns={[
-            { key: 'view_name', label: 'View Name' },
-            { key: 'cnt', label: 'Count', format: (v: any) => fmtNum(v) },
-            { key: 'avg_ms', label: 'Avg ms', format: (v: any) => fmtDuration(v) },
-            { key: 'max_ms', label: 'Max ms', format: (v: any) => fmtDuration(v) },
-            { key: 'failures', label: 'Failures', format: (v: any) => fmtNum(v) },
+            { key: 'view_name', label: 'View Name', tooltip: 'Materialized view name' },
+            { key: 'cnt', label: 'Count', tooltip: 'Number of times this MV was triggered in the time range', format: (v: any) => fmtNum(v) },
+            { key: 'avg_ms', label: 'Avg ms', tooltip: 'Average MV execution time per trigger', format: (v: any) => fmtDuration(v) },
+            { key: 'max_ms', label: 'Max ms', tooltip: 'Slowest single MV execution observed', format: (v: any) => fmtDuration(v) },
+            { key: 'failures', label: 'Failures', tooltip: 'Number of MV executions that raised an exception', format: (v: any) => fmtNum(v) },
           ]}
           data={aggregated}
           onRowClick={r => setSelectedView(r.view_name)}
@@ -1582,10 +1593,10 @@ function S3Tab({ instance, from, to, refreshKey, onAnalyze, onShowQuery }: TabPr
           <div className="text-xs font-medium text-[var(--dim)] uppercase tracking-wider mb-2">S3 Latency by Query</div>
           <DataTable
             columns={[
-              { key: 'normalized_query_hash', label: 'Hash', format: (v: any) => String(v ?? '').slice(0, 12) },
-              { key: 'cnt', label: 'Count', format: (v: any) => fmtNum(v) },
-              { key: 'avg_latency_ms', label: 'Avg ms', format: (v: any) => fmtDuration(Number(v ?? 0)) },
-              { key: 'max_latency_ms', label: 'Max ms', format: (v: any) => fmtDuration(Number(v ?? 0)) },
+              { key: 'normalized_query_hash', label: 'Hash', tooltip: 'Normalized query fingerprint — same hash means same query structure', format: (v: any) => String(v ?? '').slice(0, 12) },
+              { key: 'cnt', label: 'Count', tooltip: 'Number of S3 requests generated by this query pattern', format: (v: any) => fmtNum(v) },
+              { key: 'avg_latency_ms', label: 'Avg ms', tooltip: 'Average S3 request latency for this query pattern', format: (v: any) => fmtDuration(Number(v ?? 0)) },
+              { key: 'max_latency_ms', label: 'Max ms', tooltip: 'Maximum single S3 request latency observed', format: (v: any) => fmtDuration(Number(v ?? 0)) },
               {
                 key: 'sample_query', label: 'Sample',
                 format: (v: any) => {
@@ -1626,10 +1637,10 @@ function S3Tab({ instance, from, to, refreshKey, onAnalyze, onShowQuery }: TabPr
           <div className="text-xs font-medium text-[var(--dim)] uppercase tracking-wider mb-2">S3 Latency by Table</div>
           <DataTable
             columns={[
-              { key: 'table_name', label: 'Table' },
-              { key: 'queries', label: 'Queries', format: (v: any) => fmtNum(v) },
-              { key: 'avg_latency_ms', label: 'Avg ms', format: (v: any) => fmtDuration(Number(v ?? 0)) },
-              { key: 'total_requests', label: 'Total Requests', format: (v: any) => fmtNum(v) },
+              { key: 'table_name', label: 'Table', tooltip: 'Table reading data from S3 (S3-backed or tiered storage)' },
+              { key: 'queries', label: 'Queries', tooltip: 'Number of distinct query patterns that accessed this table via S3', format: (v: any) => fmtNum(v) },
+              { key: 'avg_latency_ms', label: 'Avg ms', tooltip: 'Average S3 request latency across all queries for this table', format: (v: any) => fmtDuration(Number(v ?? 0)) },
+              { key: 'total_requests', label: 'Total Requests', tooltip: 'Total number of S3 API calls made for this table', format: (v: any) => fmtNum(v) },
             ]}
             data={stats.latency_by_table}
             emptyText="No table data"
@@ -1706,11 +1717,11 @@ function InsertsTab({ instance, from, to, refreshKey, onAnalyze }: TabProps) {
         </div>
         <DataTable
           columns={[
-            { key: 'table', label: 'Table' },
-            { key: 'insert_count', label: 'Inserts', format: (v: any) => fmtNum(v) },
-            { key: 'total_rows', label: 'Total Rows', format: (v: any) => fmtNum(v) },
-            { key: 'total_bytes', label: 'Total Bytes', format: (v: any) => fmtBytes(v) },
-            { key: 'small_insert_count', label: 'Small Inserts', format: (v: any) => fmtNum(v) },
+            { key: 'table', label: 'Table', tooltip: 'Target table receiving inserts' },
+            { key: 'insert_count', label: 'Inserts', tooltip: 'Number of INSERT statements executed in the time range', format: (v: any) => fmtNum(v) },
+            { key: 'total_rows', label: 'Total Rows', tooltip: 'Total rows inserted across all INSERT statements', format: (v: any) => fmtNum(v) },
+            { key: 'total_bytes', label: 'Total Bytes', tooltip: 'Total uncompressed data written by inserts', format: (v: any) => fmtBytes(v) },
+            { key: 'small_insert_count', label: 'Small Inserts', tooltip: 'Inserts with fewer rows than the recommended batch size — too many small inserts causes part explosion', format: (v: any) => fmtNum(v) },
           ]}
           data={byTable}
           onRowAnalyze={row =>

@@ -203,17 +203,18 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
   const [showActiveOnly, setShowActiveOnly] = useState(false)
 
   const alertCols = [
-    { key: 'severity', label: 'Sev', format: (v: any) => <Badge severity={v} /> },
-    { key: 'category', label: 'Category' },
-    { key: 'title', label: 'Title' },
+    { key: 'severity', label: 'Sev', tooltip: 'Alert severity: info (blue), warning (amber), critical (red)', format: (v: any) => <Badge severity={v} /> },
+    { key: 'category', label: 'Category', tooltip: 'Type of system check that triggered this alert (e.g. parts, memory, replication)' },
+    { key: 'title', label: 'Title', tooltip: 'Brief description of the alert condition' },
     {
       key: 'resolved',
       label: 'Status',
+      tooltip: 'Active alerts need attention; resolved alerts have been acknowledged',
       format: (v: any) => v
         ? <span className="text-xs text-green-400">resolved</span>
         : <span className="text-xs text-yellow-400">active</span>,
     },
-    { key: 'created_at', label: 'Time', format: (v: any) => <span className="text-[var(--dim)]">{fmtTime(v)}</span> },
+    { key: 'created_at', label: 'Time', tooltip: 'Timestamp when the alert was first triggered', format: (v: any) => <span className="text-[var(--dim)]">{fmtTime(v)}</span> },
     {
       key: 'dedup_key',
       label: '',
@@ -232,6 +233,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
     {
       key: 'query_short',
       label: 'Query',
+      tooltip: 'Truncated SQL query from system.processes (currently running)',
       format: (v: any) => (
         <span className="font-mono text-xs truncate block max-w-md" title={String(v ?? '')}>
           {String(v ?? '').slice(0, 100)}
@@ -241,28 +243,32 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
     {
       key: 'elapsed',
       label: 'Elapsed',
+      tooltip: 'How long the query has been running so far',
       format: (v: any) => fmtDuration((v ?? 0) * 1000),
     },
-    { key: 'user', label: 'User' },
+    { key: 'user', label: 'User', tooltip: 'Database user who submitted the query' },
     {
       key: 'memory_usage',
       label: 'Memory',
+      tooltip: 'Current peak memory consumed by this query',
       format: (v: any) => fmtBytes(v ?? 0),
     },
     {
       key: 'read_rows',
       label: 'Read Rows',
+      tooltip: 'Rows scanned from disk or cache so far',
       format: (v: any) => fmtNum(v),
     },
   ]
 
   const tableCols = [
-    { key: 'database', label: 'Database' },
-    { key: 'table_name', label: 'Table' },
-    { key: 'engine', label: 'Engine' },
+    { key: 'database', label: 'Database', tooltip: 'ClickHouse database name' },
+    { key: 'table_name', label: 'Table', tooltip: 'Table name' },
+    { key: 'engine', label: 'Engine', tooltip: 'Table engine (e.g. MergeTree, ReplicatedMergeTree, Distributed)' },
     {
       key: 'part_count',
       label: 'Parts',
+      tooltip: 'Number of active data parts — high part counts slow queries and increase memory use. Target < 100 per table',
       format: (v: any) => {
         const pc = v ?? 0
         const cls = pc > 300 ? 'text-red-400' : pc > 100 ? 'text-yellow-400' : 'text-green-400'
@@ -272,30 +278,33 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
     {
       key: 'size_readable',
       label: 'Size',
+      tooltip: 'Total compressed disk size of all parts for this table',
     },
   ]
 
   const mvCols = [
-    { key: 'database', label: 'Database' },
-    { key: 'mv_name', label: 'Materialized View' },
+    { key: 'database', label: 'Database', tooltip: 'Database containing the materialized view' },
+    { key: 'mv_name', label: 'Materialized View', tooltip: 'Materialized view name — these execute automatically on each INSERT to the source table' },
   ]
 
   const s3VolCols = [
-    { key: 'table', label: 'Table' },
-    { key: 'parts', label: 'Parts', format: (v: any) => fmtNum(v) },
-    { key: 'size', label: 'Size' },
+    { key: 'table', label: 'Table', tooltip: 'Table with data stored in S3 (tiered or S3-backed storage)' },
+    { key: 'parts', label: 'Parts', tooltip: 'Number of data parts stored in S3', format: (v: any) => fmtNum(v) },
+    { key: 'size', label: 'Size', tooltip: 'Total data volume in S3 for this table' },
   ]
 
   const s3LatCols = [
-    { key: 'table', label: 'Table' },
+    { key: 'table', label: 'Table', tooltip: 'Table whose queries generated the most S3 requests' },
     {
       key: 'avg_latency_ms',
       label: 'Avg Latency',
+      tooltip: 'Average S3 request latency — high values indicate slow S3 or large object reads',
       format: (v: any) => (v ?? 0).toFixed(1) + 'ms',
     },
     {
       key: 'total_requests',
       label: 'Requests',
+      tooltip: 'Total number of S3 API calls from this table in the time range',
       format: (v: any) => fmtNum(v ?? 0),
     },
   ]
@@ -618,12 +627,12 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
               <Card title={`Top Query Patterns (${queryPatterns.length})`}>
                 <DataTable
                   columns={[
-                    { key: 'sample_query', label: 'Query', format: (v: any) => <span className="font-mono text-xs truncate block max-w-sm" title={v}>{String(v ?? '').slice(0, 80)}</span> },
-                    { key: 'cnt', label: 'Count', format: (v: any) => fmtNum(v) },
-                    { key: 'avg_ms', label: 'Avg', format: (v: any) => fmtDuration(v) },
-                    { key: 'p95_ms', label: 'p95', format: (v: any) => fmtDuration(v) },
-                    { key: 'avg_memory', label: 'Avg Mem', format: (v: any) => fmtBytes(v ?? 0) },
-                    { key: 'failures', label: 'Failures', format: (v: any) => v > 0 ? <span className="text-red-400">{fmtNum(v)}</span> : <span className="text-[var(--dim)]">0</span> },
+                    { key: 'sample_query', label: 'Query', tooltip: 'Example SQL for this query pattern', format: (v: any) => <span className="font-mono text-xs truncate block max-w-sm" title={v}>{String(v ?? '').slice(0, 80)}</span> },
+                    { key: 'cnt', label: 'Count', tooltip: 'Number of executions in the time range', format: (v: any) => fmtNum(v) },
+                    { key: 'avg_ms', label: 'Avg', tooltip: 'Average query duration', format: (v: any) => fmtDuration(v) },
+                    { key: 'p95_ms', label: 'p95', tooltip: '95th percentile latency — 95% of runs were faster', format: (v: any) => fmtDuration(v) },
+                    { key: 'avg_memory', label: 'Avg Mem', tooltip: 'Average peak memory per execution', format: (v: any) => fmtBytes(v ?? 0) },
+                    { key: 'failures', label: 'Failures', tooltip: 'Executions that raised an exception', format: (v: any) => v > 0 ? <span className="text-red-400">{fmtNum(v)}</span> : <span className="text-[var(--dim)]">0</span> },
                   ]}
                   data={queryPatterns}
                   maxHeight="240px"
@@ -634,10 +643,10 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
               <Card title={`Query Failures (${queryFailures.length} buckets)`}>
                 <DataTable
                   columns={[
-                    { key: 'ts', label: 'Time', format: (v: any) => <span className="text-[var(--dim)]">{fmtTime(typeof v === 'string' ? new Date(v).getTime() / 1000 : v)}</span> },
-                    { key: 'exception_code', label: 'Code' },
-                    { key: 'cnt', label: 'Count', format: (v: any) => <span className="text-red-400">{fmtNum(v)}</span> },
-                    { key: 'sample', label: 'Sample', format: (v: any) => <span className="text-xs text-[var(--dim)]">{String(v ?? '').slice(0, 80)}</span> },
+                    { key: 'ts', label: 'Time', tooltip: 'Time bucket for this failure count', format: (v: any) => <span className="text-[var(--dim)]">{fmtTime(typeof v === 'string' ? new Date(v).getTime() / 1000 : v)}</span> },
+                    { key: 'exception_code', label: 'Code', tooltip: 'ClickHouse exception code — e.g. 241=memory limit, 159=timeout, 60=table not found' },
+                    { key: 'cnt', label: 'Count', tooltip: 'Number of query failures in this time bucket', format: (v: any) => <span className="text-red-400">{fmtNum(v)}</span> },
+                    { key: 'sample', label: 'Sample', tooltip: 'Example error message for this exception code', format: (v: any) => <span className="text-xs text-[var(--dim)]">{String(v ?? '').slice(0, 80)}</span> },
                   ]}
                   data={queryFailures}
                   maxHeight="200px"
@@ -648,12 +657,12 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
               <Card title={`Merge Activity (${mergeHistory.length} time buckets)`}>
                 <DataTable
                   columns={[
-                    { key: 'ts', label: 'Time', format: (v: any) => <span className="text-[var(--dim)]">{fmtTime(typeof v === 'string' ? new Date(v).getTime() / 1000 : v)}</span> },
-                    { key: 'merge_count', label: 'Merges', format: (v: any) => fmtNum(v) },
-                    { key: 'new_part_count', label: 'New Parts', format: (v: any) => fmtNum(v) },
-                    { key: 'avg_merge_ms', label: 'Avg Merge', format: (v: any) => fmtDuration(v) },
-                    { key: 'merged_rows', label: 'Rows Merged', format: (v: any) => fmtNum(v) },
-                    { key: 'merged_bytes', label: 'Data Merged', format: (v: any) => fmtBytes(v ?? 0) },
+                    { key: 'ts', label: 'Time', tooltip: 'Time bucket for this merge activity', format: (v: any) => <span className="text-[var(--dim)]">{fmtTime(typeof v === 'string' ? new Date(v).getTime() / 1000 : v)}</span> },
+                    { key: 'merge_count', label: 'Merges', tooltip: 'Number of background merge operations completed', format: (v: any) => fmtNum(v) },
+                    { key: 'new_part_count', label: 'New Parts', tooltip: 'New parts created (from INSERTs) — high counts may indicate too-small inserts', format: (v: any) => fmtNum(v) },
+                    { key: 'avg_merge_ms', label: 'Avg Merge', tooltip: 'Average time per merge operation — slow merges may cause part accumulation', format: (v: any) => fmtDuration(v) },
+                    { key: 'merged_rows', label: 'Rows Merged', tooltip: 'Total rows consolidated by merges in this bucket', format: (v: any) => fmtNum(v) },
+                    { key: 'merged_bytes', label: 'Data Merged', tooltip: 'Total data bytes processed by merges in this bucket', format: (v: any) => fmtBytes(v ?? 0) },
                   ]}
                   data={mergeHistory}
                   maxHeight="200px"
@@ -683,13 +692,13 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
         <Card title="Table Memory & Parts">
           <DataTable
             columns={[
-              { key: 'database', label: 'DB' },
-              { key: 'table_name', label: 'Table' },
-              { key: 'pk_readable', label: 'PK Mem' },
-              { key: 'marks_readable', label: 'Marks Mem' },
-              { key: 'parts', label: 'Parts', format: (v: any) => fmtNum(v) },
-              { key: 'total_rows', label: 'Rows', format: (v: any) => fmtNum(v) },
-              { key: 'disk_size', label: 'Disk', format: (v: any) => fmtBytes(v ?? 0) },
+              { key: 'database', label: 'DB', tooltip: 'Database name' },
+              { key: 'table_name', label: 'Table', tooltip: 'Table name' },
+              { key: 'pk_readable', label: 'PK Mem', tooltip: 'Memory used by the primary key index (loaded on server start, stays in RAM)' },
+              { key: 'marks_readable', label: 'Marks Mem', tooltip: 'Memory used by granule marks — used to locate data ranges during queries' },
+              { key: 'parts', label: 'Parts', tooltip: 'Number of active data parts — aim to keep under 100 per table', format: (v: any) => fmtNum(v) },
+              { key: 'total_rows', label: 'Rows', tooltip: 'Total row count across all parts', format: (v: any) => fmtNum(v) },
+              { key: 'disk_size', label: 'Disk', tooltip: 'Compressed disk size of all local parts', format: (v: any) => fmtBytes(v ?? 0) },
             ]}
             data={[...tableMemory].sort((a, b) => (b.pk_bytes ?? 0) - (a.pk_bytes ?? 0))}
             maxHeight="300px"

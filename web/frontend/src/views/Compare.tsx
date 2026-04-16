@@ -1342,13 +1342,13 @@ function MemoryView({ baseline, instances }: { baseline: string; instances: stri
   if (error) return <ErrorMsg msg={error} />
 
   const tableCols = [
-    { key: 'database', label: 'Database' },
-    { key: 'table', label: 'Table' },
-    { key: 'pk_readable', label: 'PK Memory', format: (v: any) => String(v ?? '') },
-    { key: 'marks_readable', label: 'Marks Memory', format: (v: any) => String(v ?? '') },
-    { key: 'mark_count', label: 'Marks', format: (v: any) => fmtNum(v) },
-    { key: 'parts', label: 'Parts', format: (v: any) => fmtNum(v) },
-    { key: 'total_rows', label: 'Rows', format: (v: any) => fmtNum(v) },
+    { key: 'database', label: 'Database', tooltip: 'ClickHouse database name' },
+    { key: 'table', label: 'Table', tooltip: 'Table name' },
+    { key: 'pk_readable', label: 'PK Memory', tooltip: 'Memory used by primary key index (resident in RAM)', format: (v: any) => String(v ?? '') },
+    { key: 'marks_readable', label: 'Marks Memory', tooltip: 'Memory used by granule marks index (used to locate data ranges during queries)', format: (v: any) => String(v ?? '') },
+    { key: 'mark_count', label: 'Marks', tooltip: 'Total number of index marks (granules) — proportional to table size and index granularity', format: (v: any) => fmtNum(v) },
+    { key: 'parts', label: 'Parts', tooltip: 'Number of active data parts — high counts slow queries; target < 100', format: (v: any) => fmtNum(v) },
+    { key: 'total_rows', label: 'Rows', tooltip: 'Total row count across all parts', format: (v: any) => fmtNum(v) },
   ]
 
   return (

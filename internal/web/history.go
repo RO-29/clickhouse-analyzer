@@ -564,7 +564,7 @@ func (s *Server) handleQueryPatternTimeline(w http.ResponseWriter, r *http.Reque
 	FROM ch_analyzer.query_samples
 	WHERE normalized_query_hash = %s
 	  AND event_time >= '%s' AND event_time <= '%s'
-	GROUP BY ts ORDER BY ts`, bucket, hash, fromTime, toTime)
+	GROUP BY ts ORDER BY ts`, bucket, sqlSafeUInt(hash), fromTime, toTime)
 
 	rows, err := client.Query(ctx, samplesSQL)
 	if err != nil || len(rows) == 0 {
@@ -583,7 +583,7 @@ func (s *Server) handleQueryPatternTimeline(w http.ResponseWriter, r *http.Reque
 		WHERE normalized_query_hash = %s
 		  AND event_time >= '%s' AND event_time <= '%s'
 		  AND type IN ('QueryFinish', 'ExceptionWhileProcessing')
-		GROUP BY ts ORDER BY ts`, bucket, hash, fromTime, toTime))
+		GROUP BY ts ORDER BY ts`, bucket, sqlSafeUInt(hash), fromTime, toTime))
 		if err != nil {
 			slog.Error("query pattern timeline", "err", err, "instance", instance)
 			writeErr(w, http.StatusInternalServerError, "failed to query pattern timeline")
@@ -615,7 +615,8 @@ func (s *Server) handleHistoryFailures(w http.ResponseWriter, r *http.Request) {
 
 	hashFilter := ""
 	if hash != "" {
-		hashFilter = fmt.Sprintf(" AND normalized_query_hash = '%s'", strings.ReplaceAll(hash, "'", ""))
+		// normalized_query_hash is UInt64 — use numeric literal, not a quoted string.
+		hashFilter = fmt.Sprintf(" AND normalized_query_hash = %s", sqlSafeUInt(hash))
 	}
 
 	// Time-series bucketed failures (for chart)
@@ -954,6 +955,7 @@ func (s *Server) handleQuerySamples(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	stringifyHashes(samples)
 	writeJSON(w, http.StatusOK, samples)
 }
 
@@ -1142,6 +1144,8 @@ func (s *Server) handleQueryPatternOverview(w http.ResponseWriter, r *http.Reque
 		timeRows, _ = client.Query(ctx, timeSQL)
 	}
 
+	stringifyHashes(topRows)
+	stringifyHashes(timeRows)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"patterns": topRows,
 		"timeline": timeRows,
@@ -1302,6 +1306,7 @@ func (s *Server) handleQueryPatternsV2(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	stringifyHashes(rows)
 	writeJSON(w, http.StatusOK, rows)
 }
 
@@ -1325,6 +1330,23 @@ func sqlSafeUInt(s string) string {
 		return "0"
 	}
 	return s
+}
+
+// stringifyHashes converts the normalized_query_hash field in every row from
+// json.Number / float64 to a plain string so the browser receives it as a
+// JSON string. Without this, large UInt64 hashes (> 2^53) lose precision when
+// encoded as a JSON number and parsed by JavaScript.
+func stringifyHashes(rows []map[string]interface{}) {
+	for _, row := range rows {
+		if v, ok := row["normalized_query_hash"]; ok {
+			switch n := v.(type) {
+			case json.Number:
+				row["normalized_query_hash"] = n.String()
+			case float64:
+				row["normalized_query_hash"] = fmt.Sprintf("%.0f", n)
+			}
+		}
+	}
 }
 
 // toFloat64 coerces a ClickHouse JSON value to float64.
