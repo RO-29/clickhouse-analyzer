@@ -3,8 +3,10 @@ package web
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -81,6 +83,43 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// POST /api/auth/callback — forward the OAuth callback URL to claude's local server.
+//
+// When the user completes login in their browser, claude.ai redirects to
+// http://localhost:PORT/callback?code=XXX on the server. That port is not
+// reachable from the user's machine, so the browser shows ERR_CONNECTION_REFUSED.
+// The user copies that URL from their address bar and submits it here; we
+// proxy the GET request from the server side so claude can finish the exchange.
+func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.URL) == "" {
+		writeErr(w, http.StatusBadRequest, "missing url")
+		return
+	}
+	parsed, err := url.Parse(req.URL)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid url: "+err.Error())
+		return
+	}
+	host := parsed.Hostname()
+	if host != "localhost" && host != "127.0.0.1" {
+		writeErr(w, http.StatusBadRequest, "url must point to localhost")
+		return
+	}
+
+	resp, err := http.Get(req.URL) //nolint:noctx
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "callback forward failed: "+err.Error()+
+			" — make sure the login flow is still running (open the modal and start it)")
+		return
+	}
+	defer resp.Body.Close()
+	slog.Info("auth callback forwarded", "status", resp.StatusCode, "url", req.URL)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "forwarded", "http_status": fmt.Sprint(resp.StatusCode)})
 }
 
 // POST /api/auth/login — start the claude.ai OAuth login flow.

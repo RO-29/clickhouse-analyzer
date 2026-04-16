@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { Sun, Moon, Menu, Lock, LockOpen, X, Loader2, ExternalLink } from 'lucide-react'
+import { Sun, Moon, Menu, Lock, LockOpen, X, Loader2, ExternalLink, Copy, Check } from 'lucide-react'
 import { useStore, type View } from '../hooks/useStore'
 import { cn } from '../lib/utils'
 
@@ -42,7 +42,42 @@ function ReAuthModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
   const [lines, setLines] = useState<{ type: 'output' | 'url' | 'error'; text: string }[]>([])
   const [state, setState] = useState<'idle' | 'running' | 'done' | 'error'>('idle')
   const [loginUrl, setLoginUrl] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+  const [callbackUrl, setCallbackUrl] = useState('')
+  const [callbackState, setCallbackState] = useState<'idle' | 'submitting' | 'ok' | 'error'>('idle')
+  const [callbackError, setCallbackError] = useState('')
   const abortRef = useRef<AbortController | null>(null)
+
+  const submitCallback = async () => {
+    const u = callbackUrl.trim()
+    if (!u) return
+    setCallbackState('submitting')
+    setCallbackError('')
+    try {
+      const r = await fetch('/api/auth/callback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: u }),
+      })
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}))
+        throw new Error(j.error || `HTTP ${r.status}`)
+      }
+      setCallbackState('ok')
+      // The claude process will now exit 0 and send event:done — wait for it
+    } catch (e: any) {
+      setCallbackState('error')
+      setCallbackError(e.message ?? 'Failed')
+    }
+  }
+
+  const copyUrl = () => {
+    if (!loginUrl) return
+    navigator.clipboard.writeText(loginUrl).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }
 
   // Start the login flow immediately on mount
   useEffect(() => {
@@ -60,21 +95,27 @@ function ReAuthModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
         }
         const reader = resp.body.getReader()
         const dec = new TextDecoder()
-        let buf = '', ev = '', data = ''
+        let buf = '', ev = '', data = '', urlReceived = false
         const flush = () => {
           if (ev === 'url' && data) {
             try {
               const url = JSON.parse(data) as string
+              urlReceived = true
               setLoginUrl(url)
-              setLines(l => [...l, { type: 'url', text: url }])
+              // Auto-open in new tab immediately
+              window.open(url, '_blank', 'noopener,noreferrer')
             } catch {}
           } else if (ev === 'output' && data) {
-            // Parse immediately inside try/catch — the updater function must NOT
-            // close over `data` because `data` is reset to '' before React runs
-            // the updater, causing JSON.parse('') to throw uncaught outside the catch.
+            // Parse immediately — don't close over `data` (it's reset to '' before
+            // React runs the updater, causing JSON.parse('') to throw uncaught).
             try { const text = JSON.parse(data) as string; setLines(l => [...l, { type: 'output', text }]) } catch {}
           } else if (ev === 'error' && data) {
-            try { const text = JSON.parse(data) as string; setLines(l => [...l, { type: 'error', text }]) } catch {}
+            // Suppress process-exit errors when the URL was already delivered —
+            // on headless servers claude exits non-zero after echoing the URL
+            // (no real browser to open), but auth still completes fine.
+            if (!urlReceived) {
+              try { const text = JSON.parse(data) as string; setLines(l => [...l, { type: 'error', text }]) } catch {}
+            }
           } else if (ev === 'done') {
             setState('done')
             setTimeout(onSuccess, 1000)
@@ -93,7 +134,9 @@ function ReAuthModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
             else if (line.startsWith('data: ')) data = line.slice(6)
           }
         }
-        if (state !== 'done') setState('done')
+        // If URL was received but process ended without 'done', keep modal open
+        // so user can complete auth — don't auto-close or show error.
+        if (!urlReceived && state !== 'done') setState('done')
       } catch (err: any) {
         if (err.name !== 'AbortError') {
           setState('error')
@@ -104,6 +147,8 @@ function ReAuthModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
 
     return () => ac.abort()
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const nonUrlLines = lines.filter(l => l.type !== 'url')
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
@@ -118,7 +163,7 @@ function ReAuthModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
           <div className="flex-1">
             <div className="text-sm font-semibold">Re-authenticate Claude</div>
             <div className="text-[11px] text-[var(--dim)] mt-0.5">
-              Your claude.ai session expired. Open the link below on any device to log back in.
+              Your claude.ai session expired. Complete login in the browser tab that just opened.
             </div>
           </div>
           <button onClick={onClose} className="p-1.5 rounded text-[var(--dim)] hover:text-[var(--fg)] hover:bg-[var(--hover)] transition-colors">
@@ -127,40 +172,103 @@ function ReAuthModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
         </div>
 
         {/* Body */}
-        <div className="p-5 space-y-4">
-          {state === 'running' && lines.length === 0 && (
+        <div className="p-5 space-y-3">
+          {state === 'running' && !loginUrl && (
             <div className="flex items-center gap-2 text-sm text-[var(--dim)]">
               <Loader2 size={14} className="animate-spin" />
               Starting authentication flow…
             </div>
           )}
 
-          {/* URL — most important, shown prominently */}
+          {/* URL section */}
           {loginUrl && (
-            <div className="rounded-lg border border-blue-500/30 bg-blue-500/10 px-4 py-3 space-y-2">
-              <div className="text-xs font-semibold text-blue-400">Open this URL in your browser:</div>
-              <a
-                href={loginUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-start gap-1.5 text-[11px] font-mono text-blue-300 hover:text-blue-200 break-all leading-relaxed"
-              >
-                <ExternalLink size={11} className="shrink-0 mt-0.5" />
-                {loginUrl}
-              </a>
+            <div className="rounded-lg border border-blue-500/30 bg-blue-500/10 p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-blue-400">Login URL</span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={copyUrl}
+                    className="flex items-center gap-1 px-2 py-1 rounded text-[11px] bg-[var(--surface)] border border-[var(--border)] text-[var(--dim)] hover:text-[var(--fg)] hover:border-blue-500/50 transition-colors"
+                  >
+                    {copied ? <Check size={11} className="text-green-400" /> : <Copy size={11} />}
+                    {copied ? 'Copied!' : 'Copy'}
+                  </button>
+                  <a
+                    href={loginUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1 px-2 py-1 rounded text-[11px] bg-blue-500 text-white hover:bg-blue-600 transition-colors"
+                  >
+                    <ExternalLink size={11} /> Open
+                  </a>
+                </div>
+              </div>
+              {/* URL in a selectable input — no overflow, easy to select-all */}
+              <input
+                readOnly
+                value={loginUrl}
+                onFocus={e => e.target.select()}
+                className="w-full bg-[var(--surface)] border border-[var(--border)] rounded px-2 py-1.5 text-[11px] font-mono text-blue-300 focus:outline-none focus:border-blue-500/50 cursor-text"
+              />
               <p className="text-[10px] text-[var(--dim)]">
-                After completing login in your browser, this panel will close automatically.
+                A browser tab was opened automatically. If it didn't open, use Copy or click Open.
+                This panel will close automatically once login is complete.
               </p>
             </div>
           )}
 
-          {/* Other output lines */}
-          {lines.filter(l => l.type !== 'url').length > 0 && (
-            <div className="rounded-lg bg-[var(--surface)] border border-[var(--border)] p-3 space-y-1 font-mono text-[11px]">
-              {lines.filter(l => l.type !== 'url').map((l, i) => (
-                <div key={i} className={l.type === 'error' ? 'text-red-400' : 'text-[var(--dim)]'}>
-                  {l.text}
-                </div>
+          {/* Callback URL paste — shown once the login URL is displayed */}
+          {loginUrl && state !== 'done' && callbackState !== 'ok' && (
+            <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3 space-y-2">
+              <div className="text-[11px] font-semibold text-[var(--dim)]">
+                Browser shows "connection refused"?
+              </div>
+              <p className="text-[10px] text-[var(--dim)]">
+                After login, chrome redirects to <code className="font-mono">localhost:…/callback?code=…</code> which fails on a remote server.
+                Copy that URL from the address bar and paste it below.
+              </p>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={callbackUrl}
+                  onChange={e => setCallbackUrl(e.target.value)}
+                  onPaste={e => {
+                    // auto-submit on paste
+                    const pasted = e.clipboardData.getData('text').trim()
+                    if (pasted.startsWith('http://localhost') || pasted.startsWith('http://127.0.0.1')) {
+                      setCallbackUrl(pasted)
+                      setTimeout(() => submitCallback(), 50)
+                    }
+                  }}
+                  placeholder="http://localhost:PORT/callback?code=…"
+                  className="flex-1 bg-[var(--card)] border border-[var(--border)] rounded px-2 py-1.5 text-[11px] font-mono text-[var(--fg)] placeholder-[var(--dim)] focus:outline-none focus:border-[var(--accent)]"
+                />
+                <button
+                  onClick={submitCallback}
+                  disabled={callbackState === 'submitting' || !callbackUrl.trim()}
+                  className="px-3 py-1.5 rounded text-xs font-medium bg-[var(--accent)] text-white hover:opacity-90 disabled:opacity-50 transition-opacity"
+                >
+                  {callbackState === 'submitting' ? <Loader2 size={12} className="animate-spin" /> : 'Submit'}
+                </button>
+              </div>
+              {callbackState === 'error' && (
+                <p className="text-[10px] text-red-400">{callbackError}</p>
+              )}
+            </div>
+          )}
+
+          {callbackState === 'ok' && state !== 'done' && (
+            <div className="flex items-center gap-2 text-[11px] text-green-400">
+              <Check size={12} /> Callback forwarded — waiting for claude to complete…
+              <Loader2 size={11} className="animate-spin ml-1" />
+            </div>
+          )}
+
+          {/* Output log — only non-URL, non-error lines */}
+          {nonUrlLines.filter(l => l.type === 'output').length > 0 && (
+            <div className="rounded-lg bg-[var(--surface)] border border-[var(--border)] p-3 space-y-0.5 font-mono text-[11px]">
+              {nonUrlLines.filter(l => l.type === 'output').map((l, i) => (
+                <div key={i} className="text-[var(--dim)]">{l.text}</div>
               ))}
             </div>
           )}
@@ -169,7 +277,8 @@ function ReAuthModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
             <div className="text-sm text-green-400">Authentication completed successfully.</div>
           )}
 
-          {state === 'error' && (
+          {/* Only show hard error if no URL was received */}
+          {state === 'error' && !loginUrl && (
             <div className="text-sm text-red-400">
               Login flow failed. SSH into the server and run:{' '}
               <code className="font-mono bg-[var(--surface)] px-1 rounded">
@@ -178,11 +287,11 @@ function ReAuthModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
             </div>
           )}
 
-          {/* Status indicator */}
+          {/* Status */}
           <div className="flex items-center gap-2">
-            {state === 'running' && (
+            {state === 'running' && loginUrl && (
               <><Loader2 size={11} className="animate-spin text-[var(--dim)]" />
-              <span className="text-[10px] text-[var(--dim)]">Waiting for login flow…</span></>
+              <span className="text-[10px] text-[var(--dim)]">Waiting for you to complete login…</span></>
             )}
             {state === 'done' && <span className="text-[10px] text-green-400">Done</span>}
           </div>

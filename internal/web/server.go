@@ -215,6 +215,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Claude auth management (check status, start re-login flow).
 	mux.HandleFunc("GET /api/auth/status", s.handleAuthStatus)
 	mux.HandleFunc("POST /api/auth/login", s.handleAuthLogin)
+	mux.HandleFunc("POST /api/auth/callback", s.handleAuthCallback)
 	mux.HandleFunc("GET /api/maintenance", s.handleMaintenanceList)
 	mux.HandleFunc("POST /api/maintenance", s.handleMaintenanceCreate)
 	mux.HandleFunc("DELETE /api/maintenance/{id}", s.handleMaintenanceDelete)
