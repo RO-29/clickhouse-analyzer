@@ -444,47 +444,61 @@ export default function RunCheck() {
         {/* Collector picker */}
         <div className="lg:col-span-2 bg-[var(--card)] border border-[var(--border)] rounded-xl p-4 space-y-4">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-[var(--text)]">Select Checks</h2>
-            <div className="flex gap-2 text-xs items-center">
-              <button onClick={selectAllCollectors} className="text-[var(--accent)] hover:opacity-70">All</button>
-              <span className="text-[var(--border)]">·</span>
-              <button onClick={clearCollectors} className="text-[var(--dim)] hover:opacity-70">None</button>
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold text-[var(--text)]">Select Checks</h2>
               {selectedCollectors.size > 0 && (
-                <span className="ml-1 text-[var(--dim)]">({selectedCollectors.size} selected)</span>
+                <span className="text-[11px] font-medium text-[var(--accent)] bg-[var(--accent)]/10 border border-[var(--accent)]/20 rounded-full px-2 py-0.5">
+                  {selectedCollectors.size} selected
+                </span>
               )}
+            </div>
+            <div className="flex gap-2 text-xs items-center">
+              <button onClick={selectAllCollectors} className="text-[var(--accent)] hover:opacity-70 font-medium">All</button>
+              <span className="text-[var(--border)]">·</span>
+              <button onClick={clearCollectors} className="text-[var(--dim)] hover:text-[var(--text)]">None</button>
             </div>
           </div>
 
-          <div className="space-y-4">
+          <div className="space-y-5">
             {categories.map(cat => (
               <div key={cat}>
-                <p className="text-[10px] font-semibold uppercase tracking-widest text-[var(--dim)] mb-2">
-                  {CATEGORY_LABELS[cat] ?? cat}
-                </p>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-[var(--dim)]">
+                    {CATEGORY_LABELS[cat] ?? cat}
+                  </span>
+                  <div className="flex-1 h-px bg-[var(--border)]" />
+                  <button
+                    onClick={() => {
+                      const catNames = grouped[cat].map(m => m.name)
+                      const allChecked = catNames.every(n => selectedCollectors.has(n))
+                      setSelectedCollectors(prev => {
+                        const next = new Set(prev)
+                        catNames.forEach(n => allChecked ? next.delete(n) : next.add(n))
+                        return next
+                      })
+                    }}
+                    className="text-[10px] text-[var(--dim)] hover:text-[var(--accent)] transition-colors"
+                  >
+                    {grouped[cat].every(m => selectedCollectors.has(m.name)) ? 'deselect' : 'select all'}
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
                   {grouped[cat].map(m => {
                     const checked = selectedCollectors.has(m.name)
                     return (
                       <button
                         key={m.name}
                         onClick={() => toggleCollector(m.name)}
+                        title={m.description}
                         className={cn(
-                          'flex items-start gap-2.5 px-3 py-2.5 rounded-lg border text-left transition-all',
+                          'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border transition-all',
                           checked
-                            ? 'border-[var(--accent)]/50 bg-[var(--accent)]/10'
-                            : 'border-[var(--border)] hover:border-[var(--accent)]/30 hover:bg-[var(--surface)]',
+                            ? 'bg-[var(--accent)]/15 text-[var(--accent)] border-[var(--accent)]/40 hover:bg-[var(--accent)]/25'
+                            : 'bg-[var(--surface)] text-[var(--dim)] border-[var(--border)] hover:text-[var(--text)] hover:border-[var(--accent)]/30',
                         )}
                       >
-                        <span className={cn(
-                          'mt-0.5 w-3.5 h-3.5 rounded border shrink-0 flex items-center justify-center transition-colors',
-                          checked ? 'bg-[var(--accent)] border-[var(--accent)]' : 'border-[var(--dim)]',
-                        )}>
-                          {checked && <span className="text-white text-[9px] font-bold leading-none">✓</span>}
-                        </span>
-                        <span className="flex-1 min-w-0">
-                          <span className="block text-xs font-medium text-[var(--text)]">{m.display_name}</span>
-                          <span className="block text-[11px] text-[var(--dim)] leading-tight mt-0.5">{m.description}</span>
-                        </span>
+                        {checked && <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] shrink-0" />}
+                        {m.display_name}
                       </button>
                     )
                   })}
@@ -500,18 +514,23 @@ export default function RunCheck() {
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-semibold text-[var(--text)] flex items-center gap-1.5">
                 <Database size={13} /> Instances
+                {selectedInstances.size > 0 && (
+                  <span className="text-[11px] font-medium text-[var(--accent)] bg-[var(--accent)]/10 border border-[var(--accent)]/20 rounded-full px-2 py-0.5 ml-1">
+                    {selectedInstances.size}
+                  </span>
+                )}
               </h2>
               <div className="flex gap-2 text-xs">
-                <button onClick={selectAllInstances} className="text-[var(--accent)] hover:opacity-70">All</button>
+                <button onClick={selectAllInstances} className="text-[var(--accent)] hover:opacity-70 font-medium">All</button>
                 <span className="text-[var(--border)]">·</span>
-                <button onClick={clearInstances} className="text-[var(--dim)] hover:opacity-70">None</button>
+                <button onClick={clearInstances} className="text-[var(--dim)] hover:text-[var(--text)]">None</button>
               </div>
             </div>
 
             {instanceList.length === 0 ? (
               <p className="text-xs text-[var(--dim)]">No instances available</p>
             ) : (
-              <div className="space-y-1">
+              <div className="flex flex-wrap gap-1.5">
                 {instanceList.map(name => {
                   const checked = selectedInstances.has(name)
                   return (
@@ -519,19 +538,14 @@ export default function RunCheck() {
                       key={name}
                       onClick={() => toggleInstance(name)}
                       className={cn(
-                        'w-full flex items-center gap-2.5 px-3 py-2 rounded-lg border text-left transition-all text-sm',
+                        'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full font-mono text-[11px] border transition-all',
                         checked
-                          ? 'border-[var(--accent)]/50 bg-[var(--accent)]/10'
-                          : 'border-[var(--border)] hover:border-[var(--accent)]/30 hover:bg-[var(--surface)]',
+                          ? 'bg-[var(--accent)]/15 text-[var(--accent)] border-[var(--accent)]/40 hover:bg-[var(--accent)]/25'
+                          : 'bg-[var(--surface)] text-[var(--dim)] border-[var(--border)] hover:text-[var(--text)] hover:border-[var(--accent)]/30',
                       )}
                     >
-                      <span className={cn(
-                        'w-3.5 h-3.5 rounded border shrink-0 flex items-center justify-center transition-colors',
-                        checked ? 'bg-[var(--accent)] border-[var(--accent)]' : 'border-[var(--dim)]',
-                      )}>
-                        {checked && <span className="text-white text-[9px] font-bold leading-none">✓</span>}
-                      </span>
-                      <span className="font-mono text-xs text-[var(--text)] truncate">{name}</span>
+                      {checked && <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] shrink-0" />}
+                      {name}
                     </button>
                   )
                 })}

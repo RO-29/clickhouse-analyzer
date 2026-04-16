@@ -242,7 +242,16 @@ export default function AppLogs({ refreshKey }: { refreshKey?: number }) {
       {/* ── Log list ─────────────────────────────────────────────────── */}
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl overflow-hidden">
         {loading && allLogs.length === 0 ? (
-          <div className="text-sm text-[var(--dim)] text-center py-10">Loading…</div>
+          <div className="divide-y divide-[var(--border)] font-mono text-xs">
+            {Array.from({ length: 8 }).map((_, i) => (
+              <div key={i} className="flex items-center gap-2 px-4 py-1.5">
+                <div className="h-3 rounded bg-[var(--hover)] animate-pulse w-5 shrink-0" />
+                <div className="h-3 rounded bg-[var(--hover)] animate-pulse w-32 shrink-0" />
+                <div className="h-3 rounded bg-[var(--hover)] animate-pulse w-12 shrink-0" />
+                <div className="h-3 rounded bg-[var(--hover)] animate-pulse flex-1" style={{ animationDelay: `${i * 60}ms` }} />
+              </div>
+            ))}
+          </div>
         ) : filtered.length === 0 ? (
           <div className="text-sm text-[var(--dim)] text-center py-10">
             {allLogs.length === 0 ? 'No logs captured yet' : 'No entries match'}

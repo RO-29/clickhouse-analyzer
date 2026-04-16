@@ -206,7 +206,16 @@ export default function CHLogs({ refreshKey }: { refreshKey?: number }) {
       {/* Log entries */}
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl overflow-hidden">
         {loading && logs.length === 0 ? (
-          <div className="text-sm text-[var(--dim)] text-center py-8">Loading...</div>
+          <div className="divide-y divide-[var(--border)] font-mono text-xs">
+            {Array.from({ length: 8 }).map((_, i) => (
+              <div key={i} className="flex items-center gap-2 px-4 py-1.5">
+                <div className="h-3 rounded bg-[var(--hover)] animate-pulse w-36 shrink-0" />
+                <div className="h-3 rounded bg-[var(--hover)] animate-pulse w-16 shrink-0" />
+                <div className="h-3 rounded bg-[var(--hover)] animate-pulse w-24 shrink-0" />
+                <div className={`h-3 rounded bg-[var(--hover)] animate-pulse flex-1`} style={{ width: `${40 + (i * 13) % 40}%`, animationDelay: `${i * 60}ms` }} />
+              </div>
+            ))}
+          </div>
         ) : logs.length === 0 ? (
           <div className="text-sm text-[var(--dim)] text-center py-8">No logs found</div>
         ) : (
