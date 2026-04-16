@@ -1,12 +1,25 @@
 import { useState, useEffect, useMemo, useCallback, useRef, type ChangeEvent } from 'react'
 import { Sparkles, X, Copy, Play, Maximize2, Skull, RefreshCw, ChevronDown, ChevronRight } from 'lucide-react'
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  BarElement,
+  ArcElement,
+  DoughnutController,
+  Tooltip,
+  Legend,
+} from 'chart.js'
+import { Bar, Doughnut } from 'react-chartjs-2'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
-import { fmtBytes, fmtNum, fmtDuration, cn } from '../lib/utils'
+import { fmtBytes, fmtNum, fmtDuration, fmtCompact, cn, latencyBg, kindBg, tokenizeSql } from '../lib/utils'
 import { Card } from '../components/Card'
 import { HistoryChart } from '../components/HistoryChart'
 import { DataTable } from '../components/DataTable'
+
+ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, DoughnutController, Tooltip, Legend)
 import type {
   QueryPattern,
   QueryPatternV2,
@@ -170,6 +183,38 @@ function AnalyzeTabBtn({
   )
 }
 
+/* ── SQL inline highlighter ─────────────────────────────────────────────── */
+
+function SqlHighlight({ text, maxLen = 90 }: { text: string; maxLen?: number }) {
+  const src = text.length > maxLen ? text.slice(0, maxLen) + '…' : text
+  const tokens = tokenizeSql(src)
+  return (
+    <span className="font-mono text-xs">
+      {tokens.map((tok, i) => {
+        if (tok.k === 'kw') return <span key={i} className="text-blue-400 font-medium">{tok.t}</span>
+        if (tok.k === 'fn') return <span key={i} className="text-cyan-400">{tok.t}</span>
+        if (tok.k === 'str') return <span key={i} className="text-amber-300/80">{tok.t}</span>
+        if (tok.k === 'num') return <span key={i} className="text-emerald-400/80">{tok.t}</span>
+        if (tok.k === 'cmt') return <span key={i} className="text-gray-500 italic">{tok.t}</span>
+        if (tok.k === 'op') return <span key={i} className="text-gray-400">{tok.t}</span>
+        return <span key={i} className="text-[var(--fg)]">{tok.t}</span>
+      })}
+    </span>
+  )
+}
+
+/* ── Stat card row ───────────────────────────────────────────────────────── */
+
+function StatCard({ label, value, sub, color }: { label: string; value: string; sub?: string; color?: string }) {
+  return (
+    <div className="flex-1 min-w-[120px] bg-[var(--surface)] border border-[var(--border)] rounded-xl px-4 py-3">
+      <div className="text-[11px] uppercase tracking-wider text-[var(--dim)] mb-1">{label}</div>
+      <div className={cn('text-xl font-bold tabular-nums', color ?? 'text-[var(--fg)]')}>{value}</div>
+      {sub && <div className="text-[11px] text-[var(--dim)] mt-0.5">{sub}</div>}
+    </div>
+  )
+}
+
 /* ------------------------------------------------------------------ */
 /*  Query Patterns Tab                                                 */
 /* ------------------------------------------------------------------ */
@@ -249,38 +294,114 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
   if (loading) return <LoadingSkeleton />
   if (error) return <ErrorBox message={error} />
 
-  // Compute max total_ms for bar widths.
+  // ── derived stats ──────────────────────────────────────────────────────────
+  const totalExecs = patterns.reduce((s, p) => s + (p.cnt || 0), 0)
+  const totalCpuMs = patterns.reduce((s, p) => s + (p.total_ms || 0), 0)
+  const totalFails = patterns.reduce((s, p) => s + (p.failures || 0), 0)
+  const errorRate = totalExecs > 0 ? (totalFails / totalExecs) * 100 : 0
   const maxTotalMs = patterns.reduce((m, p) => Math.max(m, p.total_ms || 0), 1)
 
+  // ── Chart.js stacked bar data for overview ─────────────────────────────────
+  const COLORS = ['#3b82f6','#22c55e','#f59e0b','#ef4444','#a855f7','#06b6d4','#f97316','#ec4899']
+  const stackedChartData = (() => {
+    if (!overview || !overview.timeline?.length || !overview.patterns?.length) return null
+    const allTs = [...new Set(overview.timeline.map(r => r.ts))].sort()
+    const fmtTs = (ts: string) => {
+      const d = new Date(ts)
+      return isNaN(d.getTime()) ? ts : d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+    }
+    return {
+      labels: allTs.map(fmtTs),
+      datasets: overview.patterns.map((p, i) => ({
+        label: String(p.normalized_query_hash).slice(0, 10),
+        data: allTs.map(ts => {
+          const row = overview.timeline.find(r => r.ts === ts && String(r.normalized_query_hash) === String(p.normalized_query_hash))
+          return row ? Number(row.total_ms) || 0 : 0
+        }),
+        backgroundColor: COLORS[i % COLORS.length] + 'cc',
+        borderColor: COLORS[i % COLORS.length],
+        borderWidth: 0,
+        stack: 'load',
+      })),
+    }
+  })()
+
+  const stackedOpts = {
+    responsive: true, maintainAspectRatio: false, animation: { duration: 200 },
+    interaction: { mode: 'index' as const, intersect: false },
+    plugins: {
+      legend: { position: 'bottom' as const, labels: { color: '#9ca3af', font: { size: 10 }, boxWidth: 10, padding: 8 } },
+      tooltip: {
+        backgroundColor: 'rgba(15,20,30,0.95)', borderColor: 'rgba(255,255,255,0.08)', borderWidth: 1,
+        titleColor: '#f3f4f6', bodyColor: '#9ca3af', padding: 10, cornerRadius: 8,
+        callbacks: { label: (ctx: any) => ` ${ctx.dataset.label}: ${fmtDuration(ctx.parsed.y)}` },
+      },
+    },
+    scales: {
+      x: { stacked: true, ticks: { maxTicksLimit: 10, color: '#6b7280', font: { size: 10 } }, grid: { display: false }, border: { display: false } },
+      y: { stacked: true, ticks: { callback: (v: any) => fmtDuration(Number(v)), color: '#6b7280', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.04)' }, border: { display: false } },
+    },
+  }
+
+  // ── table columns ──────────────────────────────────────────────────────────
   const columns: any[] = [
     {
       key: 'normalized_query_hash',
       label: 'Hash',
       format: (v: any) => (
-        <span className="font-mono text-xs text-[var(--accent)]">{String(v).slice(0, 12)}</span>
+        <span className="font-mono text-[11px] text-[var(--accent)] tracking-tight">{String(v).slice(0, 12)}</span>
       ),
     },
-    { key: 'cnt', label: 'Execs', format: (v: any) => fmtNum(v) },
-    { key: 'kind', label: 'Kind' },
+    { key: 'cnt', label: 'Execs', format: (v: any) => <span className="tabular-nums">{fmtCompact(v)}</span> },
     {
-      key: 'total_ms',
-      label: 'Total Time',
-      format: (v: any, row: any) => (
-        <span className="flex items-center gap-2 min-w-[100px]">
-          <span className="tabular-nums">{fmtDuration(v)}</span>
-          <span
-            className="h-1.5 rounded-full bg-[var(--accent)] opacity-70 shrink-0"
-            style={{ width: `${Math.max(4, ((row.total_ms || 0) / maxTotalMs) * 64)}px` }}
-          />
+      key: 'kind',
+      label: 'Kind',
+      format: (v: any) => (
+        <span className={cn('inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium', kindBg(v))}>
+          {String(v || '—').slice(0, 6)}
         </span>
       ),
     },
-    { key: 'avg_ms', label: 'Avg ms', format: (v: any) => fmtDuration(v) },
-    { key: 'p95_ms', label: 'P95 ms', format: (v: any) => fmtDuration(v) },
-    { key: 'avg_memory', label: 'Avg Mem', format: (v: any) => fmtBytes(v) },
-    { key: 'failures', label: 'Fails', format: (v: any) => (
-      <span className={Number(v) > 0 ? 'text-red-400 font-semibold' : ''}>{fmtNum(v)}</span>
-    )},
+    {
+      key: 'total_ms',
+      label: 'Total CPU',
+      format: (v: any, row: any) => (
+        <span className="flex items-center gap-2 min-w-[110px]">
+          <span className="tabular-nums text-xs">{fmtDuration(v)}</span>
+          <span className="h-1.5 rounded-full shrink-0 bg-[var(--accent)] opacity-60"
+            style={{ width: `${Math.max(3, ((row.total_ms || 0) / maxTotalMs) * 56)}px` }} />
+        </span>
+      ),
+    },
+    {
+      key: 'avg_ms',
+      label: 'Avg',
+      format: (v: any) => (
+        <span className={cn('inline-flex px-1.5 py-0.5 rounded text-[11px] tabular-nums', latencyBg(v))}>
+          {fmtDuration(v)}
+        </span>
+      ),
+    },
+    {
+      key: 'p95_ms',
+      label: 'P95',
+      format: (v: any) => (
+        <span className={cn('inline-flex px-1.5 py-0.5 rounded text-[11px] tabular-nums', latencyBg(v))}>
+          {fmtDuration(v)}
+        </span>
+      ),
+    },
+    { key: 'avg_memory', label: 'Avg Mem', format: (v: any) => <span className="text-xs tabular-nums">{fmtBytes(v)}</span> },
+    {
+      key: 'failures',
+      label: 'Fails',
+      format: (v: any) => {
+        const n = Number(v)
+        if (n === 0) return <span className="text-[var(--dim)] text-xs">—</span>
+        if (n > 5) return <span className="inline-flex px-1.5 py-0.5 rounded text-[11px] font-semibold bg-red-500/10 text-red-400 border border-red-500/20">{fmtCompact(n)}</span>
+        return <span className="text-amber-400 text-xs font-medium">{n}</span>
+      },
+    },
     {
       key: 'sample_query',
       label: 'Sample Query',
@@ -288,13 +409,13 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
         const q = String(v ?? '')
         return (
           <span className="flex items-center gap-1.5 group/q min-w-0">
-            <span className="text-[var(--dim)] text-xs font-mono truncate">
-              {q.length > 60 ? q.slice(0, 60) + '…' : q}
+            <span className="truncate min-w-0">
+              <SqlHighlight text={q} maxLen={70} />
             </span>
             {q && (
               <button
-                onClick={(e) => { e.stopPropagation(); onShowQuery(q) }}
-                className="shrink-0 p-0.5 rounded text-[var(--dim)] hover:text-[var(--accent)] hover:bg-[var(--hover)] opacity-60 group-hover/q:opacity-100 transition-all"
+                onClick={e => { e.stopPropagation(); onShowQuery(q) }}
+                className="shrink-0 p-0.5 rounded text-[var(--dim)] hover:text-[var(--accent)] opacity-0 group-hover/q:opacity-100 transition-all"
                 title="View full query"
               >
                 <Maximize2 size={11} />
@@ -310,7 +431,7 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
       format: (_v: any, row: any) => (
         <button
           onClick={(e: any) => { e.stopPropagation(); onDrillHash(String(row.normalized_query_hash)) }}
-          className="text-xs text-[var(--accent)] hover:underline whitespace-nowrap"
+          className="text-xs text-[var(--accent)] hover:underline whitespace-nowrap opacity-60 hover:opacity-100 transition-opacity"
         >
           Samples →
         </button>
@@ -320,40 +441,35 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
 
   return (
     <div className="space-y-4">
-      {/* Stacked bar overview */}
-      {overviewChart && overviewChart.bars.length > 0 && (
-        <Card>
-          <div className="text-xs font-medium text-[var(--dim)] uppercase tracking-wider mb-3">
-            Query Load by Pattern (Total CPU ms)
+      {/* Stat cards */}
+      {patterns.length > 0 && (
+        <div className="flex gap-3 flex-wrap">
+          <StatCard label="Patterns" value={String(patterns.length)} />
+          <StatCard label="Executions" value={fmtCompact(totalExecs)} sub={`${fmtCompact(totalExecs / Math.max(1, (to - from) / 60))} /min avg`} />
+          <StatCard label="Total CPU" value={fmtDuration(totalCpuMs)} />
+          <StatCard
+            label="Error Rate"
+            value={errorRate < 0.1 ? '<0.1%' : errorRate.toFixed(1) + '%'}
+            color={errorRate > 5 ? 'text-red-400' : errorRate > 1 ? 'text-amber-400' : 'text-emerald-400'}
+            sub={`${fmtCompact(totalFails)} failures`}
+          />
+        </div>
+      )}
+
+      {/* Chart.js stacked bar overview */}
+      {stackedChartData && (
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--dim)] mb-3">
+            CPU Load by Query Pattern
           </div>
-          <div className="flex items-end gap-px h-20 overflow-hidden">
-            {overviewChart.bars.map((bar, i) => (
-              <div key={i} className="flex-1 flex flex-col justify-end" title={bar.ts}>
-                {bar.slices.map((s, j) => {
-                  const pct = (Number(s.total_ms) / overviewChart.maxTotal) * 100
-                  const color = overviewChart.hashColors[String(s.normalized_query_hash)] ?? '#6b7280'
-                  return <div key={j} style={{ height: `${pct}%`, background: color }} className="min-h-[1px]" />
-                })}
-              </div>
-            ))}
+          <div style={{ height: 130 }}>
+            <Bar data={stackedChartData} options={stackedOpts as any} />
           </div>
-          <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2">
-            {overview!.patterns.map((p, i) => {
-              const color = overviewChart.hashColors[p.normalized_query_hash] ?? '#6b7280'
-              return (
-                <span key={i} className="flex items-center gap-1 text-xs text-[var(--dim)]">
-                  <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: color }} />
-                  <span className="font-mono">{String(p.normalized_query_hash).slice(0, 10)}</span>
-                  <span className="opacity-60 truncate max-w-[120px]">{String(p.label).slice(0, 30)}</span>
-                </span>
-              )
-            })}
-          </div>
-        </Card>
+        </div>
       )}
 
       <Card>
-        <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+        <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
           <span className="text-xs text-[var(--dim)] uppercase tracking-wider font-medium">
             {patterns.length} patterns
           </span>
@@ -389,22 +505,21 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
           emptyText="No query patterns found"
         />
       </Card>
+
       {selectedHash && (
         <div className="mt-4">
           {tlLoading
             ? <div className="text-sm text-[var(--dim)] p-4">Loading timeline for {selectedHash.slice(0, 12)}…</div>
             : timeline.length === 0
-              ? <div className="text-sm text-[var(--dim)] p-4 bg-[var(--surface)] border border-[var(--border)] rounded-xl">No timeline data for hash {selectedHash.slice(0, 12)} in selected time range.</div>
+              ? <div className="text-sm text-[var(--dim)] p-4 bg-[var(--surface)] border border-[var(--border)] rounded-xl">No timeline data for {selectedHash.slice(0, 12)} in selected range.</div>
               : <HistoryChart
                   title={`Timeline: ${selectedHash.slice(0, 12)}`}
                   data={timeline}
                   series={[
-                    { key: 'cnt', label: 'Count', color: C.blue },
+                    { key: 'cnt', label: 'Executions', color: C.blue },
                     { key: 'avg_ms', label: 'Avg ms', color: C.yellow },
                   ]}
-                  onAnalyze={(data, series, title) =>
-                    onAnalyze(title, { data, series }, { contextType: 'chart', tab: 'patterns' })
-                  }
+                  onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
                 />
           }
         </div>
@@ -543,16 +658,16 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
                     {fmtDuration(s.query_duration_ms)}
                   </span>
                   <span className="text-xs text-[var(--dim)] w-20 shrink-0">{s.user}</span>
-                  <span className="text-xs px-1.5 py-0.5 rounded bg-[var(--surface)] text-[var(--dim)] w-16 text-center shrink-0">
-                    {s.query_kind || '—'}
+                  <span className={cn('text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0', kindBg(s.query_kind))}>
+                    {String(s.query_kind || '—').slice(0, 6)}
                   </span>
                   {s.is_exception === 1 && (
                     <span className="text-xs px-1.5 py-0.5 rounded bg-red-500/15 text-red-400 border border-red-500/20 shrink-0">
                       error
                     </span>
                   )}
-                  <span className="text-xs text-[var(--dim)] font-mono truncate">
-                    {String(s.query_text ?? '').slice(0, 80)}
+                  <span className="truncate min-w-0">
+                    <SqlHighlight text={String(s.query_text ?? '')} maxLen={80} />
                   </span>
                 </button>
                 {isOpen && (
@@ -669,28 +784,43 @@ function LiveTab({ instance, onShowQuery }: { instance: string; onShowQuery: (q:
           {rows.map((r, i) => {
             const qid = String(r.query_id ?? '')
             const q = String(r.query_short ?? r.query ?? '')
+            const sec = Number(r.elapsed) || 0
+            const pct = Math.min(100, (sec / 300) * 100) // 300s = 100%
+            const pill = sec > 300 ? 'bg-red-500' : sec > 60 ? 'bg-orange-500' : sec > 10 ? 'bg-yellow-500' : 'bg-emerald-500'
+            const kind = String(r.query_kind || r.kind || '').toLowerCase()
             return (
-              <div key={i} className="flex items-center gap-2 px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--card)] hover:bg-[var(--hover)] transition-colors group">
-                <span className={cn('text-xs tabular-nums w-14 shrink-0', elapsedColor(r.elapsed))}>
-                  {elapsed(r.elapsed)}
+              <div key={i} className="flex items-center gap-2.5 px-3 py-2.5 rounded-lg border border-[var(--border)] bg-[var(--card)] hover:bg-[var(--hover)] transition-colors group">
+                {/* Elapsed pill */}
+                <div className="flex items-center gap-1.5 shrink-0 w-20">
+                  <div className="w-10 h-1.5 rounded-full bg-[var(--border)] overflow-hidden">
+                    <div className={cn('h-full rounded-full transition-all', pill)} style={{ width: `${pct}%` }} />
+                  </div>
+                  <span className={cn('text-xs tabular-nums font-mono', elapsedColor(r.elapsed))}>
+                    {elapsed(r.elapsed)}
+                  </span>
+                </div>
+                {/* User */}
+                <span className="text-xs text-[var(--dim)] w-20 shrink-0 truncate">{r.user}</span>
+                {/* Kind badge */}
+                {kind && (
+                  <span className={cn('shrink-0 inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium', kindBg(kind))}>
+                    {kind.slice(0, 3).toUpperCase()}
+                  </span>
+                )}
+                {/* Query preview */}
+                <span className="text-xs font-mono text-[var(--fg)] truncate flex-1">
+                  <SqlHighlight text={q} maxLen={100} />
                 </span>
-                <span className="text-xs text-[var(--dim)] w-24 shrink-0 truncate">{r.user}</span>
-                <span className="text-xs font-mono text-[var(--fg)] truncate flex-1">{q.slice(0, 100)}</span>
-                <span className="text-xs text-[var(--dim)] w-20 text-right shrink-0">{r.memory ?? r.memory_usage ?? ''}</span>
-                <button
-                  onClick={() => onShowQuery(q)}
+                {/* Memory */}
+                <span className="text-xs text-[var(--dim)] w-16 text-right shrink-0 tabular-nums">
+                  {r.memory_usage ? fmtBytes(r.memory_usage) : ''}
+                </span>
+                <button onClick={() => onShowQuery(q)}
                   className="shrink-0 p-1 rounded text-[var(--dim)] hover:text-[var(--accent)] opacity-0 group-hover:opacity-100 transition-all"
-                  title="View query"
-                >
-                  <Maximize2 size={12} />
-                </button>
-                <button
-                  onClick={() => setKillTarget(qid)}
+                  title="View query"><Maximize2 size={12} /></button>
+                <button onClick={() => setKillTarget(qid)}
                   className="shrink-0 p-1 rounded text-[var(--dim)] hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"
-                  title="Kill query"
-                >
-                  <Skull size={12} />
-                </button>
+                  title="Kill query"><Skull size={12} /></button>
               </div>
             )
           })}
@@ -754,55 +884,118 @@ function UsersTab({ instance, from, to, refreshKey, onDrillUser }: UsersTabProps
   if (loading) return <LoadingSkeleton />
   if (error) return <ErrorBox message={error} />
 
+  const COLORS = ['#3b82f6','#22c55e','#f59e0b','#ef4444','#a855f7','#06b6d4','#f97316','#ec4899']
   const maxTotalMs = users.reduce((m, u) => Math.max(m, u.total_ms || 0), 1)
+  const grandTotal = users.reduce((s, u) => s + (u.total_ms || 0), 0)
+  const topUser = users[0]
+
+  // Donut chart (top 7 + other)
+  const donutData = useMemo(() => {
+    if (users.length === 0) return null
+    const top = users.slice(0, 7)
+    const otherMs = users.slice(7).reduce((s, u) => s + (u.total_ms || 0), 0)
+    const labels = [...top.map(u => u.user || '(unknown)'), ...(otherMs > 0 ? ['other'] : [])]
+    const vals = [...top.map(u => u.total_ms || 0), ...(otherMs > 0 ? [otherMs] : [])]
+    return {
+      labels,
+      datasets: [{ data: vals, backgroundColor: COLORS.map(c => c + 'cc'), borderColor: COLORS, borderWidth: 1 }],
+    }
+  }, [users])
+
+  const donutOpts = {
+    responsive: true, maintainAspectRatio: false, animation: { duration: 300 },
+    plugins: {
+      legend: { position: 'right' as const, labels: { color: '#9ca3af', font: { size: 11 }, padding: 10, boxWidth: 10 } },
+      tooltip: {
+        backgroundColor: 'rgba(15,20,30,0.95)', borderColor: 'rgba(255,255,255,0.08)', borderWidth: 1,
+        titleColor: '#f3f4f6', bodyColor: '#9ca3af', padding: 10, cornerRadius: 8,
+        callbacks: {
+          label: (ctx: any) => {
+            const pct = grandTotal > 0 ? ((ctx.parsed / grandTotal) * 100).toFixed(1) : '0'
+            return ` ${fmtDuration(ctx.parsed)} (${pct}%)`
+          },
+        },
+      },
+    },
+  }
 
   return (
-    <div className="space-y-3">
-      <Card>
-        <div className="text-xs text-[var(--dim)] uppercase tracking-wider font-medium mb-3">
-          {users.length} users — sorted by total CPU time
+    <div className="space-y-4">
+      {/* Stat cards */}
+      {users.length > 0 && (
+        <div className="flex gap-3 flex-wrap">
+          <StatCard label="Active Users" value={String(users.length)} />
+          {topUser && (
+            <StatCard
+              label="Top User"
+              value={topUser.user || '(unknown)'}
+              sub={grandTotal > 0 ? `${((topUser.total_ms / grandTotal) * 100).toFixed(0)}% of total CPU` : ''}
+              color="text-[var(--accent)]"
+            />
+          )}
+          <StatCard label="Total CPU" value={fmtDuration(grandTotal)} />
+          <StatCard
+            label="Total Execs"
+            value={fmtCompact(users.reduce((s, u) => s + (u.cnt || 0), 0))}
+          />
         </div>
-        {users.length === 0 && (
-          <div className="text-sm text-[var(--dim)] text-center py-8">No data in range</div>
-        )}
-        <div className="space-y-1.5">
-          {users.map((u, i) => {
-            const barW = Math.max(4, (u.total_ms / maxTotalMs) * 180)
-            return (
-              <div
-                key={i}
-                onClick={() => onDrillUser?.(u.user)}
-                className={cn(
-                  'flex items-center gap-3 px-3 py-2 rounded-lg border border-[var(--border)] hover:bg-[var(--hover)] transition-colors',
-                  onDrillUser && 'cursor-pointer',
-                )}
-              >
-                <span className="text-sm font-medium w-32 shrink-0 truncate">{u.user || '(unknown)'}</span>
-                <div className="flex-1 flex items-center gap-2">
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-4">
+        {/* Horizontal bars */}
+        <Card>
+          <div className="text-xs text-[var(--dim)] uppercase tracking-wider font-medium mb-3">
+            {users.length} users — by total CPU time
+          </div>
+          {users.length === 0 ? (
+            <div className="text-sm text-[var(--dim)] text-center py-8">No data in range</div>
+          ) : (
+            <div className="space-y-1.5">
+              {users.map((u, i) => {
+                const pct = (u.total_ms / maxTotalMs) * 100
+                const color = COLORS[i % COLORS.length]
+                return (
                   <div
-                    className="h-2 rounded-full bg-[var(--accent)] opacity-80"
-                    style={{ width: `${barW}px` }}
-                  />
-                  <span className="text-xs tabular-nums text-[var(--dim)]">{fmtDuration(u.total_ms)}</span>
-                </div>
-                <div className="flex gap-4 text-xs text-[var(--dim)] shrink-0">
-                  <span><span className="text-[var(--fg)]">{fmtNum(u.cnt)}</span> execs</span>
-                  <span>avg <span className="text-[var(--fg)]">{fmtDuration(u.avg_ms)}</span></span>
-                  <span>p95 <span className="text-[var(--fg)]">{fmtDuration(u.p95_ms)}</span></span>
-                  {u.failures > 0 && (
-                    <span className="text-red-400">{fmtNum(u.failures)} fails</span>
-                  )}
-                </div>
-                {onDrillUser && (
-                  <span className="text-xs text-[var(--accent)] opacity-0 group-hover:opacity-100 shrink-0">
-                    →
-                  </span>
-                )}
-              </div>
-            )
-          })}
-        </div>
-      </Card>
+                    key={i}
+                    onClick={() => onDrillUser?.(u.user)}
+                    className={cn(
+                      'group flex items-center gap-3 px-3 py-2.5 rounded-lg border border-[var(--border)] hover:bg-[var(--hover)] transition-colors',
+                      onDrillUser && 'cursor-pointer',
+                    )}
+                  >
+                    <span className="text-sm font-medium w-28 shrink-0 truncate">{u.user || '(unknown)'}</span>
+                    <div className="flex-1 flex items-center gap-2 min-w-0">
+                      <div className="flex-1 h-2 rounded-full bg-[var(--border)] overflow-hidden">
+                        <div className="h-full rounded-full transition-all duration-500"
+                          style={{ width: `${pct}%`, background: color }} />
+                      </div>
+                      <span className="text-xs tabular-nums text-[var(--dim)] w-16 text-right shrink-0">{fmtDuration(u.total_ms)}</span>
+                    </div>
+                    <div className="hidden lg:flex gap-3 text-xs text-[var(--dim)] shrink-0">
+                      <span><span className="text-[var(--fg)]">{fmtCompact(u.cnt)}</span> execs</span>
+                      <span className={cn('font-mono', latencyBg(u.avg_ms), 'px-1.5 py-0.5 rounded text-[11px]')}>{fmtDuration(u.avg_ms)}</span>
+                      {u.failures > 0 && <span className="text-red-400">{u.failures} err</span>}
+                    </div>
+                    {onDrillUser && (
+                      <span className="text-xs text-[var(--accent)] opacity-0 group-hover:opacity-100 shrink-0 transition-opacity">→</span>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </Card>
+
+        {/* Donut chart */}
+        {donutData && (
+          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 flex flex-col">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--dim)] mb-3">CPU Share</div>
+            <div className="flex-1" style={{ minHeight: 180 }}>
+              <Doughnut data={donutData} options={donutOpts as any} />
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

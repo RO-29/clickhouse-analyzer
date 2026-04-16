@@ -71,3 +71,79 @@ export function healthColor(score: number): string {
 export function fmtPercent(v: number): string {
   return `${v.toFixed(1)}%`
 }
+
+/** Compact notation: 1847392 → "1.8M", 340000 → "340K" */
+export function fmtCompact(n: number | null | undefined): string {
+  const v = Number(n)
+  if (!isFinite(v)) return '—'
+  const abs = Math.abs(v)
+  if (abs >= 1e9) return (v / 1e9).toFixed(1) + 'B'
+  if (abs >= 1e6) return (v / 1e6).toFixed(1) + 'M'
+  if (abs >= 1e3) return (v / 1e3).toFixed(1) + 'K'
+  return String(v)
+}
+
+/** Tailwind class for latency badge background + text */
+export function latencyBg(ms: number | null | undefined): string {
+  const v = Number(ms)
+  if (!isFinite(v)) return 'bg-gray-500/10 text-gray-400'
+  if (v >= 1000) return 'bg-red-500/10 text-red-400 border border-red-500/20'
+  if (v >= 100) return 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+  return 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+}
+
+/** Tailwind class for query kind badge */
+export function kindBg(kind: string | null | undefined): string {
+  const k = String(kind ?? '').toLowerCase()
+  if (k === 'select') return 'bg-blue-500/10 text-blue-400 border border-blue-500/20'
+  if (k === 'insert') return 'bg-green-500/10 text-green-400 border border-green-500/20'
+  if (k === 'alter') return 'bg-orange-500/10 text-orange-400 border border-orange-500/20'
+  return 'bg-gray-500/10 text-gray-400 border border-gray-500/20'
+}
+
+/** Simple SQL keyword colorizer — returns array of {text, isKeyword, isString, isComment} tokens */
+export function tokenizeSql(raw: string): Array<{ t: string; k: 'kw' | 'str' | 'num' | 'fn' | 'cmt' | 'op' | 'plain' }> {
+  const KW = new Set(['SELECT','FROM','WHERE','GROUP','BY','ORDER','HAVING','LIMIT','WITH',
+    'AS','ON','JOIN','LEFT','RIGHT','INNER','OUTER','FULL','CROSS','ARRAY','UNION','ALL',
+    'DISTINCT','AND','OR','NOT','IN','LIKE','ILIKE','IS','NULL','CASE','WHEN','THEN','ELSE','END',
+    'INSERT','INTO','UPDATE','DELETE','CREATE','DROP','ALTER','TABLE','PREWHERE','FINAL',
+    'SAMPLE','FORMAT','SETTINGS','IF','GLOBAL','ANY','ASOF','SEMI','ANTI',
+  ])
+  const FN = new Set(['count','sum','avg','min','max','uniq','uniqExact','countIf','sumIf','avgIf',
+    'toDate','toDateTime','toStartOf','formatReadableSize','quantile','quantileExact',
+    'arrayJoin','now','today','yesterday','if','multiIf','ifNull','coalesce','any','anyLast',
+    'runningDifference','neighbor','dateDiff','addDays','groupArray','groupUniqArray',
+  ])
+  const out: Array<{ t: string; k: 'kw' | 'str' | 'num' | 'fn' | 'cmt' | 'op' | 'plain' }> = []
+  let pos = 0
+  while (pos < raw.length) {
+    if (raw[pos] === "'" || raw[pos] === '`') {
+      const q = raw[pos]
+      let end = pos + 1
+      while (end < raw.length && raw[end] !== q) end++
+      out.push({ t: raw.slice(pos, end + 1), k: 'str' })
+      pos = end + 1
+    } else if (raw.slice(pos, pos + 2) === '--') {
+      let end = raw.indexOf('\n', pos)
+      if (end === -1) end = raw.length
+      out.push({ t: raw.slice(pos, end), k: 'cmt' })
+      pos = end
+    } else if (/[a-zA-Z_]/.test(raw[pos])) {
+      let end = pos + 1
+      while (end < raw.length && /[\w]/.test(raw[end])) end++
+      const word = raw.slice(pos, end)
+      const up = word.toUpperCase()
+      out.push({ t: word, k: KW.has(up) ? 'kw' : FN.has(word.toLowerCase()) ? 'fn' : 'plain' })
+      pos = end
+    } else if (/\d/.test(raw[pos])) {
+      let end = pos + 1
+      while (end < raw.length && /[\d.]/.test(raw[end])) end++
+      out.push({ t: raw.slice(pos, end), k: 'num' })
+      pos = end
+    } else {
+      out.push({ t: raw[pos], k: /[(),*]/.test(raw[pos]) ? 'op' : 'plain' })
+      pos++
+    }
+  }
+  return out
+}
