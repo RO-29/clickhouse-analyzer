@@ -550,23 +550,45 @@ func (s *Server) handleQueryPatternTimeline(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	sql := fmt.Sprintf(`SELECT
+	// Rich timeline — try ch_analyzer.query_samples first (has is_exception column).
+	samplesSQL := fmt.Sprintf(`SELECT
 		toStartOfInterval(event_time, INTERVAL %d SECOND) as ts,
 		count() as cnt,
 		avg(query_duration_ms) as avg_ms,
+		quantile(0.95)(query_duration_ms) as p95_ms,
+		max(query_duration_ms) as max_ms,
 		avg(memory_usage) as avg_memory,
-		avg(read_rows) as avg_rows
-	FROM system.query_log
+		max(memory_usage) as max_memory,
+		countIf(is_exception = 1) as failures,
+		avg(read_bytes) as avg_read_bytes
+	FROM ch_analyzer.query_samples
 	WHERE normalized_query_hash = %s
 	  AND event_time >= '%s' AND event_time <= '%s'
-	  AND type IN ('QueryFinish', 'ExceptionWhileProcessing')
 	GROUP BY ts ORDER BY ts`, bucket, hash, fromTime, toTime)
 
-	rows, err := client.Query(ctx, sql)
-	if err != nil {
-		slog.Error("query pattern timeline", "err", err, "instance", instance)
-		writeErr(w, http.StatusInternalServerError, "failed to query pattern timeline")
-		return
+	rows, err := client.Query(ctx, samplesSQL)
+	if err != nil || len(rows) == 0 {
+		// Fall back to system.query_log.
+		rows, err = client.Query(ctx, fmt.Sprintf(`SELECT
+			toStartOfInterval(event_time, INTERVAL %d SECOND) as ts,
+			count() as cnt,
+			avg(query_duration_ms) as avg_ms,
+			quantile(0.95)(query_duration_ms) as p95_ms,
+			max(query_duration_ms) as max_ms,
+			avg(memory_usage) as avg_memory,
+			max(memory_usage) as max_memory,
+			countIf(type = 'ExceptionWhileProcessing') as failures,
+			avg(read_bytes) as avg_read_bytes
+		FROM system.query_log
+		WHERE normalized_query_hash = %s
+		  AND event_time >= '%s' AND event_time <= '%s'
+		  AND type IN ('QueryFinish', 'ExceptionWhileProcessing')
+		GROUP BY ts ORDER BY ts`, bucket, hash, fromTime, toTime))
+		if err != nil {
+			slog.Error("query pattern timeline", "err", err, "instance", instance)
+			writeErr(w, http.StatusInternalServerError, "failed to query pattern timeline")
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, rows)
@@ -590,7 +612,8 @@ func (s *Server) handleHistoryFailures(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	sql := fmt.Sprintf(`SELECT
+	// Time-series bucketed failures (for chart)
+	tsSql := fmt.Sprintf(`SELECT
 		toStartOfInterval(event_time, INTERVAL %d SECOND) as ts,
 		count() as cnt,
 		exception_code,
@@ -601,14 +624,32 @@ func (s *Server) handleHistoryFailures(w http.ResponseWriter, r *http.Request) {
 	GROUP BY ts, exception_code
 	ORDER BY ts`, bucket, fromTime, toTime)
 
-	rows, err := client.Query(ctx, sql)
+	rows, err := client.Query(ctx, tsSql)
 	if err != nil {
 		slog.Error("history failures", "err", err, "instance", instance)
 		writeErr(w, http.StatusInternalServerError, "failed to query failure history")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, rows)
+	// Also fetch distinct messages per exception code (up to 5 per code) for display.
+	msgSql := fmt.Sprintf(`SELECT
+		exception_code,
+		count() as cnt,
+		topK(5)(exception) as messages,
+		any(query) as sample_query,
+		any(user) as sample_user
+	FROM system.query_log
+	WHERE type = 'ExceptionWhileProcessing'
+	  AND event_time >= '%s' AND event_time <= '%s'
+	GROUP BY exception_code
+	ORDER BY cnt DESC`, fromTime, toTime)
+
+	msgRows, _ := client.Query(ctx, msgSql) // best-effort
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"timeline":  rows,
+		"by_code":   msgRows,
+	})
 }
 
 // ---------------------------------------------------------------------------

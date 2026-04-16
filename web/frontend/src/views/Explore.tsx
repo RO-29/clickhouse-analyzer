@@ -183,6 +183,27 @@ function AnalyzeTabBtn({
   )
 }
 
+/* ── Tooltip helper ─────────────────────────────────────────────────────── */
+
+function Tip({ children, text, side = 'top' }: { children: React.ReactNode; text: string; side?: 'top' | 'bottom' }) {
+  const base = 'absolute z-50 hidden group-hover/tip:block px-2.5 py-1.5 rounded-lg text-[11px] leading-snug bg-gray-950 text-gray-100 border border-white/10 shadow-xl pointer-events-none max-w-[220px] whitespace-normal'
+  const pos = side === 'top'
+    ? 'bottom-full left-1/2 -translate-x-1/2 mb-2'
+    : 'top-full left-1/2 -translate-x-1/2 mt-2'
+  const arrow = side === 'top'
+    ? 'absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-950'
+    : 'absolute bottom-full left-1/2 -translate-x-1/2 border-4 border-transparent border-b-gray-950'
+  return (
+    <span className="relative group/tip inline-flex items-center">
+      {children}
+      <span className={cn(base, pos)}>
+        {text}
+        <span className={arrow} />
+      </span>
+    </span>
+  )
+}
+
 /* ── SQL inline highlighter ─────────────────────────────────────────────── */
 
 function SqlHighlight({ text, maxLen = 90 }: { text: string; maxLen?: number }) {
@@ -507,21 +528,93 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
       </Card>
 
       {selectedHash && (
-        <div className="mt-4">
-          {tlLoading
-            ? <div className="text-sm text-[var(--dim)] p-4">Loading timeline for {selectedHash.slice(0, 12)}…</div>
-            : timeline.length === 0
-              ? <div className="text-sm text-[var(--dim)] p-4 bg-[var(--surface)] border border-[var(--border)] rounded-xl">No timeline data for {selectedHash.slice(0, 12)} in selected range.</div>
-              : <HistoryChart
-                  title={`Timeline: ${selectedHash.slice(0, 12)}`}
+        <div className="space-y-3 mt-2">
+          {/* Header */}
+          <div className="flex items-center gap-2 px-1">
+            <span className="text-xs font-semibold text-[var(--dim)] uppercase tracking-wider">
+              Query Detail — hash {selectedHash.slice(0, 14)}
+            </span>
+            <button
+              onClick={() => onDrillHash?.(selectedHash)}
+              className="ml-auto text-xs text-[var(--accent)] hover:underline"
+            >
+              View Samples →
+            </button>
+            <button
+              onClick={() => setSelectedHash(null)}
+              className="text-[var(--dim)] hover:text-[var(--fg)]"
+            >
+              <X size={14} />
+            </button>
+          </div>
+
+          {tlLoading ? (
+            <LoadingSkeleton />
+          ) : timeline.length === 0 ? (
+            <div className="text-sm text-[var(--dim)] p-4 bg-[var(--surface)] border border-[var(--border)] rounded-xl">
+              No timeline data for this hash in the selected range. Try expanding the time range.
+            </div>
+          ) : (
+            <>
+              {/* Inline stat cards derived from timeline */}
+              {(() => {
+                const totalExecsTl = timeline.reduce((s, r) => s + (Number(r.cnt) || 0), 0)
+                const avgMs = timeline.reduce((s, r) => s + (Number(r.avg_ms) || 0), 0) / Math.max(1, timeline.length)
+                const totalFails = timeline.reduce((s, r) => s + (Number(r.failures) || 0), 0)
+                const avgMem = timeline.reduce((s, r) => s + (Number(r.avg_memory) || 0), 0) / Math.max(1, timeline.length)
+                const errRate = totalExecsTl > 0 ? (totalFails / totalExecsTl * 100) : 0
+                return (
+                  <div className="flex gap-2 flex-wrap">
+                    <StatCard label="Executions" value={fmtCompact(totalExecsTl)} />
+                    <StatCard label="Avg Latency" value={fmtDuration(avgMs)} />
+                    <StatCard label="Avg Memory" value={fmtBytes(avgMem)} sub="per execution" />
+                    <StatCard label="Error Rate"
+                      value={errRate < 0.1 ? (totalFails === 0 ? '0%' : '<0.1%') : errRate.toFixed(1) + '%'}
+                      color={errRate > 5 ? 'text-red-400' : errRate > 0 ? 'text-amber-400' : 'text-emerald-400'}
+                      sub={`${fmtCompact(totalFails)} failures`}
+                    />
+                  </div>
+                )
+              })()}
+
+              {/* 3-chart grid */}
+              <div className="grid grid-cols-1 gap-3">
+                <HistoryChart
+                  title="Executions & Failures"
                   data={timeline}
                   series={[
                     { key: 'cnt', label: 'Executions', color: C.blue },
-                    { key: 'avg_ms', label: 'Avg ms', color: C.yellow },
+                    { key: 'failures', label: 'Failures', color: C.red },
                   ]}
+                  height={130}
                   onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
                 />
-          }
+                <HistoryChart
+                  title="Latency (Avg / P95 / Max)"
+                  data={timeline}
+                  series={[
+                    { key: 'avg_ms', label: 'Avg', color: C.green },
+                    { key: 'p95_ms', label: 'P95', color: C.yellow },
+                    { key: 'max_ms', label: 'Max', color: C.red },
+                  ]}
+                  yFormat="ms"
+                  height={130}
+                  onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
+                />
+                <HistoryChart
+                  title="Memory & Read Bytes"
+                  data={timeline}
+                  series={[
+                    { key: 'avg_memory', label: 'Avg Memory', color: C.purple },
+                    { key: 'avg_read_bytes', label: 'Avg Read Bytes', color: C.cyan },
+                  ]}
+                  yFormat="bytes"
+                  height={130}
+                  onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
+                />
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>
@@ -865,6 +958,8 @@ interface UsersTabProps extends TabProps {
   onDrillUser?: (user: string) => void
 }
 
+const USER_COLORS = ['#3b82f6','#22c55e','#f59e0b','#ef4444','#a855f7','#06b6d4','#f97316','#ec4899']
+
 function UsersTab({ instance, from, to, refreshKey, onDrillUser }: UsersTabProps) {
   const [users, setUsers] = useState<QueryUser[]>([])
   const [loading, setLoading] = useState(true)
@@ -881,15 +976,7 @@ function UsersTab({ instance, from, to, refreshKey, onDrillUser }: UsersTabProps
     return () => { c = true }
   }, [instance, from, to, refreshKey])
 
-  if (loading) return <LoadingSkeleton />
-  if (error) return <ErrorBox message={error} />
-
-  const COLORS = ['#3b82f6','#22c55e','#f59e0b','#ef4444','#a855f7','#06b6d4','#f97316','#ec4899']
-  const maxTotalMs = users.reduce((m, u) => Math.max(m, u.total_ms || 0), 1)
-  const grandTotal = users.reduce((s, u) => s + (u.total_ms || 0), 0)
-  const topUser = users[0]
-
-  // Donut chart (top 7 + other)
+  // ALL hooks BEFORE any early return (Rules of Hooks)
   const donutData = useMemo(() => {
     if (users.length === 0) return null
     const top = users.slice(0, 7)
@@ -898,9 +985,16 @@ function UsersTab({ instance, from, to, refreshKey, onDrillUser }: UsersTabProps
     const vals = [...top.map(u => u.total_ms || 0), ...(otherMs > 0 ? [otherMs] : [])]
     return {
       labels,
-      datasets: [{ data: vals, backgroundColor: COLORS.map(c => c + 'cc'), borderColor: COLORS, borderWidth: 1 }],
+      datasets: [{ data: vals, backgroundColor: USER_COLORS.map(c => c + 'cc'), borderColor: USER_COLORS, borderWidth: 1 }],
     }
   }, [users])
+
+  if (loading) return <LoadingSkeleton />
+  if (error) return <ErrorBox message={error} />
+
+  const maxTotalMs = users.reduce((m, u) => Math.max(m, u.total_ms || 0), 1)
+  const grandTotal = users.reduce((s, u) => s + (u.total_ms || 0), 0)
+  const topUser = users[0]
 
   const donutOpts = {
     responsive: true, maintainAspectRatio: false, animation: { duration: 300 },
@@ -953,7 +1047,7 @@ function UsersTab({ instance, from, to, refreshKey, onDrillUser }: UsersTabProps
             <div className="space-y-1.5">
               {users.map((u, i) => {
                 const pct = (u.total_ms / maxTotalMs) * 100
-                const color = COLORS[i % COLORS.length]
+                const color = USER_COLORS[i % USER_COLORS.length]
                 return (
                   <div
                     key={i}
@@ -1005,16 +1099,23 @@ function UsersTab({ instance, from, to, refreshKey, onDrillUser }: UsersTabProps
 /* ------------------------------------------------------------------ */
 
 function FailuresTab({ instance, from, to, refreshKey, onAnalyze }: TabProps) {
-  const [data, setData] = useState<HistoryFailure[]>([])
+  const [timeline, setTimeline] = useState<HistoryFailure[]>([])
+  const [byCode, setByCode] = useState<Record<string, any>[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState<Set<number>>(new Set())
 
   useEffect(() => {
     let c = false
     setLoading(true)
     setError(null)
     api.history.failures(instance, from, to)
-      .then(d => { if (!c) setData(d) })
+      .then(d => {
+        if (!c) {
+          setTimeline(Array.isArray(d.timeline) ? d.timeline : [])
+          setByCode(Array.isArray(d.by_code) ? d.by_code : [])
+        }
+      })
       .catch(e => { if (!c) setError(e.message) })
       .finally(() => { if (!c) setLoading(false) })
     return () => { c = true }
@@ -1022,67 +1123,113 @@ function FailuresTab({ instance, from, to, refreshKey, onAnalyze }: TabProps) {
 
   const byTs = useMemo(() => {
     const map = new Map<string, number>()
-    for (const r of data) map.set(r.ts, (map.get(r.ts) ?? 0) + r.cnt)
+    for (const r of timeline) map.set(r.ts, (map.get(r.ts) ?? 0) + r.cnt)
     return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([ts, cnt]) => ({ ts, cnt }))
-  }, [data])
+  }, [timeline])
 
-  const byCode = useMemo(() => {
-    const map = new Map<number, { count: number; sample: string }>()
-    for (const r of data) {
-      const prev = map.get(r.exception_code)
-      if (prev) { prev.count += r.cnt } else { map.set(r.exception_code, { count: r.cnt, sample: r.sample }) }
-    }
-    return [...map.entries()].map(([code, v]) => ({ exception_code: code, count: v.count, sample: v.sample })).sort((a, b) => b.count - a.count)
-  }, [data])
+  const toggleExpand = (i: number) =>
+    setExpanded(prev => { const n = new Set(prev); n.has(i) ? n.delete(i) : n.add(i); return n })
 
   if (loading) return <LoadingSkeleton />
   if (error) return <ErrorBox message={error} />
 
+  const totalFailures = byCode.reduce((s, r) => s + (Number(r.cnt) || 0), 0)
+
   return (
     <div className="space-y-4">
+      {/* Stat cards */}
+      {totalFailures > 0 && (
+        <div className="flex gap-3 flex-wrap">
+          <StatCard label="Total Errors" value={fmtCompact(totalFailures)} color="text-red-400" />
+          <StatCard label="Error Codes" value={String(byCode.length)} sub="distinct exception types" />
+          {byCode[0] && (
+            <StatCard label="Top Error Code" value={String(byCode[0].exception_code)}
+              sub={`${fmtCompact(byCode[0].cnt)} occurrences`} color="text-amber-400" />
+          )}
+        </div>
+      )}
+
       <HistoryChart
         title="Failures Over Time"
         data={byTs}
-        series={[{ key: 'cnt', label: 'Count', color: C.red }]}
-        onAnalyze={(d, s, title) =>
-          onAnalyze(title, { data: d, series: s }, { contextType: 'chart', tab: 'failures' })
-        }
+        series={[{ key: 'cnt', label: 'Errors', color: C.red }]}
+        onAnalyze={(d, s, title) => onAnalyze(title, { data: d, series: s }, { contextType: 'chart', tab: 'failures' })}
       />
+
       <Card>
-        <div className="flex items-center justify-between mb-2">
-          <div className="text-xs font-medium text-[var(--dim)] uppercase tracking-wider">By Exception Code</div>
-          <AnalyzeTabBtn
-            label="Failures"
-            data={{ byCode, byTs }}
-            tab="failures"
-            onAnalyze={onAnalyze}
-            disabled={byCode.length === 0}
-          />
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-xs font-medium text-[var(--dim)] uppercase tracking-wider">
+            By Exception Code — {byCode.length} types
+          </div>
+          <AnalyzeTabBtn label="Failures" data={{ byCode, byTs }} tab="failures" onAnalyze={onAnalyze} disabled={byCode.length === 0} />
         </div>
-        <DataTable
-          columns={[
-            { key: 'exception_code', label: 'Code' },
-            { key: 'count', label: 'Count', format: (v: any) => fmtNum(v) },
-            {
-              key: 'sample',
-              label: 'Sample',
-              format: (v: any) => (
-                <span className="text-[var(--dim)]">
-                  {String(v ?? '').length > 120 ? String(v).slice(0, 120) + '…' : String(v ?? '')}
-                </span>
-              ),
-            },
-          ]}
-          data={byCode}
-          onRowAnalyze={row =>
-            onAnalyze(
-              `Error code ${row.exception_code}`,
-              { row, allErrors: byCode },
-              { contextType: 'row', tab: 'failures', elementId: String(row.exception_code) },
+
+        {byCode.length === 0 && (
+          <div className="text-sm text-[var(--dim)] text-center py-8">No failures in this time range</div>
+        )}
+
+        <div className="space-y-2">
+          {byCode.map((row, i) => {
+            const msgs: string[] = Array.isArray(row.messages) ? row.messages : [row.messages ?? ''].filter(Boolean)
+            const isOpen = expanded.has(i)
+            return (
+              <div key={i} className="rounded-lg border border-[var(--border)] overflow-hidden">
+                <button
+                  onClick={() => toggleExpand(i)}
+                  className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-[var(--hover)] transition-colors text-left"
+                >
+                  {isOpen ? <ChevronDown size={13} className="shrink-0 text-[var(--dim)]" /> : <ChevronRight size={13} className="shrink-0 text-[var(--dim)]" />}
+                  <span className="inline-flex items-center px-2 py-0.5 rounded bg-red-500/10 border border-red-500/20 text-red-400 font-mono text-xs font-semibold shrink-0">
+                    {row.exception_code}
+                  </span>
+                  <span className="text-xs font-semibold tabular-nums text-[var(--fg)] shrink-0 w-16">
+                    {fmtCompact(row.cnt)} errs
+                  </span>
+                  {/* First message preview */}
+                  <span className="text-xs text-[var(--dim)] truncate flex-1 font-mono">
+                    {msgs[0] ? msgs[0].slice(0, 120) : '—'}
+                  </span>
+                  <button
+                    onClick={e => { e.stopPropagation(); onAnalyze(`Error code ${row.exception_code}`, { row, allErrors: byCode }, { contextType: 'row', tab: 'failures', elementId: String(row.exception_code) }) }}
+                    className="shrink-0 flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-purple-400 hover:bg-purple-500/15 border border-transparent hover:border-purple-500/20 transition-colors"
+                  >
+                    <Sparkles size={10} /> AI
+                  </button>
+                </button>
+
+                {isOpen && (
+                  <div className="border-t border-[var(--border)] bg-[var(--surface)] px-4 py-3 space-y-3">
+                    {/* Stats row */}
+                    <div className="flex gap-4 text-xs flex-wrap">
+                      {row.sample_user && <span><span className="text-[var(--dim)]">User:</span> <span className="font-medium">{row.sample_user}</span></span>}
+                      <span><span className="text-[var(--dim)]">Count:</span> <span className="font-medium text-red-400">{fmtNum(row.cnt)}</span></span>
+                    </div>
+                    {/* All distinct messages */}
+                    <div className="space-y-2">
+                      <div className="text-[11px] text-[var(--dim)] uppercase tracking-wider font-medium">
+                        Distinct Error Messages ({msgs.length})
+                      </div>
+                      {msgs.map((msg, j) => (
+                        <pre key={j} className="text-xs font-mono text-red-300/80 whitespace-pre-wrap break-all leading-relaxed bg-red-500/5 border border-red-500/10 rounded p-2.5 max-h-40 overflow-y-auto">
+                          {msg}
+                        </pre>
+                      ))}
+                    </div>
+                    {/* Sample query */}
+                    {row.sample_query && (
+                      <div>
+                        <div className="text-[11px] text-[var(--dim)] uppercase tracking-wider font-medium mb-1">Sample Query</div>
+                        <pre className="text-xs font-mono text-[var(--fg)] whitespace-pre-wrap break-all leading-relaxed bg-[var(--card)] border border-[var(--border)] rounded p-2.5 max-h-32 overflow-y-auto">
+                          {row.sample_query}
+                        </pre>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             )
-          }
-          emptyText="No failures"
-        />
+          })}
+        </div>
       </Card>
     </div>
   )

@@ -94,7 +94,7 @@ export const api = {
     merges: (inst: string, from: number, to: number) =>
       get<HistoryMerge[]>(`/api/instances/${inst}/history/merges?from=${from}&to=${to}`),
     failures: (inst: string, from: number, to: number) =>
-      get<HistoryFailure[]>(`/api/instances/${inst}/history/failures?from=${from}&to=${to}`),
+      get<{ timeline: HistoryFailure[]; by_code: Record<string, any>[] }>(`/api/instances/${inst}/history/failures?from=${from}&to=${to}`),
     inserts: (inst: string, from: number, to: number) =>
       get<HistoryInsert[]>(`/api/instances/${inst}/history/inserts?from=${from}&to=${to}`),
     s3: (inst: string, from: number, to: number) =>
