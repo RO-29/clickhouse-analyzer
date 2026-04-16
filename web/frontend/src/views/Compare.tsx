@@ -1393,14 +1393,6 @@ function LoadingSkeleton() {
   )
 }
 
-function ErrorMsg({ msg }: { msg: string }) {
-  return (
-    <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg p-4">
-      Failed to load: {msg}
-    </div>
-  )
-}
-
 function EmptyMsg({ msg }: { msg: string }) {
   return <div className="text-sm text-[var(--dim)] text-center py-12">{msg}</div>
 }
