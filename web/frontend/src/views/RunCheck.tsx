@@ -258,6 +258,12 @@ export default function RunCheck() {
   const [forcePollStatus, setForcePollStatus] = useState('')
   const resultsRef = useRef<HTMLDivElement>(null)
 
+  // Advisor anti-pattern scan state
+  const [advisorInst, setAdvisorInst] = useState('')
+  const [advisorRunning, setAdvisorRunning] = useState(false)
+  const [advisorData, setAdvisorData] = useState<{ queryAP: any[]; tableAP: any[] } | null>(null)
+  const [advisorError, setAdvisorError] = useState('')
+
   // Time range state
   const [preset, setPreset] = useState(0)          // minutes; 0 = live, -1 = custom
   const [customFrom, setCustomFrom] = useState(() => toLocalDatetimeInput(new Date(Date.now() - 3600_000)))
@@ -622,6 +628,91 @@ export default function RunCheck() {
           </div>
         </div>
       )}
+
+      {/* ── Advisor Anti-pattern Checks ─────────────────────────────────────── */}
+      <div className="border-t border-[var(--border)] pt-6 space-y-4">
+        <div>
+          <h2 className="text-sm font-semibold text-[var(--text)] mb-1">Advisor Anti-pattern Scan</h2>
+          <p className="text-xs text-[var(--dim)]">
+            Runs query and table design anti-pattern checks. Results not stored, alerts not triggered.
+            Data sources: <code className="font-mono">system.query_log</code>, <code className="font-mono">system.tables</code>, <code className="font-mono">system.parts</code>, <code className="font-mono">system.mutations</code>.
+          </p>
+        </div>
+        <div className="flex items-center gap-3 flex-wrap">
+          <select
+            value={advisorInst}
+            onChange={e => setAdvisorInst(e.target.value)}
+            className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm focus:outline-none focus:border-[var(--accent)]"
+          >
+            <option value="">Select instance…</option>
+            {instanceList.map(i => <option key={i} value={i}>{i}</option>)}
+          </select>
+          <button
+            disabled={!advisorInst || advisorRunning}
+            onClick={async () => {
+              if (!advisorInst) return
+              setAdvisorRunning(true); setAdvisorError(''); setAdvisorData(null)
+              try {
+                const [queryAP, tableAP] = await Promise.all([
+                  api.advisor.queryAntiPatterns(advisorInst),
+                  api.advisor.tableAntiPatterns(advisorInst),
+                ])
+                setAdvisorData({ queryAP, tableAP })
+              } catch (e: any) {
+                setAdvisorError(e?.message ?? 'Scan failed')
+              } finally {
+                setAdvisorRunning(false)
+              }
+            }}
+            className={cn(
+              'inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all',
+              !advisorInst || advisorRunning
+                ? 'bg-[var(--surface)] text-[var(--dim)] cursor-not-allowed'
+                : 'bg-[var(--accent)] text-white hover:opacity-90',
+            )}
+          >
+            {advisorRunning ? <><Loader2 size={14} className="animate-spin" /> Scanning…</> : <><PlayCircle size={14} /> Run Advisor Scan</>}
+          </button>
+        </div>
+
+        {advisorError && <div className="text-xs text-red-400">{advisorError}</div>}
+
+        {advisorData && (() => {
+          const allIssues = [
+            ...advisorData.queryAP.filter(g => g.count > 0).map(g => ({ ...g, kind: 'Query' })),
+            ...advisorData.tableAP.filter(g => g.count > 0).map(g => ({ ...g, kind: 'Table' })),
+          ].sort((a, b) => {
+            const sev = { critical: 0, warn: 1, info: 2 }
+            return (sev[a.severity as keyof typeof sev] ?? 3) - (sev[b.severity as keyof typeof sev] ?? 3)
+          })
+
+          return (
+            <div className="space-y-2">
+              {allIssues.length === 0
+                ? <div className="flex items-center gap-2 text-sm text-green-400 bg-green-500/10 border border-green-500/20 rounded-xl px-4 py-3">
+                    <CheckCircle2 size={15} /> No anti-patterns detected on {advisorInst}
+                  </div>
+                : allIssues.map(group => (
+                  <div key={group.type} className={cn(
+                    'rounded-xl border px-4 py-3',
+                    group.severity === 'critical' ? 'border-red-500/30 bg-red-500/5' : 'border-yellow-500/30 bg-yellow-500/5',
+                  )}>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className={cn('text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded border font-medium shrink-0',
+                        group.severity === 'critical' ? 'bg-red-500/15 text-red-400 border-red-500/30' : 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30',
+                      )}>{group.severity}</span>
+                      <span className="text-xs text-[var(--dim)] px-1.5 py-0.5 rounded bg-[var(--hover)] border border-[var(--border)]">{group.kind}</span>
+                      <span className="text-sm font-semibold text-[var(--text)]">{group.title}</span>
+                      <span className="ml-auto text-xs text-[var(--dim)]">{group.count} affected</span>
+                    </div>
+                    <p className="text-xs text-[var(--dim)] mt-1.5 leading-relaxed">{group.description}</p>
+                  </div>
+                ))
+              }
+            </div>
+          )
+        })()}
+      </div>
     </div>
   )
 }

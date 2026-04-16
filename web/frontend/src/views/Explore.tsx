@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef, type ChangeEvent } from 'react'
-import { Sparkles, X, Copy, Play, Maximize2, Skull, RefreshCw, ChevronDown, ChevronRight } from 'lucide-react'
+import { Sparkles, X, Copy, Play, Maximize2, Skull, RefreshCw, ChevronDown, ChevronRight, Wrench } from 'lucide-react'
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -49,8 +49,10 @@ type Tab =
   | 'metrics'
   | 'diskio'
   | 'partsage'
+  | 'antipatterns'
 
 const TABS: { key: Tab; label: string }[] = [
+  { key: 'antipatterns', label: '⚡ Anti-patterns' },
   { key: 'patterns', label: 'Query Patterns' },
   { key: 'samples', label: 'Samples' },
   { key: 'live', label: 'Live Queries' },
@@ -2185,12 +2187,249 @@ function PartsAgeTab({ instance, refreshKey }: { instance: string; refreshKey?: 
 }
 
 /* ------------------------------------------------------------------ */
+/*  Anti-patterns Tab                                                 */
+/* ------------------------------------------------------------------ */
+
+function SevBadge({ s }: { s: string }) {
+  const cls = s === 'critical'
+    ? 'bg-red-500/15 text-red-400 border-red-500/30'
+    : s === 'warn'
+    ? 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30'
+    : 'bg-blue-500/15 text-blue-400 border-blue-500/30'
+  return (
+    <span className={cn('text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded border font-medium shrink-0', cls)}>
+      {s}
+    </span>
+  )
+}
+
+function APGroupCard({
+  group,
+  extraCols,
+  onRunQuery,
+}: {
+  group: any
+  extraCols: Array<{ key: string; label: string; format?: (v: any) => React.ReactNode }>
+  onRunQuery: (sql: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const hasIssues = group.count > 0
+
+  return (
+    <div className={cn(
+      'rounded-xl border overflow-hidden',
+      hasIssues
+        ? group.severity === 'critical' ? 'border-red-500/30' : 'border-yellow-500/30'
+        : 'border-[var(--border)]',
+    )}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-[var(--hover)] transition-colors"
+      >
+        {open ? <ChevronDown size={14} className="text-[var(--dim)] shrink-0" /> : <ChevronRight size={14} className="text-[var(--dim)] shrink-0" />}
+        <span className="font-medium text-sm flex-1">{group.title}</span>
+        <SevBadge s={group.severity} />
+        <span className={cn(
+          'text-xs font-semibold ml-2 px-2 py-0.5 rounded-full',
+          hasIssues
+            ? group.severity === 'critical' ? 'bg-red-500/15 text-red-400' : 'bg-yellow-500/15 text-yellow-400'
+            : 'bg-green-500/15 text-green-400',
+        )}>
+          {group.count} {group.count === 1 ? 'issue' : 'issues'}
+        </span>
+      </button>
+
+      {open && (
+        <div className="px-4 pb-4 space-y-3 border-t border-[var(--border)]">
+          <p className="text-xs text-[var(--dim)] pt-3 leading-relaxed">{group.description}</p>
+          {group.count === 0
+            ? <div className="text-xs text-green-400 bg-green-500/10 rounded-lg px-3 py-2 border border-green-500/20">No issues detected</div>
+            : (
+              <DataTable
+                columns={[
+                  { key: 'user', label: 'User/Table', format: (v: any, row: any) => (
+                    <span className="font-mono text-xs">{row.user ?? row.database ? `${row.database}.${row.table}` : v ?? '—'}</span>
+                  )},
+                  { key: 'detail', label: 'Detail', format: (v: any) => <span className="text-xs text-[var(--dim)] truncate block max-w-xs" title={v}>{v || '—'}</span> },
+                  ...extraCols,
+                  {
+                    key: 'fix_hint',
+                    label: '',
+                    format: (v: any) => v
+                      ? <button onClick={() => onRunQuery(v)} className="text-xs text-[var(--accent)] hover:underline font-mono truncate block max-w-xs text-left" title={v}>Run →</button>
+                      : null,
+                  },
+                ]}
+                data={group.tables ?? group.queries ?? []}
+                maxHeight="280px"
+              />
+            )
+          }
+        </div>
+      )}
+    </div>
+  )
+}
+
+function AntiPatternsTab({ instance, onShowQuery }: { instance: string; onShowQuery: (q: string) => void }) {
+  const [queryAP, setQueryAP] = useState<any[] | null>(null)
+  const [tableAP, setTableAP] = useState<any[] | null>(null)
+  const [qLoading, setQLoading] = useState(false)
+  const [tLoading, setTLoading] = useState(false)
+  const [qError, setQError] = useState<string | null>(null)
+  const [tError, setTError] = useState<string | null>(null)
+  const [loaded, setLoaded] = useState(false)
+
+  const run = useCallback(() => {
+    if (!instance) return
+    setLoaded(true)
+    setQLoading(true); setTLoading(true)
+    setQError(null); setTError(null)
+
+    api.advisor.queryAntiPatterns(instance)
+      .then(d => setQueryAP(d))
+      .catch(e => setQError(e?.message ?? 'Failed'))
+      .finally(() => setQLoading(false))
+
+    api.advisor.tableAntiPatterns(instance)
+      .then(d => setTableAP(d))
+      .catch(e => setTError(e?.message ?? 'Failed'))
+      .finally(() => setTLoading(false))
+  }, [instance])
+
+  // Summary stats
+  const qIssues = queryAP?.filter(g => g.count > 0).length ?? 0
+  const tIssues = tableAP?.filter(g => g.count > 0).length ?? 0
+  const qCrit = queryAP?.filter(g => g.count > 0 && g.severity === 'critical').length ?? 0
+  const tCrit = tableAP?.filter(g => g.count > 0 && g.severity === 'critical').length ?? 0
+
+  const qExtraCols = (group: any): Array<{ key: string; label: string; format?: (v: any) => React.ReactNode }> => {
+    switch (group.type) {
+      case 'high_memory': return [{ key: 'metric', label: 'Avg Memory', format: (v: any) => fmtBytes(v) }]
+      case 'high_frequency': return [{ key: 'metric', label: 'Queries/h', format: (v: any) => fmtCompact(v) }]
+      default: return [{ key: 'metric', label: 'Count', format: (v: any) => fmtCompact(v) }]
+    }
+  }
+
+  const tExtraCols = (group: any): Array<{ key: string; label: string; format?: (v: any) => React.ReactNode }> => {
+    switch (group.type) {
+      case 'no_ttl_large':
+      case 'no_partition':
+      case 'large_granularity':
+        return [{ key: 'size_human', label: 'Size' }, { key: 'metric', label: group.tables?.[0]?.metric_label ?? 'Value', format: (v: any) => fmtNum(v) }]
+      default:
+        return [{ key: 'metric', label: group.tables?.[0]?.metric_label ?? 'Value', format: (v: any) => fmtNum(v) }]
+    }
+  }
+
+  if (!loaded) {
+    return (
+      <div className="flex flex-col items-center justify-center py-16 gap-4">
+        <div className="text-center space-y-1">
+          <p className="text-sm font-medium text-[var(--fg)]">Query & Table Anti-pattern Scanner</p>
+          <p className="text-xs text-[var(--dim)] max-w-md">
+            Detects SELECT *, full scans, no LIMIT, high memory queries, too many parts, mutation backlogs, wide PKs, and more.
+          </p>
+        </div>
+        <button
+          onClick={run}
+          disabled={!instance}
+          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[var(--accent)] text-white text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
+        >
+          <Play size={15} /> Run Anti-pattern Scan
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Summary + re-run */}
+      <div className="flex items-center gap-4 flex-wrap">
+        {queryAP && (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-[var(--dim)]">Query:</span>
+            <span className={cn('text-xs font-semibold', qCrit > 0 ? 'text-red-400' : qIssues > 0 ? 'text-yellow-400' : 'text-green-400')}>
+              {qIssues} issue types{qCrit > 0 ? ` (${qCrit} critical)` : ''}
+            </span>
+          </div>
+        )}
+        {tableAP && (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-[var(--dim)]">Table:</span>
+            <span className={cn('text-xs font-semibold', tCrit > 0 ? 'text-red-400' : tIssues > 0 ? 'text-yellow-400' : 'text-green-400')}>
+              {tIssues} issue types{tCrit > 0 ? ` (${tCrit} critical)` : ''}
+            </span>
+          </div>
+        )}
+        <button onClick={run} className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-[var(--dim)] hover:text-[var(--fg)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors">
+          <RefreshCw size={12} /> Re-run
+        </button>
+      </div>
+
+      {/* Query anti-patterns */}
+      <div>
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-orange-400 mb-3 flex items-center gap-2">
+          <Skull size={13} /> Query Anti-patterns
+          {qLoading && <span className="text-[var(--dim)] normal-case font-normal">Loading…</span>}
+        </h3>
+        {qError && <div className="text-xs text-red-400 mb-2">{qError}</div>}
+        {queryAP && (
+          <div className="space-y-2">
+            {[...queryAP]
+              .sort((a, b) => {
+                const sev = { critical: 0, warn: 1, info: 2 }
+                if (b.count !== a.count) return (b.count > 0 ? 1 : 0) - (a.count > 0 ? 1 : 0)
+                return (sev[a.severity as keyof typeof sev] ?? 3) - (sev[b.severity as keyof typeof sev] ?? 3)
+              })
+              .map(group => (
+                <APGroupCard key={group.type} group={group} extraCols={qExtraCols(group)} onRunQuery={onShowQuery} />
+              ))
+            }
+          </div>
+        )}
+      </div>
+
+      {/* Table anti-patterns */}
+      <div>
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-blue-400 mb-3 flex items-center gap-2">
+          <Wrench size={13} /> Table Design Anti-patterns
+          {tLoading && <span className="text-[var(--dim)] normal-case font-normal">Loading…</span>}
+        </h3>
+        {tError && <div className="text-xs text-red-400 mb-2">{tError}</div>}
+        {tableAP && (
+          <div className="space-y-2">
+            {[...tableAP]
+              .sort((a, b) => {
+                const sev = { critical: 0, warn: 1, info: 2 }
+                if (b.count !== a.count) return (b.count > 0 ? 1 : 0) - (a.count > 0 ? 1 : 0)
+                return (sev[a.severity as keyof typeof sev] ?? 3) - (sev[b.severity as keyof typeof sev] ?? 3)
+              })
+              .map(group => (
+                <APGroupCard key={group.type} group={group} extraCols={tExtraCols(group)} onRunQuery={onShowQuery} />
+              ))
+            }
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
 /*  Main Explore Component                                             */
 /* ------------------------------------------------------------------ */
 
 export default function Explore({ refreshKey }: { refreshKey?: number }) {
   const { instances, selectedInstance, setSelectedInstance, setView, from, to } = useStore()
-  const [tab, setTab] = useState<Tab>('patterns')
+
+  // Read initial tab from URL params (set by Discover page navigation)
+  const [tab, setTab] = useState<Tab>(() => {
+    const p = new URLSearchParams(window.location.search)
+    const t = p.get('tab') as Tab | null
+    const validTabs: Tab[] = ['antipatterns','patterns','samples','live','users','failures','merges','mvs','s3','inserts','metrics','diskio','partsage']
+    return t && validTabs.includes(t) ? t : 'patterns'
+  })
   const [queryModal, setQueryModal] = useState<string | null>(null)
   // Drill state: clicking "Samples →" or "FAILS" in Patterns tab navigates to Samples with filter pre-set.
   const [drillHash, setDrillHash] = useState<string | undefined>()
@@ -2289,6 +2528,9 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
         </div>
       ) : (
         <>
+          {tab === 'antipatterns' && (
+            <AntiPatternsTab instance={inst} onShowQuery={handleShowQuery} />
+          )}
           {tab === 'patterns' && (
             <QueryPatternsTab
               instance={inst} from={from} to={to} refreshKey={refreshKey}

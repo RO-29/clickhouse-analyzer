@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { Play, History, X, Loader2, Download, BarChart2, ScatterChart, PieChart, LineChart, LayoutGrid } from 'lucide-react'
+import { Play, History, X, Loader2, Download, BarChart2, ScatterChart, PieChart, LineChart, LayoutGrid, Plus, Columns2 } from 'lucide-react'
 import { Line, Bar, Doughnut, Scatter } from 'react-chartjs-2'
 import {
   Chart as ChartJS,
@@ -21,7 +21,7 @@ import { fmtDuration, fmtNum, fmtBytes, fmtCompact, cn } from '../lib/utils'
 import { Card } from '../components/Card'
 import { DataTable } from '../components/DataTable'
 import { SqlEditor, type SqlEditorHandle, type SchemaItem } from '../components/SqlEditor'
-import type { QueryResult, QueryHistoryEntry } from '../types/api'
+import type { QueryResult, StatementResult, QueryHistoryEntry } from '../types/api'
 
 ChartJS.register(
   CategoryScale, LinearScale, PointElement, LineElement, BarElement,
@@ -233,23 +233,180 @@ const MODES: { m: ChartMode; icon: React.ReactNode; label: string }[] = [
   { m: 'donut', icon: <PieChart size={12} />, label: 'Pie' },
 ]
 
+// ── StatementPane: renders a single statement result ─────────────────────────
+
+interface StatementPaneProps {
+  stmt: StatementResult
+  index: number
+  total: number
+}
+
+function StatementPane({ stmt, index, total }: StatementPaneProps) {
+  const [tab, setTab] = useState<'table' | 'chart'>('table')
+  const [chartMode, setChartMode] = useState<ChartMode>('auto')
+
+  const cols = useMemo<ColDef[]>(() =>
+    stmt.columns.map((c, i) => ({ name: c, type: stmt.types?.[i] || 'String' })),
+    [stmt],
+  )
+  const tableCols = useMemo(() => cols.map(c => ({
+    key: c.name, label: c.name,
+    format: (v: any) => v === null || v === undefined
+      ? <span className="text-[var(--dim)]">NULL</span>
+      : <span>{smartFmt(c.name, v)}</span>,
+  })), [cols])
+
+  const chartInfo = useMemo(() => buildChart(stmt.rows, cols, chartMode), [stmt, cols, chartMode])
+  const opts = useMemo(() => chartOptions(chartInfo?.type ?? chartMode), [chartInfo, chartMode])
+
+  return (
+    <Card>
+      {/* Pane header */}
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        {total > 1 && (
+          <span className="text-xs font-medium text-[var(--accent)] bg-[var(--accent)]/10 rounded px-2 py-0.5">
+            Statement {index + 1} of {total}
+          </span>
+        )}
+        {total > 1 && (
+          <span className="text-xs font-mono text-[var(--dim)] truncate max-w-xs" title={stmt.sql}>
+            {stmt.sql.length > 60 ? stmt.sql.slice(0, 60) + '…' : stmt.sql}
+          </span>
+        )}
+        <div className="flex gap-1">
+          {(['table', 'chart'] as const).map(t => (
+            <button key={t} onClick={() => setTab(t)}
+              className={cn('px-3 py-1 text-xs rounded-md capitalize transition-colors',
+                tab === t ? 'bg-[var(--accent)] text-white' : 'text-[var(--dim)] hover:text-[var(--fg)] hover:bg-[var(--hover)]')}>
+              {t}
+            </button>
+          ))}
+        </div>
+        {tab === 'chart' && (
+          <div className="flex gap-0.5 rounded-lg border border-[var(--border)] p-0.5">
+            {MODES.map(({ m, icon, label }) => (
+              <button key={m} onClick={() => setChartMode(m)} title={label}
+                className={cn('flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors',
+                  chartMode === m ? 'bg-[var(--accent)] text-white' : 'text-[var(--dim)] hover:text-[var(--fg)]')}>
+                {icon}<span className="hidden sm:inline">{label}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="ml-auto flex items-center gap-2">
+          <span className="text-xs text-[var(--dim)]">
+            {fmtCompact(stmt.row_count)} rows · {fmtDuration(stmt.elapsed_ms)}
+          </span>
+          <button
+            onClick={() => exportCsv(cols.map(c => c.name), stmt.rows)}
+            className="flex items-center gap-1 px-2 py-1 text-xs rounded border border-[var(--border)] text-[var(--dim)] hover:text-[var(--fg)] hover:border-[var(--accent)] transition-colors"
+            title="Download CSV"
+          >
+            <Download size={11} /> CSV
+          </button>
+        </div>
+      </div>
+
+      {tab === 'table' ? (
+        <DataTable columns={tableCols} data={stmt.rows} maxHeight="340px" emptyText="No results" />
+      ) : chartInfo ? (
+        <div>
+          <div className="h-64">
+            {(chartInfo.type === 'line' || chartInfo.type === 'area') && <Line data={chartInfo.data} options={opts as any} />}
+            {(chartInfo.type === 'bar' || chartInfo.type === 'stacked') && <Bar data={chartInfo.data} options={opts as any} />}
+            {chartInfo.type === 'scatter' && <Scatter data={chartInfo.data as any} options={opts as any} />}
+            {chartInfo.type === 'donut' && <Doughnut data={chartInfo.data} options={opts as any} />}
+          </div>
+          {chartInfo.suggest && (
+            <p className="text-xs text-[var(--dim)] mt-2 text-center">
+              Small dataset — try{' '}
+              <button onClick={() => setChartMode(chartInfo.suggest!)} className="text-[var(--accent)] underline">
+                {chartInfo.suggest}
+              </button>{' '}view
+            </p>
+          )}
+        </div>
+      ) : (
+        <div className="text-sm text-[var(--dim)] text-center py-8">
+          No chartable data — needs at least one numeric column
+        </div>
+      )}
+    </Card>
+  )
+}
+
+// ── NodePane: results for one instance (may have multiple statements) ─────────
+
+interface NodePaneProps {
+  instance: string
+  result: QueryResult | null
+  error: string | null
+  loading: boolean
+  onRemove?: () => void
+}
+
+function NodePane({ instance, result, error, loading, onRemove }: NodePaneProps) {
+  const stmts = result?.results ?? (result ? [{
+    sql: '', columns: result.columns, types: result.types ?? [],
+    rows: result.rows, row_count: result.row_count, elapsed_ms: result.elapsed_ms,
+  }] : [])
+
+  return (
+    <div className="flex-1 min-w-0 space-y-3">
+      {/* Node label */}
+      <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 rounded-md bg-[var(--hover)] px-2.5 py-1 text-xs font-mono font-medium text-[var(--fg)]">
+          <span className={cn('h-2 w-2 rounded-full shrink-0', loading ? 'bg-yellow-400 animate-pulse' : error ? 'bg-red-400' : result ? 'bg-green-400' : 'bg-[var(--dim)]')} />
+          {instance}
+        </div>
+        {result && (
+          <span className="text-xs text-[var(--dim)]">{fmtDuration(result.elapsed_ms)} total</span>
+        )}
+        {onRemove && (
+          <button onClick={onRemove} className="ml-auto text-[var(--dim)] hover:text-[var(--fg)]" title="Remove node">
+            <X size={14} />
+          </button>
+        )}
+      </div>
+
+      {loading && (
+        <div className="flex items-center gap-2 text-sm text-[var(--dim)] py-4">
+          <Loader2 size={16} className="animate-spin" /> Running…
+        </div>
+      )}
+
+      {error && !loading && (
+        <div className="rounded-lg bg-red-500/10 border border-red-500/20 p-4 font-mono text-xs text-[var(--red)] whitespace-pre-wrap leading-relaxed">
+          {error}
+        </div>
+      )}
+
+      {!loading && !error && stmts.map((s, i) => (
+        <StatementPane key={i} stmt={s} index={i} total={stmts.length} />
+      ))}
+    </div>
+  )
+}
+
 // ── main component ───────────────────────────────────────────────────────────
+
+type NodeResult = { result: QueryResult | null; error: string | null; loading: boolean }
 
 export default function Terminal() {
   const { instances, selectedInstance, setSelectedInstance, terminalQuery, terminalInstance } = useStore()
   const [inst, setInst] = useState(() => terminalInstance || selectedInstance || instances[0] || '')
+  const [splitInstances, setSplitInstances] = useState<string[]>([])
   const [query, setQuery] = useState(() => terminalQuery || '')
   const [maxRows, setMaxRows] = useState(1000)
-  const [result, setResult] = useState<QueryResult | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [nodeResults, setNodeResults] = useState<Record<string, NodeResult>>({})
   const [running, setRunning] = useState(false)
-  const [resultTab, setResultTab] = useState<'table' | 'chart'>('table')
-  const [chartMode, setChartMode] = useState<ChartMode>('auto')
   const [showHistory, setShowHistory] = useState(false)
   const [history, setHistory] = useState<QueryHistoryEntry[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
   const [schema, setSchema] = useState<SchemaItem[]>([])
   const editorRef = useRef<SqlEditorHandle>(null)
+
+  const allInstances = useMemo(() => [inst, ...splitInstances].filter(Boolean), [inst, splitInstances])
 
   useEffect(() => {
     if (terminalQuery) setQuery(terminalQuery)
@@ -267,12 +424,11 @@ export default function Terminal() {
     }
   }, [instances])
 
-  // Fetch tables + columns for autocomplete
+  // Fetch tables + columns for autocomplete from primary instance
   useEffect(() => {
     if (!inst) return
     let cancelled = false
 
-    // Two parallel queries: one for tables, one for columns
     Promise.all([
       api.terminal.execute(
         inst,
@@ -294,54 +450,55 @@ export default function Terminal() {
       if (cancelled) return
       const items: SchemaItem[] = []
       const seen = new Set<string>()
-
-      // Tables from system.tables
       if (tblRes?.rows) {
         for (const t of tblRes.rows) {
-          const db    = String(t.database || '')
-          const tname = String(t.table_name || '')
+          const db = String(t.database || ''); const tname = String(t.table_name || '')
           if (!db || !tname) continue
           const fq = `${db}.${tname}`
           if (!seen.has(fq)) { items.push({ label: fq, kind: 'table', detail: db }); seen.add(fq) }
           if (!seen.has(tname)) { items.push({ label: tname, kind: 'table', detail: db }); seen.add(tname) }
         }
       }
-
-      // Columns from system.columns
       if (colRes?.rows) {
         for (const r of colRes.rows) {
-          const col = String(r.name || '')
-          const tbl = String(r.table || '')
-          const db  = String(r.database || '')
-          const typ = String(r.type || '')
+          const col = String(r.name || ''); const tbl = String(r.table || '')
+          const db = String(r.database || ''); const typ = String(r.type || '')
           if (!col) continue
           const tqc = `${tbl}.${col}`
           if (!seen.has(tqc)) { items.push({ label: tqc, kind: 'column', detail: typ }); seen.add(tqc) }
           if (!seen.has(col)) { items.push({ label: col, kind: 'column', detail: `${db}.${tbl} · ${typ}` }); seen.add(col) }
         }
       }
-
       setSchema(items)
     })
-
     return () => { cancelled = true }
   }, [inst])
 
   const execute = useCallback(async () => {
-    if (!query.trim() || !inst) return
-    setRunning(true); setError(null); setResult(null)
-    try {
-      const res = await api.terminal.execute(inst, query.trim(), maxRows)
-      if (res.error) setError(res.error)
-      else { setResult(res); setResultTab('table'); setChartMode('auto') }
-    } catch (e: any) {
-      setError(e.message ?? 'Request failed')
-    } finally { setRunning(false) }
-  }, [query, inst, maxRows])
+    if (!query.trim() || allInstances.length === 0) return
+    setRunning(true)
+
+    // Mark all instances as loading
+    const initial: Record<string, NodeResult> = {}
+    for (const i of allInstances) initial[i] = { result: null, error: null, loading: true }
+    setNodeResults(initial)
+
+    // Run against all instances in parallel
+    await Promise.all(allInstances.map(async (i) => {
+      try {
+        const res = await api.terminal.execute(i, query.trim(), maxRows)
+        setNodeResults(prev => ({ ...prev, [i]: { result: res, error: null, loading: false } }))
+      } catch (e: any) {
+        setNodeResults(prev => ({ ...prev, [i]: { result: null, error: e.message ?? 'Request failed', loading: false } }))
+      }
+    }))
+
+    setRunning(false)
+  }, [query, allInstances, maxRows])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'l') { e.preventDefault(); setResult(null); setError(null) }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'l') { e.preventDefault(); setNodeResults({}) }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
@@ -357,33 +514,24 @@ export default function Terminal() {
     setShowHistory(v => !v)
   }, [showHistory, loadHistory])
 
-  const normalizedCols = useMemo<ColDef[]>(() => {
-    if (!result) return []
-    return result.columns.map((c: any, i: number) =>
-      typeof c === 'string' ? { name: c, type: result.types?.[i] || 'String' } : c,
-    )
-  }, [result])
+  const addSplitNode = useCallback((node: string) => {
+    if (!node || splitInstances.includes(node) || node === inst) return
+    setSplitInstances(prev => [...prev, node])
+  }, [splitInstances, inst])
 
-  const tableColumns = useMemo(() => normalizedCols.map(c => ({
-    key: c.name,
-    label: c.name,
-    format: (v: any) => v === null || v === undefined
-      ? <span className="text-[var(--dim)]">NULL</span>
-      : <span>{smartFmt(c.name, v)}</span>,
-  })), [normalizedCols])
+  const removeSplitNode = useCallback((node: string) => {
+    setSplitInstances(prev => prev.filter(n => n !== node))
+    setNodeResults(prev => { const next = { ...prev }; delete next[node]; return next })
+  }, [])
 
-  const chartInfo = useMemo(() => {
-    if (!result) return null
-    return buildChart(result.rows, normalizedCols, chartMode)
-  }, [result, normalizedCols, chartMode])
-
-  const opts = useMemo(() => chartOptions(chartInfo?.type ?? chartMode), [chartInfo, chartMode])
+  const hasResults = Object.keys(nodeResults).length > 0
+  const isSplit = allInstances.length > 1
 
   return (
     <div className="flex gap-4 h-full">
       <div className="flex-1 space-y-3 min-w-0">
-        {/* Instance */}
-        <div className="flex items-center gap-3">
+        {/* Instance row */}
+        <div className="flex items-center gap-2 flex-wrap">
           <label className="text-sm text-[var(--dim)]">Instance</label>
           <select
             value={inst}
@@ -393,6 +541,42 @@ export default function Terminal() {
             {instances.length === 0 && <option value="">No instances</option>}
             {instances.map(i => <option key={i} value={i}>{i}</option>)}
           </select>
+
+          {/* Split node tags */}
+          {splitInstances.map(n => (
+            <span key={n} className="inline-flex items-center gap-1 rounded-md bg-[var(--accent)]/10 border border-[var(--accent)]/30 px-2 py-1 text-xs font-mono text-[var(--accent)]">
+              {n}
+              <button onClick={() => removeSplitNode(n)} className="hover:text-[var(--fg)]"><X size={11} /></button>
+            </span>
+          ))}
+
+          {/* Add another node */}
+          {instances.length > 1 && (
+            <div className="relative group">
+              <button
+                className={cn('inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors border',
+                  isSplit
+                    ? 'border-[var(--accent)]/40 text-[var(--accent)] bg-[var(--accent)]/5'
+                    : 'border-[var(--border)] text-[var(--dim)] hover:text-[var(--fg)] hover:border-[var(--accent)]')}
+                title="Compare with another node"
+              >
+                {isSplit ? <Columns2 size={13} /> : <Plus size={13} />}
+                <span className="hidden sm:inline">{isSplit ? 'Split' : 'Compare'}</span>
+              </button>
+              {/* Dropdown on hover */}
+              <div className="absolute left-0 top-full mt-1 z-20 hidden group-hover:block min-w-max rounded-md border border-[var(--border)] bg-[var(--card)] shadow-lg py-1">
+                {instances.filter(i => i !== inst && !splitInstances.includes(i)).map(i => (
+                  <button key={i} onClick={() => addSplitNode(i)}
+                    className="block w-full text-left px-3 py-1.5 text-xs font-mono hover:bg-[var(--hover)] text-[var(--fg)]">
+                    {i}
+                  </button>
+                ))}
+                {instances.filter(i => i !== inst && !splitInstances.includes(i)).length === 0 && (
+                  <div className="px-3 py-1.5 text-xs text-[var(--dim)]">All nodes added</div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* CodeMirror SQL editor */}
@@ -418,7 +602,7 @@ export default function Terminal() {
             )}
           >
             {running ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
-            Run
+            {isSplit ? `Run on ${allInstances.length} nodes` : 'Run'}
           </button>
           <span className="text-xs text-[var(--dim)]">Ctrl+Enter to run · Ctrl+L to clear</span>
           <div className="ml-auto flex items-center gap-3">
@@ -441,84 +625,23 @@ export default function Terminal() {
           </div>
         </div>
 
-        {/* Error */}
-        {error && (
-          <div className="rounded-lg bg-red-500/10 border border-red-500/20 p-4 font-mono text-xs text-[var(--red)] whitespace-pre-wrap leading-relaxed">
-            {error}
+        {/* Results — split view or single column */}
+        {hasResults && (
+          <div className={cn('flex gap-4', isSplit ? 'flex-row items-start' : 'flex-col')}>
+            {allInstances.map((i, idx) => {
+              const nr = nodeResults[i] ?? { result: null, error: null, loading: false }
+              return (
+                <NodePane
+                  key={i}
+                  instance={i}
+                  result={nr.result}
+                  error={nr.error}
+                  loading={nr.loading}
+                  onRemove={idx > 0 ? () => removeSplitNode(i) : undefined}
+                />
+              )
+            })}
           </div>
-        )}
-
-        {/* Results */}
-        {result && (
-          <Card>
-            <div className="flex items-center gap-2 mb-3 flex-wrap">
-              <div className="flex gap-1">
-                {(['table', 'chart'] as const).map(t => (
-                  <button key={t} onClick={() => setResultTab(t)}
-                    className={cn('px-3 py-1 text-xs rounded-md capitalize transition-colors',
-                      resultTab === t ? 'bg-[var(--accent)] text-white' : 'text-[var(--dim)] hover:text-[var(--fg)] hover:bg-[var(--hover)]')}>
-                    {t}
-                  </button>
-                ))}
-              </div>
-
-              {/* Chart mode picker (visible in chart tab) */}
-              {resultTab === 'chart' && (
-                <div className="flex gap-0.5 rounded-lg border border-[var(--border)] p-0.5">
-                  {MODES.map(({ m, icon, label }) => (
-                    <button key={m} onClick={() => setChartMode(m)} title={label}
-                      className={cn('flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors',
-                        chartMode === m ? 'bg-[var(--accent)] text-white' : 'text-[var(--dim)] hover:text-[var(--fg)]')}>
-                      {icon}
-                      <span className="hidden sm:inline">{label}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              <div className="ml-auto flex items-center gap-2">
-                {result.statements_run && result.statements_run > 1 && (
-                  <span className="text-xs text-[var(--dim)] italic">{result.statements_run} statements · last result shown</span>
-                )}
-                <span className="text-xs text-[var(--dim)]">
-                  {fmtCompact(result.row_count)} rows · {fmtDuration(result.elapsed_ms)}
-                </span>
-                <button
-                  onClick={() => exportCsv(normalizedCols.map(c => c.name), result.rows)}
-                  className="flex items-center gap-1 px-2 py-1 text-xs rounded border border-[var(--border)] text-[var(--dim)] hover:text-[var(--fg)] hover:border-[var(--accent)] transition-colors"
-                  title="Download CSV"
-                >
-                  <Download size={11} /> CSV
-                </button>
-              </div>
-            </div>
-
-            {resultTab === 'table' ? (
-              <DataTable columns={tableColumns} data={result.rows} maxHeight="420px" emptyText="No results" />
-            ) : chartInfo ? (
-              <div>
-                <div className="h-72">
-                  {(chartInfo.type === 'line' || chartInfo.type === 'area') && <Line data={chartInfo.data} options={opts as any} />}
-                  {(chartInfo.type === 'bar' || chartInfo.type === 'stacked') && <Bar data={chartInfo.data} options={opts as any} />}
-                  {chartInfo.type === 'scatter' && <Scatter data={chartInfo.data as any} options={opts as any} />}
-                  {chartInfo.type === 'donut' && <Doughnut data={chartInfo.data} options={opts as any} />}
-                </div>
-                {chartInfo.suggest && (
-                  <p className="text-xs text-[var(--dim)] mt-2 text-center">
-                    Small dataset — try{' '}
-                    <button onClick={() => setChartMode(chartInfo.suggest!)} className="text-[var(--accent)] underline">
-                      {chartInfo.suggest}
-                    </button>
-                    {' '}view
-                  </p>
-                )}
-              </div>
-            ) : (
-              <div className="text-sm text-[var(--dim)] text-center py-8">
-                No chartable data — needs at least one numeric column
-              </div>
-            )}
-          </Card>
         )}
       </div>
 
@@ -545,7 +668,7 @@ export default function Terminal() {
                     <div className="text-xs font-mono text-[var(--fg)] truncate">
                       {entry.query.length > 80 ? entry.query.slice(0, 80) + '…' : entry.query}
                     </div>
-                    {entry.error && <div className="text-xs text-red-400 mt-1 truncate">{entry.error}</div>}
+                    {entry.error && <div className="text-xs text-[var(--red)] mt-1 truncate">{entry.error}</div>}
                   </button>
                 ))}
               </div>

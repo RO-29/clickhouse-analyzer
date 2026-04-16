@@ -163,6 +163,15 @@ export interface CompareQueryPatternsResult {
   error?: string
 }
 
+export interface StatementResult {
+  sql: string
+  columns: string[]
+  types: string[]
+  rows: Record<string, any>[]
+  row_count: number
+  elapsed_ms: number
+}
+
 export interface QueryResult {
   columns: any[]
   types?: string[]
@@ -170,6 +179,7 @@ export interface QueryResult {
   row_count: number; elapsed_ms: number; instance: string
   error?: string
   statements_run?: number
+  results?: StatementResult[]
 }
 
 export interface QueryHistoryEntry {

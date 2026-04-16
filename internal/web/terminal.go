@@ -202,7 +202,18 @@ type queryRequest struct {
 	Limit    int    `json:"limit"`
 }
 
+// statementResult holds the result of one statement in a multi-statement batch.
+type statementResult struct {
+	SQL       string                   `json:"sql"`
+	Columns   []string                 `json:"columns"`
+	Types     []string                 `json:"types"`
+	Rows      []map[string]interface{} `json:"rows"`
+	RowCount  int                      `json:"row_count"`
+	ElapsedMs int64                    `json:"elapsed_ms"`
+}
+
 type queryResponse struct {
+	// Primary result — last statement (backward compat)
 	Columns       []string                 `json:"columns"`
 	Types         []string                 `json:"types"`
 	Rows          []map[string]interface{} `json:"rows"`
@@ -210,6 +221,8 @@ type queryResponse struct {
 	ElapsedMs     int64                    `json:"elapsed_ms"`
 	Instance      string                   `json:"instance"`
 	StatementsRun int                      `json:"statements_run,omitempty"`
+	// All results when multiple statements were run
+	Results       []statementResult        `json:"results,omitempty"`
 }
 
 func (s *Server) handleQueryExecute(w http.ResponseWriter, r *http.Request) {
@@ -268,12 +281,7 @@ func (s *Server) handleQueryExecute(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var (
-		lastResult *struct {
-			Columns []string
-			Types   []string
-			Rows    []map[string]interface{}
-			Count   int
-		}
+		allResults   []statementResult
 		totalElapsed int64
 	)
 
@@ -320,24 +328,29 @@ func (s *Server) handleQueryExecute(w http.ResponseWriter, r *http.Request) {
 			types[j] = m.Type
 		}
 
-		lastResult = &struct {
-			Columns []string
-			Types   []string
-			Rows    []map[string]interface{}
-			Count   int
-		}{columns, types, result.Data, result.Rows}
+		allResults = append(allResults, statementResult{
+			SQL:       stmt,
+			Columns:   columns,
+			Types:     types,
+			Rows:      result.Data,
+			RowCount:  result.Rows,
+			ElapsedMs: elapsedMs,
+		})
 
 		s.recordQueryHistory(req.Instance, stmt, result.Rows, elapsedMs, "")
 	}
 
+	// Build response: last result fields for backward compat, all results in Results.
+	last := allResults[len(allResults)-1]
 	writeJSON(w, http.StatusOK, queryResponse{
-		Columns:       lastResult.Columns,
-		Types:         lastResult.Types,
-		Rows:          lastResult.Rows,
-		RowCount:      lastResult.Count,
+		Columns:       last.Columns,
+		Types:         last.Types,
+		Rows:          last.Rows,
+		RowCount:      last.RowCount,
 		ElapsedMs:     totalElapsed,
 		Instance:      req.Instance,
 		StatementsRun: len(stmts),
+		Results:       allResults,
 	})
 }
 

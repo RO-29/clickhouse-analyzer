@@ -17,6 +17,7 @@ import CostExplorer from './views/CostExplorer'
 import Maintenance from './views/Maintenance'
 import AlertHistory from './views/AlertHistory'
 import RunCheck from './views/RunCheck'
+import Discover from './views/Discover'
 import { TableDetail } from './components/TableDetail'
 import { AIAnalysisPanel } from './components/AIAnalysisPanel'
 import { NotificationToasts } from './components/NotificationToasts'
@@ -77,6 +78,7 @@ function Layout() {
   }, [refreshInterval])
 
   const views: Record<string, React.ReactNode> = {
+    discover: <Discover />,
     overview: <Overview refreshKey={tick} />,
     detail: <Detail refreshKey={tick} />,
     alerts: <Alerts refreshKey={tick} />,

@@ -295,6 +295,7 @@ func (a *Analyzer) computeHealthScore(instance string, alerts, crossAlerts []col
 	seen := make(map[dedupKey]bool)
 	issueSet := make(map[string]bool)
 
+	var totalDeduct int
 	allAlerts := append(alerts, crossAlerts...)
 	for _, alert := range allAlerts {
 		if alert.Instance != instance && alert.Instance != "" {
@@ -309,13 +310,19 @@ func (a *Analyzer) computeHealthScore(instance string, alerts, crossAlerts []col
 		issueSet[alert.Title] = true
 		switch alert.Severity {
 		case collector.SeverityCritical:
-			score -= 25
+			totalDeduct += 12
 		case collector.SeverityWarn:
-			score -= 10
+			totalDeduct += 4
 		case collector.SeverityInfo:
-			score -= 2
+			totalDeduct += 1
 		}
 	}
+
+	// Cap total deduction at 70 so even a badly degraded instance shows > 0.
+	if totalDeduct > 70 {
+		totalDeduct = 70
+	}
+	score -= totalDeduct
 
 	if score < 0 {
 		score = 0

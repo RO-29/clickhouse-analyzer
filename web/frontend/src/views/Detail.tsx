@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { ArrowLeft, ChevronRight, RefreshCw, Sparkles, Wrench } from 'lucide-react'
+import { ArrowLeft, ChevronRight, RefreshCw, Sparkles, Wrench, AlertTriangle, CheckCircle2 } from 'lucide-react'
 import { Bar } from 'react-chartjs-2'
 import {
   Chart as ChartJS,
@@ -57,6 +57,13 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
   const [showStorage, setShowStorage] = useState(false)
   const [showHistory, setShowHistory] = useState(true)
   const [showReplication, setShowReplication] = useState(false)
+
+  // Anti-patterns quick scan
+  const [showAP, setShowAP] = useState(false)
+  const [queryAP, setQueryAP] = useState<any[] | null>(null)
+  const [tableAP, setTableAP] = useState<any[] | null>(null)
+  const [apLoading, setApLoading] = useState(false)
+  const [apLoaded, setApLoaded] = useState(false)
 
   useEffect(() => {
     if (!instance) return
@@ -724,6 +731,86 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
           )}
         </div>
       )}
+
+      {/* ---- Anti-pattern Quick Scan (on-demand) ---- */}
+      <div>
+        <button
+          onClick={() => {
+            const next = !showAP
+            setShowAP(next)
+            if (next && !apLoaded && instance) {
+              setApLoading(true)
+              setApLoaded(true)
+              Promise.all([
+                api.advisor.queryAntiPatterns(instance).then(d => setQueryAP(d)).catch(() => setQueryAP([])),
+                api.advisor.tableAntiPatterns(instance).then(d => setTableAP(d)).catch(() => setTableAP([])),
+              ]).finally(() => setApLoading(false))
+            }
+          }}
+          className="w-full flex items-center gap-2 py-2 text-sm font-medium text-[var(--dim)] hover:text-[var(--text)] transition-colors"
+        >
+          <ChevronRight size={14} className={cn('transition-transform', showAP && 'rotate-90')} />
+          <Wrench size={14} />
+          Anti-pattern Scan
+          {!apLoaded && <span className="text-xs font-normal text-[var(--dim)]">— click to run</span>}
+          {apLoading && <span className="text-xs font-normal text-[var(--dim)]">Loading…</span>}
+          {(queryAP || tableAP) && !apLoading && (() => {
+            const issues = [
+              ...(queryAP?.filter(g => g.count > 0) ?? []),
+              ...(tableAP?.filter(g => g.count > 0) ?? []),
+            ]
+            const crits = issues.filter(g => g.severity === 'critical').length
+            return crits > 0
+              ? <span className="text-xs font-semibold text-red-400 ml-auto">{crits} critical</span>
+              : issues.length > 0
+              ? <span className="text-xs font-semibold text-yellow-400 ml-auto">{issues.length} warnings</span>
+              : <span className="text-xs font-semibold text-green-400 ml-auto flex items-center gap-1"><CheckCircle2 size={11} /> Clean</span>
+          })()}
+        </button>
+        {showAP && !apLoading && (queryAP || tableAP) && (
+          <Card className="mt-2">
+            <div className="space-y-3">
+              {/* Summary row */}
+              {[...(queryAP ?? []), ...(tableAP ?? [])].filter(g => g.count > 0).length === 0
+                ? <div className="text-sm text-green-400 flex items-center gap-2"><CheckCircle2 size={14} /> No anti-patterns detected</div>
+                : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {[...(queryAP ?? []), ...(tableAP ?? [])]
+                      .filter(g => g.count > 0)
+                      .sort((a, b) => {
+                        const sev = { critical: 0, warn: 1, info: 2 }
+                        return (sev[a.severity as keyof typeof sev] ?? 3) - (sev[b.severity as keyof typeof sev] ?? 3)
+                      })
+                      .map(group => (
+                        <div key={group.type} className={cn(
+                          'flex items-start gap-2 rounded-lg border px-3 py-2',
+                          group.severity === 'critical' ? 'border-red-500/30 bg-red-500/5' : 'border-yellow-500/30 bg-yellow-500/5',
+                        )}>
+                          <AlertTriangle size={13} className={group.severity === 'critical' ? 'text-red-400 mt-0.5 shrink-0' : 'text-yellow-400 mt-0.5 shrink-0'} />
+                          <div className="min-w-0">
+                            <div className="text-xs font-medium text-[var(--fg)] truncate">{group.title}</div>
+                            <div className="text-[11px] text-[var(--dim)]">{group.count} {group.count === 1 ? 'table/query' : 'tables/queries'}</div>
+                          </div>
+                        </div>
+                      ))
+                    }
+                  </div>
+                )
+              }
+              <button
+                onClick={() => { setView('explore'); setTimeout(() => {
+                  const url = new URL(window.location.href)
+                  url.searchParams.set('tab', 'antipatterns')
+                  window.history.pushState({}, '', url)
+                }, 50) }}
+                className="text-xs text-[var(--accent)] hover:underline"
+              >
+                Open full Anti-patterns tab in Explore →
+              </button>
+            </div>
+          </Card>
+        )}
+      </div>
     </div>
   )
 }
