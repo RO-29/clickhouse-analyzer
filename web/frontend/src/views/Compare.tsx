@@ -267,6 +267,299 @@ function computeNodeDDL(t: TableRow, activeNodes: string[]): { criticality: DDLC
 }
 
 /* ------------------------------------------------------------------ */
+/*  Table Diff — compare any two tables (cross-node or same-node)     */
+/* ------------------------------------------------------------------ */
+
+type TablePick = { inst: string; db: string; table: string }
+
+interface ColInfo { name: string; type: string; comment?: string }
+
+function TablePicker({
+  label,
+  value,
+  onChange,
+  instances,
+  allTables,
+}: {
+  label: string
+  value: TablePick | null
+  onChange: (p: TablePick) => void
+  instances: string[]
+  allTables: TableRow[]
+}) {
+  const [search, setSearch] = useState('')
+  const [selInst, setSelInst] = useState(instances[0] ?? '')
+
+  // When instance list changes, ensure selInst is valid
+  useEffect(() => {
+    if (!instances.includes(selInst) && instances.length > 0) setSelInst(instances[0])
+  }, [instances, selInst])
+
+  const available = useMemo(() =>
+    allTables
+      .filter(t => !t.missing_on?.includes(selInst))
+      .filter(t => !search || `${t.database}.${t.table}`.toLowerCase().includes(search.toLowerCase()))
+  , [allTables, selInst, search])
+
+  const isSelected = (t: TableRow) =>
+    value?.inst === selInst && value?.db === t.database && value?.table === t.table
+
+  return (
+    <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 space-y-3 flex flex-col min-h-0">
+      <div className="text-[10px] font-bold uppercase tracking-wider text-[var(--dim)]">{label}</div>
+
+      {/* Instance */}
+      <select
+        value={selInst}
+        onChange={e => setSelInst(e.target.value)}
+        className="bg-[var(--bg)] border border-[var(--border)] rounded px-2 py-1 text-xs focus:outline-none focus:border-[var(--accent)] w-full"
+      >
+        {instances.map(i => <option key={i} value={i}>{i}</option>)}
+      </select>
+
+      {/* Search */}
+      <div className="relative">
+        <Search size={10} className="absolute left-2 top-1/2 -translate-y-1/2 text-[var(--dim)]" />
+        <input
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="Search tables…"
+          className="pl-6 pr-2 py-1 w-full rounded border border-[var(--border)] bg-[var(--bg)] text-xs focus:outline-none focus:border-[var(--accent)]"
+        />
+      </div>
+
+      {/* Table list */}
+      <div className="overflow-auto max-h-56 space-y-px flex-1">
+        {available.length === 0 && (
+          <div className="text-[11px] text-[var(--dim)] text-center py-4">No tables</div>
+        )}
+        {available.map(t => (
+          <button
+            key={`${t.database}.${t.table}`}
+            onClick={() => onChange({ inst: selInst, db: t.database, table: t.table })}
+            className={cn(
+              'w-full text-left px-2 py-1.5 rounded text-xs transition-colors',
+              isSelected(t)
+                ? 'bg-[var(--accent)]/15 text-[var(--accent)]'
+                : 'text-[var(--text)] hover:bg-[var(--hover)]',
+            )}
+          >
+            <span className="text-[var(--dim)] text-[10px]">{t.database}.</span>
+            <span className="font-medium">{t.table}</span>
+          </button>
+        ))}
+      </div>
+
+      {/* Selected badge */}
+      {value && (
+        <div className="text-[10px] text-[var(--dim)] truncate">
+          {value.inst === selInst
+            ? <span className="text-[var(--accent)]">{value.db}.{value.table} @ {value.inst}</span>
+            : <span className="italic">({value.db}.{value.table} @ {value.inst})</span>}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function DiffRow({
+  label, left, right, mono = false,
+}: {
+  label: string
+  left: string
+  right: string
+  mono?: boolean
+}) {
+  const same = left === right
+  return (
+    <div className={cn(
+      'grid grid-cols-[1fr,48px,1fr] gap-2 px-4 py-2 border-t border-[var(--border)] items-start',
+      !same ? 'bg-orange-500/5' : '',
+    )}>
+      <span className={cn('text-[11px] break-all', mono ? 'font-mono' : '')}>{left || <span className="text-[var(--dim)] italic">(none)</span>}</span>
+      <div className="flex flex-col items-center gap-0.5 shrink-0">
+        <span className="text-[8px] text-[var(--dim)] uppercase leading-none">{label}</span>
+        <span className={cn('text-sm font-bold', same ? 'text-green-400' : 'text-orange-400')}>
+          {same ? '=' : '≠'}
+        </span>
+      </div>
+      <span className={cn('text-[11px] break-all text-right', mono ? 'font-mono' : '')}>{right || <span className="text-[var(--dim)] italic">(none)</span>}</span>
+    </div>
+  )
+}
+
+function TableDiffView({ tablesData, instances }: { tablesData: TablesData; instances: string[] }) {
+  const [left, setLeft] = useState<TablePick | null>(null)
+  const [right, setRight] = useState<TablePick | null>(null)
+  const [leftDetail, setLeftDetail] = useState<any>(null)
+  const [rightDetail, setRightDetail] = useState<any>(null)
+  const [loadingLeft, setLoadingLeft] = useState(false)
+  const [loadingRight, setLoadingRight] = useState(false)
+
+  // Load detail for each side when pick changes
+  useEffect(() => {
+    if (!left) { setLeftDetail(null); return }
+    setLoadingLeft(true)
+    api.tableDetail(left.inst, left.db, left.table)
+      .then(setLeftDetail)
+      .catch(() => setLeftDetail(null))
+      .finally(() => setLoadingLeft(false))
+  }, [left?.inst, left?.db, left?.table]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!right) { setRightDetail(null); return }
+    setLoadingRight(true)
+    api.tableDetail(right.inst, right.db, right.table)
+      .then(setRightDetail)
+      .catch(() => setRightDetail(null))
+      .finally(() => setLoadingRight(false))
+  }, [right?.inst, right?.db, right?.table]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Get NodeData from tablesData for quick metrics
+  const getNode = useCallback((pick: TablePick | null): NodeData | null => {
+    if (!pick) return null
+    const row = tablesData.tables.find(t => t.database === pick.db && t.table === pick.table)
+    return row?.nodes?.[pick.inst] ?? null
+  }, [tablesData])
+
+  const leftNode = getNode(left)
+  const rightNode = getNode(right)
+
+  // Column diff
+  const leftCols: ColInfo[] = leftDetail?.columns ?? []
+  const rightCols: ColInfo[] = rightDetail?.columns ?? []
+  const leftColMap = new Map(leftCols.map(c => [c.name, c]))
+  const rightColMap = new Map(rightCols.map(c => [c.name, c]))
+  const allColNames = [...new Set([...leftCols.map(c => c.name), ...rightCols.map(c => c.name)])]
+
+  // DDL from detail metadata (authoritative) or fallback to tablesData node
+  const leftMeta = leftDetail?.metadata ?? {}
+  const rightMeta = rightDetail?.metadata ?? {}
+  const lPartKey = leftMeta.partition_key ?? leftNode?.partition_key ?? ''
+  const rPartKey = rightMeta.partition_key ?? rightNode?.partition_key ?? ''
+  const lSortKey = leftMeta.sorting_key ?? leftNode?.sorting_key ?? ''
+  const rSortKey = rightMeta.sorting_key ?? rightNode?.sorting_key ?? ''
+  const lEngine = leftMeta.engine ?? ''
+  const rEngine = rightMeta.engine ?? ''
+
+  const hasBoth = left && right
+
+  return (
+    <div className="space-y-4">
+      {/* Pickers */}
+      <div className="grid grid-cols-2 gap-4">
+        <TablePicker label="Table A" value={left} onChange={setLeft} instances={instances} allTables={tablesData.tables} />
+        <TablePicker label="Table B" value={right} onChange={setRight} instances={instances} allTables={tablesData.tables} />
+      </div>
+
+      {!hasBoth && (
+        <div className="text-sm text-[var(--dim)] text-center py-8">Select a table on each side to compare</div>
+      )}
+
+      {hasBoth && (
+        <div className="space-y-4">
+          {/* Header */}
+          <div className="grid grid-cols-[1fr,48px,1fr] gap-4 items-center">
+            <div>
+              <div className="font-semibold text-sm">{left!.db}.<span className="text-[var(--accent)]">{left!.table}</span></div>
+              <div className="text-[10px] text-[var(--dim)] mt-0.5">@ {left!.inst}</div>
+            </div>
+            <div className="text-xs text-[var(--dim)] text-center font-bold">vs</div>
+            <div className="text-right">
+              <div className="font-semibold text-sm">{right!.db}.<span className="text-[var(--accent)]">{right!.table}</span></div>
+              <div className="text-[10px] text-[var(--dim)] mt-0.5">@ {right!.inst}</div>
+            </div>
+          </div>
+
+          {/* Metrics */}
+          <div className="rounded-xl border border-[var(--border)] overflow-hidden">
+            <div className="px-4 py-2 bg-[var(--surface)] text-[10px] font-bold uppercase tracking-wider text-[var(--dim)]">Metrics</div>
+            <DiffRow label="Rows" left={fmtNum(leftNode?.rows ?? 0)} right={fmtNum(rightNode?.rows ?? 0)} />
+            <DiffRow label="Size" left={fmtBytes(leftNode?.bytes ?? 0)} right={fmtBytes(rightNode?.bytes ?? 0)} />
+            <DiffRow label="Parts" left={String(leftNode?.parts ?? '—')} right={String(rightNode?.parts ?? '—')} />
+            <DiffRow label="Engine" left={lEngine} right={rEngine} />
+            {(loadingLeft || loadingRight) && (
+              <div className="px-4 py-2 flex items-center gap-2 text-[10px] text-[var(--dim)] border-t border-[var(--border)]">
+                <Loader2 size={10} className="animate-spin" /> Loading details…
+              </div>
+            )}
+          </div>
+
+          {/* DDL */}
+          {(lPartKey || rPartKey || lSortKey || rSortKey) && (
+            <div className="rounded-xl border border-[var(--border)] overflow-hidden">
+              <div className="px-4 py-2 bg-[var(--surface)] text-[10px] font-bold uppercase tracking-wider text-[var(--dim)]">Table Structure</div>
+              <DiffRow label="Partition By" left={lPartKey} right={rPartKey} mono />
+              <DiffRow label="Order By" left={lSortKey} right={rSortKey} mono />
+            </div>
+          )}
+
+          {/* Schema diff */}
+          {allColNames.length > 0 && (
+            <div className="rounded-xl border border-[var(--border)] overflow-hidden">
+              <div className="px-4 py-2 bg-[var(--surface)] flex items-center gap-2">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--dim)]">Schema</span>
+                <span className="text-[10px] text-[var(--dim)]">{leftCols.length} cols vs {rightCols.length} cols</span>
+                {allColNames.filter(n => {
+                  const lc = leftColMap.get(n); const rc = rightColMap.get(n)
+                  return !lc || !rc || lc.type !== rc.type
+                }).length > 0 && (
+                  <span className="ml-auto text-[10px] text-orange-400">
+                    {allColNames.filter(n => { const lc = leftColMap.get(n); const rc = rightColMap.get(n); return !lc || !rc || lc.type !== rc.type }).length} differences
+                  </span>
+                )}
+              </div>
+              <div className="divide-y divide-[var(--border)]">
+                {allColNames.map(name => {
+                  const lc = leftColMap.get(name)
+                  const rc = rightColMap.get(name)
+                  const onlyLeft = !rc
+                  const onlyRight = !lc
+                  const typeMismatch = lc && rc && lc.type !== rc.type
+                  const same = !onlyLeft && !onlyRight && !typeMismatch
+                  return (
+                    <div key={name} className={cn(
+                      'grid grid-cols-[1fr,28px,1fr] gap-1 px-4 py-1.5 text-[11px] items-center',
+                      onlyLeft ? 'bg-red-500/5' : onlyRight ? 'bg-blue-500/5' : typeMismatch ? 'bg-orange-500/5' : '',
+                    )}>
+                      <div className="font-mono">
+                        {lc
+                          ? <><span className="text-[var(--fg)]">{name}</span> <span className="text-[var(--dim)] text-[9px]">{lc.type}</span></>
+                          : <span className="text-[var(--dim)]">—</span>}
+                      </div>
+                      <div className="text-center shrink-0">
+                        {onlyLeft  ? <span className="text-red-400  text-xs" title="Only in left">←</span>  :
+                         onlyRight ? <span className="text-blue-400 text-xs" title="Only in right">→</span> :
+                         typeMismatch ? <span className="text-orange-400 text-xs" title="Type differs">≠</span> :
+                         <span className="text-green-400 text-[10px]">=</span>}
+                      </div>
+                      <div className="font-mono text-right">
+                        {rc
+                          ? <><span className="text-[var(--dim)] text-[9px]">{rc.type}</span> <span className="text-[var(--fg)]">{name}</span></>
+                          : <span className="text-[var(--dim)]">—</span>}
+                      </div>
+                      {typeMismatch && (
+                        <div className="col-span-3 text-[9px] text-orange-400 text-center pb-1">
+                          {lc!.type} → {rc!.type}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
+          {leftDetail && rightDetail && allColNames.length === 0 && (
+            <div className="text-xs text-[var(--dim)] text-center py-4">No column data available</div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
 /*  Tables view — flat sortable grid + node selector + live search    */
 /* ------------------------------------------------------------------ */
 type SortKey = 'name' | 'rows' | 'bytes' | 'drift' | 'total'
@@ -1150,7 +1443,7 @@ export default function Compare() {
   const [tablesLoading, setTablesLoading] = useState(true)
   const [settingsLoading, setSettingsLoading] = useState(true)
 
-  const [tab, setTab] = useState<'tables' | 'settings' | 'metrics' | 'memory'>('tables')
+  const [tab, setTab] = useState<'tables' | 'settings' | 'metrics' | 'memory' | 'diff'>('tables')
 
   const [baseline, setBaseline] = useState<string>(() => {
     try { return localStorage.getItem('compare-baseline') ?? '' } catch { return '' }
@@ -1214,6 +1507,7 @@ export default function Compare() {
           <TabButton active={tab === 'settings'} label="Settings" onClick={() => setTab('settings')} />
           <TabButton active={tab === 'metrics'} label="Metrics" onClick={() => setTab('metrics')} />
           <TabButton active={tab === 'memory'} label="Memory" onClick={() => setTab('memory')} />
+          <TabButton active={tab === 'diff'} label="Diff" onClick={() => setTab('diff')} />
         </div>
         <button
           onClick={() => handleAnalyze({ baseline: effectiveBaseline, instances, tab, tablesData, settingsData })}
@@ -1224,8 +1518,8 @@ export default function Compare() {
         </button>
       </div>
 
-      {/* ---- Node pills (baseline selector) — only for non-Tables tabs ---- */}
-      {tab !== 'tables' && (
+      {/* ---- Node pills (baseline selector) — only for Settings/Metrics/Memory tabs ---- */}
+      {tab !== 'tables' && tab !== 'diff' && (
         <div>
           <div className="text-xs text-[var(--dim)] mb-2">Click any node to set as comparison baseline</div>
           <div className="flex flex-wrap gap-3">
@@ -1262,6 +1556,13 @@ export default function Compare() {
       )}
       {tab === 'memory' && (
         <MemoryView baseline={effectiveBaseline} instances={instances} />
+      )}
+      {tab === 'diff' && (
+        tablesLoading
+          ? <LoadingSkeleton />
+          : tablesData
+            ? <TableDiffView tablesData={tablesData} instances={instances} />
+            : <EmptyMsg msg="Failed to load table data" />
       )}
     </div>
   )

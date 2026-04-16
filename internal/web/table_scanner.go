@@ -107,6 +107,27 @@ func (s *Server) handleTableScan(w http.ResponseWriter, r *http.Request) {
 	fromStr := fromTime.Format("2006-01-02 15:04:05")
 	toStr := toTime.Format("2006-01-02 15:04:05")
 
+	// Parse optional filters
+	includeSystem := r.URL.Query().Get("include_system") == "true"
+	filterDB := strings.ReplaceAll(r.URL.Query().Get("db"), "'", "''") // basic SQL safety
+
+	// Build database exclusion and per-db filter fragments.
+	const sysDBs = `'system', 'information_schema', 'INFORMATION_SCHEMA', '_temporary_and_external_tables'`
+	const infoDBs = `'information_schema', 'INFORMATION_SCHEMA', '_temporary_and_external_tables'`
+	var dbExclude, dbExcludeHaving string
+	if includeSystem {
+		dbExclude = "database NOT IN (" + infoDBs + ")"
+		dbExcludeHaving = "db NOT IN (" + infoDBs + ", '')"
+	} else {
+		dbExclude = "database NOT IN (" + sysDBs + ")"
+		dbExcludeHaving = "db NOT IN (" + sysDBs + ", '')"
+	}
+	var dbExtraFilter, dbHavingExtra string
+	if filterDB != "" {
+		dbExtraFilter = " AND database = '" + filterDB + "'"
+		dbHavingExtra = " AND db = '" + filterDB + "'"
+	}
+
 	ctx := r.Context()
 
 	// selectCond is the query_log condition for SELECT-like queries.
@@ -140,12 +161,12 @@ SELECT
   primary_key,
   partition_key,
   sampling_key,
-  total_rows,
-  total_bytes,
+  coalesce(total_rows, 0) AS total_rows,
+  coalesce(total_bytes, 0) AS total_bytes,
   parts,
   create_table_query
 FROM system.tables
-WHERE database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA', '_temporary_and_external_tables')
+WHERE `+dbExclude+dbExtraFilter+`
   AND engine NOT IN ('View', 'MaterializedView', 'Dictionary', 'Distributed', 'Null', 'Buffer')
 ORDER BY database, name
 `)
@@ -164,7 +185,7 @@ SELECT
   formatReadableSize(sum(bytes_on_disk)) AS readable_size
 FROM system.parts
 WHERE active = 1
-  AND database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA', '_temporary_and_external_tables')
+  AND `+dbExclude+dbExtraFilter+`
 GROUP BY database, table, disk_name
 ORDER BY database, table, bytes DESC
 `)
@@ -198,7 +219,7 @@ WHERE type = 'QueryFinish'
   AND length(tables) > 0
   AND event_time BETWEEN '%s' AND '%s'
 GROUP BY db, tbl
-HAVING db NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA', '_temporary_and_external_tables', '')
+HAVING `+dbExcludeHaving+dbHavingExtra+`
   AND tbl != ''
 `, fromStr, toStr))
 	}()
@@ -227,7 +248,7 @@ WHERE type = 'QueryFinish'
   AND `+selectCond+`
   AND event_time BETWEEN '%s' AND '%s'
 GROUP BY db, tbl, query_prefix
-HAVING db NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA', '_temporary_and_external_tables', '')
+HAVING `+dbExcludeHaving+dbHavingExtra+`
   AND tbl != ''
   AND exec_count >= 2
 ORDER BY avg_ms DESC

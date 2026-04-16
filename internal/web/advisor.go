@@ -956,5 +956,18 @@ func (s *Server) handleTableDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	result["other_nodes"] = otherNodes
 
+	// i) Column list — used by Compare "Diff" tab for schema diffing.
+	colListRows, err := client.Query(ctx,
+		"SELECT name, type, comment "+
+			"FROM system.columns "+
+			"WHERE database = '"+db+"' AND `table` = '"+table+"' "+
+			"ORDER BY position")
+	if err != nil {
+		slog.Error("table detail: columns", "err", err, "instance", instance)
+		result["columns"] = []interface{}{}
+	} else {
+		result["columns"] = colListRows
+	}
+
 	writeJSON(w, http.StatusOK, result)
 }

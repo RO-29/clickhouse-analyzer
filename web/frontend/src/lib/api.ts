@@ -135,10 +135,12 @@ export const api = {
     storagePolicy: (inst: string) => get<any[]>(`/api/instances/${inst}/advisor/storage-policy`),
   },
   tableDetail: (inst: string, db: string, table: string) => get<any>(`/api/instances/${inst}/table-detail/${db}/${table}`),
-  tableScan: (inst: string, from?: number, to?: number) => {
+  tableScan: (inst: string, from?: number, to?: number, includeSystem?: boolean, db?: string) => {
     const params = new URLSearchParams()
     if (from) params.set('from', String(from))
     if (to) params.set('to', String(to))
+    if (includeSystem) params.set('include_system', 'true')
+    if (db) params.set('db', db)
     const qs = params.toString()
     return get<TableScanResult>(`/api/instances/${inst}/table-scan${qs ? '?' + qs : ''}`)
   },

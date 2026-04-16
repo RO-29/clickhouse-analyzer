@@ -607,6 +607,8 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
   const [sortDir, setSortDir] = useState<SortDir>('desc')
   const [rowFilter, setRowFilter] = useState<RowFilter>('all')
   const [modalEntry, setModalEntry] = useState<TableScanEntry | null>(null)
+  const [includeSystem, setIncludeSystem] = useState(false)
+  const [selectedDb, setSelectedDb] = useState('all')
 
   const { analyze } = useAIAnalysis(instance)
 
@@ -646,14 +648,15 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
     setError('')
     try {
       const now = Math.floor(Date.now() / 1000)
-      const data = await api.tableScan(instance, now - rangePreset, now)
+      const data = await api.tableScan(instance, now - rangePreset, now, includeSystem)
       setResult(data)
+      setSelectedDb('all') // reset db filter when data reloads
     } catch (e: any) {
       setError(e.message ?? 'Failed to load')
     } finally {
       setLoading(false)
     }
-  }, [instance, rangePreset])
+  }, [instance, rangePreset, includeSystem])
 
   useEffect(() => { load() }, [load, refreshKey])
 
@@ -668,9 +671,13 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
 
   const tables = result?.tables ?? []
 
+  // Derive distinct databases for the selector
+  const availableDbs = [...new Set(tables.map(t => t.database))].sort()
+
   const issueCount = tables.filter(t => (t.schema_issues?.length ?? 0) > 0).length
 
   const sorted = [...tables]
+    .filter(t => selectedDb === 'all' || t.database === selectedDb)
     .filter(t => {
       if (rowFilter === 'active') return t.query_activity.is_active
       if (rowFilter === 'idle') return !t.query_activity.is_active
@@ -712,6 +719,32 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
           {instances.length === 0 && <option value="">No instances</option>}
           {instances.map(n => <option key={n} value={n}>{n}</option>)}
         </select>
+
+        {/* Database selector */}
+        {availableDbs.length > 0 && (
+          <select
+            value={selectedDb}
+            onChange={e => setSelectedDb(e.target.value)}
+            className="bg-[var(--surface)] border border-[var(--border)] rounded px-2 py-1 text-xs focus:outline-none focus:border-[var(--accent)] transition-colors"
+          >
+            <option value="all">All databases</option>
+            {availableDbs.map(db => <option key={db} value={db}>{db}</option>)}
+          </select>
+        )}
+
+        {/* System tables toggle */}
+        <button
+          onClick={() => setIncludeSystem(v => !v)}
+          title={includeSystem ? 'Hide system tables' : 'Include system tables'}
+          className={cn(
+            'px-2 py-0.5 rounded text-xs transition-colors border',
+            includeSystem
+              ? 'bg-purple-500/15 text-purple-400 border-purple-500/30'
+              : 'text-[var(--dim)] border-[var(--border)] hover:text-[var(--fg)] hover:bg-[var(--hover)]',
+          )}
+        >
+          system
+        </button>
 
         {/* Search */}
         <div className="relative">
