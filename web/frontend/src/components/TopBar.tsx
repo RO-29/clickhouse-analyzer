@@ -48,9 +48,24 @@ function ReAuthModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
   const [callbackError, setCallbackError] = useState('')
   const abortRef = useRef<AbortController | null>(null)
 
-  const submitCallback = async () => {
-    const u = callbackUrl.trim()
-    if (!u) return
+  // Build a full callback URL from whatever the user pasted.
+  // Accepts: bare code, full platform.claude.com URL, or localhost URL.
+  const buildCallbackUrl = (raw: string): string => {
+    raw = raw.trim()
+    if (raw.startsWith('http')) return raw  // already a URL
+    // Bare code — construct platform URL and include state from the login URL if available
+    let stateParam = ''
+    if (loginUrl) {
+      try { stateParam = new URL(loginUrl).searchParams.get('state') ?? '' } catch {}
+    }
+    return `https://platform.claude.com/oauth/code/callback?code=${encodeURIComponent(raw)}${stateParam ? `&state=${encodeURIComponent(stateParam)}` : ''}`
+  }
+
+  const submitCallback = async (rawOverride?: string) => {
+    const raw = (rawOverride ?? callbackUrl).trim()
+    if (!raw) return
+    const u = buildCallbackUrl(raw)
+    setCallbackUrl(u)
     setCallbackState('submitting')
     setCallbackError('')
     try {
@@ -217,15 +232,15 @@ function ReAuthModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
             </div>
           )}
 
-          {/* Callback URL paste — shown once the login URL is displayed */}
+          {/* Callback — shown once the login URL is displayed */}
           {loginUrl && state !== 'done' && callbackState !== 'ok' && (
             <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3 space-y-2">
               <div className="text-[11px] font-semibold text-[var(--dim)]">
-                Browser shows "connection refused"?
+                After login — paste the OAuth code
               </div>
-              <p className="text-[10px] text-[var(--dim)]">
-                After login, chrome redirects to <code className="font-mono">localhost:…/callback?code=…</code> which fails on a remote server.
-                Copy that URL from the address bar and paste it below.
+              <p className="text-[10px] text-[var(--dim)] leading-relaxed">
+                After approving on claude.ai your browser redirects to a URL with <code className="font-mono bg-[var(--card)] px-1 rounded">?code=…</code>.
+                Paste <strong className="text-[var(--fg)]">just the code</strong>, or the full URL — either works.
               </p>
               <div className="flex gap-2">
                 <input
@@ -233,18 +248,17 @@ function ReAuthModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
                   value={callbackUrl}
                   onChange={e => setCallbackUrl(e.target.value)}
                   onPaste={e => {
-                    // auto-submit on paste
+                    e.preventDefault()
                     const pasted = e.clipboardData.getData('text').trim()
-                    if (pasted.startsWith('http://localhost') || pasted.startsWith('http://127.0.0.1')) {
-                      setCallbackUrl(pasted)
-                      setTimeout(() => submitCallback(), 50)
-                    }
+                    setCallbackUrl(pasted)
+                    submitCallback(pasted)
                   }}
-                  placeholder="http://localhost:PORT/callback?code=…"
+                  onKeyDown={e => { if (e.key === 'Enter') submitCallback() }}
+                  placeholder="Paste code or full redirect URL…"
                   className="flex-1 bg-[var(--card)] border border-[var(--border)] rounded px-2 py-1.5 text-[11px] font-mono text-[var(--fg)] placeholder-[var(--dim)] focus:outline-none focus:border-[var(--accent)]"
                 />
                 <button
-                  onClick={submitCallback}
+                  onClick={() => submitCallback()}
                   disabled={callbackState === 'submitting' || !callbackUrl.trim()}
                   className="px-3 py-1.5 rounded text-xs font-medium bg-[var(--accent)] text-white hover:opacity-90 disabled:opacity-50 transition-opacity"
                 >

@@ -85,13 +85,21 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// POST /api/auth/callback — forward the OAuth callback URL to claude's local server.
+// POST /api/auth/callback — complete the OAuth flow by feeding the callback URL
+// back to the claude process.
 //
-// When the user completes login in their browser, claude.ai redirects to
-// http://localhost:PORT/callback?code=XXX on the server. That port is not
-// reachable from the user's machine, so the browser shows ERR_CONNECTION_REFUSED.
-// The user copies that URL from their address bar and submits it here; we
-// proxy the GET request from the server side so claude can finish the exchange.
+// Two cases:
+//
+//  1. localhost URL (http://localhost:PORT/callback?code=…): the user's browser
+//     tried to redirect there but got "connection refused" because PORT is on the
+//     server, not the user's machine. We proxy the GET from the server side.
+//
+//  2. platform.claude.com URL (https://platform.claude.com/oauth/code/callback?code=…):
+//     Claude's newer auth flow redirects the browser here. The page tries to relay
+//     the code back to the local claude process; on a remote server that relay fails.
+//     We write the full URL to the claude process's stdin so it can complete the
+//     token exchange itself (the claude CLI reads the callback URL from stdin when
+//     running headlessly).
 func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		URL string `json:"url"`
@@ -100,26 +108,48 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "missing url")
 		return
 	}
-	parsed, err := url.Parse(req.URL)
+	callbackURL := strings.TrimSpace(req.URL)
+	parsed, err := url.Parse(callbackURL)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid url: "+err.Error())
 		return
 	}
-	host := parsed.Hostname()
-	if host != "localhost" && host != "127.0.0.1" {
-		writeErr(w, http.StatusBadRequest, "url must point to localhost")
-		return
-	}
 
-	resp, err := http.Get(req.URL) //nolint:noctx
-	if err != nil {
-		writeErr(w, http.StatusBadGateway, "callback forward failed: "+err.Error()+
-			" — make sure the login flow is still running (open the modal and start it)")
-		return
+	host := parsed.Hostname()
+	switch {
+	case host == "localhost" || host == "127.0.0.1":
+		// Proxy the GET request directly to the local claude auth server.
+		resp, err := http.Get(callbackURL) //nolint:noctx
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, "callback forward failed: "+err.Error()+
+				" — make sure the login flow is still running")
+			return
+		}
+		defer resp.Body.Close()
+		slog.Info("auth callback forwarded to localhost", "status", resp.StatusCode)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "forwarded", "http_status": fmt.Sprint(resp.StatusCode)})
+
+	case host == "platform.claude.com":
+		// Write the full callback URL to the claude process's stdin.
+		// The claude CLI reads the callback URL from stdin when running headlessly
+		// (no real browser). This lets it complete the PKCE token exchange.
+		s.authStdinMu.Lock()
+		stdin := s.authStdin
+		s.authStdinMu.Unlock()
+		if stdin == nil {
+			writeErr(w, http.StatusConflict, "no active login session — open the re-auth modal and start the flow first")
+			return
+		}
+		if _, err := fmt.Fprintln(stdin, callbackURL); err != nil {
+			writeErr(w, http.StatusInternalServerError, "failed to send callback to claude: "+err.Error())
+			return
+		}
+		slog.Info("auth callback written to stdin", "host", host)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "sent_to_stdin"})
+
+	default:
+		writeErr(w, http.StatusBadRequest, "url must be a localhost or platform.claude.com callback URL")
 	}
-	defer resp.Body.Close()
-	slog.Info("auth callback forwarded", "status", resp.StatusCode, "url", req.URL)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "forwarded", "http_status": fmt.Sprint(resp.StatusCode)})
 }
 
 // POST /api/auth/login — start the claude.ai OAuth login flow.
@@ -200,8 +230,17 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	cmd.Env = env
 
 	// Keep stdin open so the process doesn't get SIGPIPE or EOF-triggered exit.
+	// Also store it so handleAuthCallback can feed the OAuth callback URL back.
 	stdin, _ := cmd.StdinPipe()
-	defer stdin.Close()
+	s.authStdinMu.Lock()
+	s.authStdin = stdin
+	s.authStdinMu.Unlock()
+	defer func() {
+		stdin.Close()
+		s.authStdinMu.Lock()
+		s.authStdin = nil
+		s.authStdinMu.Unlock()
+	}()
 
 	stdout, _ := cmd.StdoutPipe()
 	stderr, _ := cmd.StderrPipe()

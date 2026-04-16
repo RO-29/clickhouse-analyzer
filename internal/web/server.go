@@ -6,6 +6,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"sort"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rohitjain/ch-analyzer/internal/alerter"
@@ -40,6 +42,11 @@ type Server struct {
 	startTime     time.Time
 	version       string
 	forcePollCh   chan struct{} // signals main loop to run an immediate poll
+
+	// Active auth-login session — stdin writer so /api/auth/callback can feed
+	// the OAuth callback URL back to the claude process.
+	authStdinMu sync.Mutex
+	authStdin   io.WriteCloser
 }
 
 // New creates a new web Server.
