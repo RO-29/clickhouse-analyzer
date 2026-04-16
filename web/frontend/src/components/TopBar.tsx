@@ -52,13 +52,18 @@ function ReAuthModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
   // Accepts: bare code, full platform.claude.com URL, or localhost URL.
   const buildCallbackUrl = (raw: string): string => {
     raw = raw.trim()
-    if (raw.startsWith('http')) return raw  // already a URL
-    // Bare code — construct platform URL and include state from the login URL if available
-    let stateParam = ''
-    if (loginUrl) {
-      try { stateParam = new URL(loginUrl).searchParams.get('state') ?? '' } catch {}
+    if (raw.startsWith('http')) return raw  // already a URL — send as-is, backend strips #fragment
+    // Bare code — platform.claude.com sometimes appends #STATE to the code.
+    // Strip the fragment: the real code is the part before '#'.
+    let code = raw
+    let state = ''
+    const hashIdx = raw.indexOf('#')
+    if (hashIdx !== -1) { code = raw.slice(0, hashIdx); state = raw.slice(hashIdx + 1) }
+    // If no state from the code, try extracting from the login URL
+    if (!state && loginUrl) {
+      try { state = new URL(loginUrl).searchParams.get('state') ?? '' } catch {}
     }
-    return `https://platform.claude.com/oauth/code/callback?code=${encodeURIComponent(raw)}${stateParam ? `&state=${encodeURIComponent(stateParam)}` : ''}`
+    return `https://platform.claude.com/oauth/code/callback?code=${encodeURIComponent(code)}${state ? `&state=${encodeURIComponent(state)}` : ''}`
   }
 
   const submitCallback = async (rawOverride?: string) => {

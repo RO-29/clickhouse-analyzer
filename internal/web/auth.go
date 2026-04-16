@@ -198,18 +198,42 @@ func (s *Server) proxyLocalCallback(w http.ResponseWriter, localURL string) {
 
 // extractCodeState parses code and state from a URL or returns the raw string
 // as code if it looks like a bare OAuth code (no slashes).
+//
+// platform.claude.com encodes the state in the URL fragment:
+//   https://platform.claude.com/oauth/code/callback?code=CODE#STATE
+// or (when %23 is already encoded in the query):
+//   ?code=CODE%23STATE&state=STATE
+//
+// In both cases the real OAuth code is the part before '#', and the fragment
+// is the state (if state isn't already present as a query param).
 func extractCodeState(raw string) (code, state string) {
 	if strings.Contains(raw, "://") {
 		u, err := url.Parse(raw)
 		if err == nil {
 			code = u.Query().Get("code")
 			state = u.Query().Get("state")
+			// Fragment contains state when platform uses ?code=CODE#STATE pattern.
+			if state == "" && u.Fragment != "" {
+				state = u.Fragment
+			}
+			// If %23 was in the raw URL, url.Parse decodes it to '#' inside
+			// the code value.  Strip it and promote to state if not already set.
+			if idx := strings.Index(code, "#"); idx != -1 {
+				if state == "" {
+					state = code[idx+1:]
+				}
+				code = code[:idx]
+			}
 			return
 		}
 	}
-	// Bare code — no slashes, no spaces, looks like a token.
+	// Bare code — no slashes, no spaces.
 	if !strings.Contains(raw, "/") && !strings.Contains(raw, " ") {
 		code = raw
+		if idx := strings.Index(code, "#"); idx != -1 {
+			state = code[idx+1:]
+			code = code[:idx]
+		}
 	}
 	return
 }
