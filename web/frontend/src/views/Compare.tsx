@@ -1557,7 +1557,7 @@ export default function Compare() {
     analyze('Instance Comparison', data, { contextType: 'tab', tab: 'compare' })
   }, [analyze])
   const makeElementAnalyzer = useCallback((labelFn: (d: Record<string, any>) => string) =>
-    (data: Record<string, any>) => analyze(labelFn(data), data, { contextType: 'row', tab: 'compare' }),
+    (data: Record<string, any>) => analyze(labelFn(data), { row: data }, { contextType: 'row', tab: 'compare' }),
   [analyze])
 
   const [tablesData, setTablesData] = useState<TablesData | null>(null)

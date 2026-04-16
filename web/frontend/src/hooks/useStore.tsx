@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, type ReactNode } from 'react'
+import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from 'react'
 import { presetToRange } from '../lib/utils'
 import type { ChatSession } from '../types/api'
 
@@ -249,6 +249,24 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     navToTerminal,
     openTableDetail, closeTableDetail,
   }
+
+  // ── Browser back/forward button support ──────────────────────────────────
+  useEffect(() => {
+    const handlePopState = () => {
+      const p = new URLSearchParams(window.location.search)
+      const v = p.get('view') as View | null
+      const valid: View[] = ['overview','detail','alerts','history','explore','compare','advisor','terminal','logs','chlogs','analyzer','scanner','cost','maintenance','runcheck','discover']
+      if (v && valid.includes(v)) setViewState(v)
+      setSelectedInstanceRaw(p.get('instance') ?? '')
+      const f = Number(p.get('from'))
+      const t = Number(p.get('to'))
+      if (f > 0 && t > 0) {
+        setFrom(f); setTo(t); setRangePresetRaw('custom')
+      }
+    }
+    window.addEventListener('popstate', handlePopState)
+    return () => window.removeEventListener('popstate', handlePopState)
+  }, [])
 
   return <StoreContext.Provider value={store}>{children}</StoreContext.Provider>
 }

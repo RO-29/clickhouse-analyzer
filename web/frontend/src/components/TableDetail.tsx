@@ -79,7 +79,7 @@ export function TableDetail({ instance, database, table, onClose }: TableDetailP
   ]
 
   const otherNodesCols = [
-    { key: 'node', label: 'Node' },
+    { key: 'instance', label: 'Node' },
     { key: 'rows', label: 'Rows', format: (v: any) => fmtNum(v) },
     { key: 'size', label: 'Size', format: (v: any) => typeof v === 'number' ? fmtBytes(v) : String(v ?? '') },
     {

@@ -859,16 +859,23 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
       )}
 
       {loading && !result && (
-        <div className="flex-1 space-y-px">
-          {Array.from({ length: 14 }).map((_, i) => (
-            <div key={i} className="h-7 rounded bg-[var(--surface)] animate-pulse" style={{ opacity: 1 - i * 0.06 }} />
-          ))}
+        <div className="flex-1 flex flex-col items-center justify-center gap-4 py-16">
+          <RefreshCw size={28} className="animate-spin text-[var(--accent)] opacity-80" />
+          <div className="text-center">
+            <div className="text-sm font-medium text-[var(--text)]">Scanning tables…</div>
+            <div className="text-xs text-[var(--dim)] mt-1">Collecting size, parts, compression and query stats</div>
+          </div>
+          <div className="flex flex-col gap-1.5 w-64 mt-2">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <div key={i} className="h-5 rounded bg-[var(--surface)] animate-pulse" style={{ opacity: 0.7 - i * 0.1 }} />
+            ))}
+          </div>
         </div>
       )}
 
       {/* ── Table ── */}
       {sorted.length > 0 && (
-        <div className="flex-1 rounded-lg border border-[var(--border)] overflow-hidden min-h-0">
+        <div className={`flex-1 rounded-lg border border-[var(--border)] overflow-hidden min-h-0 relative transition-opacity ${loading ? 'opacity-50' : ''}`}>
           <div className="overflow-auto h-full">
             <table className="w-full border-collapse text-xs">
               <thead className="sticky top-0 z-10 bg-[var(--card)] border-b border-[var(--border)]">

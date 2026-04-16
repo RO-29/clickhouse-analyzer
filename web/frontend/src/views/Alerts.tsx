@@ -559,7 +559,7 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null)
   const { analyze } = useAIAnalysis(selectedInstance)
   const handleAnalyzeAlert = useCallback((alert: Alert) => {
-    analyze(`Alert: ${alert.title}`, { alert }, { contextType: 'row', tab: 'alerts', elementId: String(alert.id) })
+    analyze(`Alert: ${alert.title}`, { row: alert }, { contextType: 'row', tab: 'alerts', elementId: String(alert.id) })
   }, [analyze])
   const handleAnalyzeAll = useCallback((alerts: Alert[]) => {
     analyze('Active Alerts', { alerts }, { contextType: 'tab', tab: 'alerts' })

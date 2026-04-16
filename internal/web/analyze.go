@@ -1075,7 +1075,12 @@ Use severity markers: 🔴 CRITICAL, 🟠 WARNING, 🟡 INFO
 Be specific and reference actual values from the data.
 `, tabLabel))
 		} else {
-			sb.WriteString("## This Entry\n```json\n" + fmtJSON(req.VisibleData["row"]) + "\n```\n\n")
+			rowData := req.VisibleData["row"]
+			if rowData == nil {
+				sb.WriteString("⚠️ No data available for this entry — it may have expired or not yet loaded. Please refresh the view and try again.\n")
+				return sb.String()
+			}
+			sb.WriteString("## This Entry\n```json\n" + fmtJSON(rowData) + "\n```\n\n")
 			if ctx, ok := req.VisibleData["allPatterns"]; ok {
 				sb.WriteString("## All Patterns (Context)\n```json\n" + fmtJSON(ctx) + "\n```\n\n")
 			} else if ctx, ok := req.VisibleData["allErrors"]; ok {

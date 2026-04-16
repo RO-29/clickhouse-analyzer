@@ -354,7 +354,7 @@ function QueryDetailPanel({ pattern, timeline, tlLoading, instance, onClose, onD
           ))}
           <div className="flex-1" />
           <button
-            onClick={() => onAnalyze(`Query ${hash.slice(0, 8)}`, { pattern, timeline }, { contextType: 'row', tab: 'patterns', elementId: hash })}
+            onClick={() => onAnalyze(`Query ${hash.slice(0, 8)}`, { row: pattern, timeline }, { contextType: 'row', tab: 'patterns', elementId: hash })}
             className="flex items-center gap-1 px-3 py-2 text-[11px] text-[var(--accent)] hover:bg-[var(--accent-subtle)] transition-colors"
           >
             <Sparkles size={10} /> Analyze
@@ -826,13 +826,14 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
           columns={columns}
           data={patterns}
           onRowClick={r => setSelectedHash(String(r.normalized_query_hash))}
-          onRowAnalyze={row =>
+          onRowAnalyze={row => {
+            if (!row) return
             onAnalyze(
               `Query: ${String(row.normalized_query_hash).slice(0, 12)}`,
               { row, allPatterns: patterns },
               { contextType: 'row', tab: 'patterns', elementId: String(row.normalized_query_hash) },
             )
-          }
+          }}
           emptyText="No query patterns found"
         />
       </div>
@@ -1848,13 +1849,14 @@ function MVTab({ instance, from, to, refreshKey, onAnalyze }: TabProps) {
           ]}
           data={aggregated}
           onRowClick={r => setSelectedView(r.view_name)}
-          onRowAnalyze={row =>
+          onRowAnalyze={row => {
+            if (!row) return
             onAnalyze(
               `MV: ${row.view_name}`,
               { row, allViews: aggregated },
               { contextType: 'row', tab: 'mvs', elementId: String(row.view_name) },
             )
-          }
+          }}
           emptyText="No materialized view data"
         />
       </Card>
@@ -1953,13 +1955,14 @@ function S3Tab({ instance, from, to, refreshKey, onAnalyze, onShowQuery }: TabPr
               },
             ]}
             data={stats.latency_by_query}
-            onRowAnalyze={row =>
+            onRowAnalyze={row => {
+              if (!row) return
               onAnalyze(
                 `S3 query ${String(row.normalized_query_hash).slice(0, 12)}`,
                 { row, allQueries: stats.latency_by_query },
                 { contextType: 'row', tab: 's3', elementId: String(row.normalized_query_hash) },
               )
-            }
+            }}
             emptyText="No query data"
           />
         </Card>
@@ -2056,13 +2059,14 @@ function InsertsTab({ instance, from, to, refreshKey, onAnalyze }: TabProps) {
             { key: 'small_insert_count', label: 'Small Inserts', tooltip: 'Inserts with fewer rows than the recommended batch size — too many small inserts causes part explosion', format: (v: any) => fmtNum(v) },
           ]}
           data={byTable}
-          onRowAnalyze={row =>
+          onRowAnalyze={row => {
+            if (!row) return
             onAnalyze(
               `Inserts: ${row.table}`,
               { row, allTables: byTable },
               { contextType: 'row', tab: 'inserts', elementId: String(row.table) },
             )
-          }
+          }}
           emptyText="No insert data"
         />
       </Card>
