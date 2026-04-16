@@ -59,6 +59,7 @@ export default function Maintenance() {
   const [formCreatedBy, setFormCreatedBy] = useState('user')
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
 
   const isCustomDuration = formDuration === 0
 
@@ -281,14 +282,33 @@ export default function Maintenance() {
                       By {w.created_by} · started {fmtTs(w.started_at)} · ends {fmtTs(w.ends_at)}
                     </div>
                   </div>
-                  <button
-                    onClick={() => handleDelete(w.id)}
-                    className="shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-red-400 hover:bg-red-500/15 border border-red-500/20 transition-colors"
-                    title="End maintenance window now"
-                  >
-                    <Trash2 size={12} />
-                    End now
-                  </button>
+                  {confirmDeleteId === w.id ? (
+                    <div className="shrink-0 flex items-center gap-1.5">
+                      <span className="text-xs text-[var(--dim)]">End now?</span>
+                      <button
+                        onClick={() => { handleDelete(w.id); setConfirmDeleteId(null) }}
+                        className="flex items-center gap-1 px-2.5 py-1.5 rounded text-xs font-medium text-red-400 bg-red-500/15 border border-red-500/20 hover:bg-red-500/25 transition-colors"
+                      >
+                        <Trash2 size={12} />
+                        Confirm
+                      </button>
+                      <button
+                        onClick={() => setConfirmDeleteId(null)}
+                        className="px-2.5 py-1.5 rounded text-xs font-medium text-[var(--dim)] hover:bg-[var(--hover)] border border-[var(--border)] transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setConfirmDeleteId(w.id)}
+                      className="shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-red-400 hover:bg-red-500/15 border border-red-500/20 transition-colors"
+                      title="End maintenance window now"
+                    >
+                      <Trash2 size={12} />
+                      End now
+                    </button>
+                  )}
                 </div>
               </Card>
             ))}

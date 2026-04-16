@@ -52,6 +52,12 @@ function ReAuthModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
   const [pasteError, setPasteError] = useState('')
   const abortRef = useRef<AbortController | null>(null)
 
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onClose])
+
   const submitPaste = async () => {
     const raw = pasteJson.trim()
     if (!raw) return
@@ -385,13 +391,13 @@ export function TopBar({ onMobileMenuClick }: TopBarProps) {
                 CH Analyzer
               </button>
               <ChevronRight size={11} className="text-[var(--border)] shrink-0" />
-              <span className="text-[var(--text)] font-medium truncate">
+              <span className="text-[var(--text)] font-medium truncate" title={VIEW_TITLES[view] ?? 'Overview'}>
                 {VIEW_TITLES[view] ?? 'Overview'}
               </span>
               {view === 'detail' && selectedInstance && (
                 <>
                   <ChevronRight size={11} className="text-[var(--border)] shrink-0" />
-                  <span className="text-[var(--accent)] font-medium truncate">
+                  <span className="text-[var(--accent)] font-medium truncate" title={selectedInstance}>
                     {selectedInstance}
                   </span>
                 </>

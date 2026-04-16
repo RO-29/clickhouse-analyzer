@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/rohitjain/ch-analyzer/internal/alerter"
@@ -183,35 +184,10 @@ func formatDur(d time.Duration) string {
 }
 
 func escMD(s string) string {
-	r := s
-	for _, pair := range [][2]string{{"&", "&amp;"}, {"<", "&lt;"}, {">", "&gt;"}} {
-		r = replaceAll(r, pair[0], pair[1])
-	}
-	return r
-}
-
-func replaceAll(s, old, new string) string {
-	out := ""
-	for {
-		i := indexOf(s, old)
-		if i < 0 {
-			return out + s
-		}
-		out += s[:i] + new
-		s = s[i+len(old):]
-	}
-}
-
-func indexOf(s, sub string) int {
-	if len(sub) == 0 {
-		return 0
-	}
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	return s
 }
 
 // Button helpers.

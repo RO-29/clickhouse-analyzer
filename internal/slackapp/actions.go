@@ -169,6 +169,8 @@ func (a *App) buildMaintenanceModal(preselectedInstance string, instances []stri
 
 func (a *App) submitMaintenance(payload slack.InteractionCallback) {
 	vals := payload.View.State.Values
+	// Modal submissions don't carry payload.Channel.ID — use configured channel.
+	channelID := a.cfg.ChannelID
 
 	instance := ""
 	if v, ok := vals["block_instance"]["instance"]; ok && v.SelectedOption.Value != "" {
@@ -184,7 +186,7 @@ func (a *App) submitMaintenance(payload slack.InteractionCallback) {
 	}
 
 	if instance == "" {
-		a.postEphemeral(payload.Channel.ID, payload.User.ID, "❌  No instance selected.")
+		a.postEphemeral(channelID, payload.User.ID, "❌  No instance selected.")
 		return
 	}
 
@@ -199,13 +201,13 @@ func (a *App) submitMaintenance(payload slack.InteractionCallback) {
 	}
 
 	if a.maintStore == nil {
-		a.postEphemeral(payload.Channel.ID, payload.User.ID, "❌  Maintenance store unavailable.")
+		a.postEphemeral(channelID, payload.User.ID, "❌  Maintenance store unavailable.")
 		return
 	}
 
 	win := a.maintStore.Add(instance, reason, payload.User.Name, time.Duration(mins)*time.Minute)
 
-	a.postEphemeral(payload.Channel.ID, payload.User.ID,
+	a.postEphemeral(channelID, payload.User.ID,
 		fmt.Sprintf("🔧  Maintenance window started for `%s` until %s.\nReason: %s",
 			instance,
 			win.EndsAt.UTC().Format("15:04 UTC"),
@@ -274,6 +276,8 @@ func (a *App) buildSnoozeModal(preselectedInstance string, instances []string) s
 
 func (a *App) submitSnooze(payload slack.InteractionCallback) {
 	vals := payload.View.State.Values
+	// Modal submissions don't carry payload.Channel.ID — use configured channel.
+	channelID := a.cfg.ChannelID
 
 	instance := ""
 	if v, ok := vals["block_instance"]["instance"]; ok {
@@ -285,15 +289,15 @@ func (a *App) submitSnooze(payload slack.InteractionCallback) {
 	}
 
 	if instance == "" {
-		a.postEphemeral(payload.Channel.ID, payload.User.ID, "❌  No instance selected.")
+		a.postEphemeral(channelID, payload.User.ID, "❌  No instance selected.")
 		return
 	}
 	if err := a.doSnooze(instance, hours, payload.User.Name); err != nil {
-		a.postEphemeral(payload.Channel.ID, payload.User.ID,
+		a.postEphemeral(channelID, payload.User.ID,
 			fmt.Sprintf("❌  Failed to snooze `%s`: %v", instance, err))
 		return
 	}
-	a.postEphemeral(payload.Channel.ID, payload.User.ID,
+	a.postEphemeral(channelID, payload.User.ID,
 		fmt.Sprintf("🔇  Snoozed `%s` for %dh.", instance, hours))
 	go a.UpdatePinned()
 }
@@ -334,14 +338,25 @@ func (a *App) runAnalysis(ctx context.Context, channelID, msgTS, instance string
 	}
 	defer resp.Body.Close()
 
-	// Collect SSE text chunks.
+	// Collect SSE text chunks. The analyze endpoint sends:
+	//   event: chunk\ndata: "json-encoded string"\n\n
+	// Only "chunk" events carry text; "status"/"debug"/"stderr" are skipped.
 	var result strings.Builder
 	scanner := bufio.NewScanner(resp.Body)
+	var currentEvent string
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.HasPrefix(line, "data: ") {
-			chunk := strings.TrimPrefix(line, "data: ")
-			result.WriteString(chunk)
+		switch {
+		case strings.HasPrefix(line, "event: "):
+			currentEvent = strings.TrimPrefix(line, "event: ")
+		case strings.HasPrefix(line, "data: ") && currentEvent == "chunk":
+			raw := strings.TrimPrefix(line, "data: ")
+			var text string
+			if err := json.Unmarshal([]byte(raw), &text); err == nil {
+				result.WriteString(text)
+			}
+		case line == "":
+			currentEvent = ""
 		}
 	}
 

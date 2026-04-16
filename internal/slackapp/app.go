@@ -58,36 +58,34 @@ func New(cfg config.SlackConfig, webAddr string, alertMgr *alerter.AlertManager,
 // Run starts the Socket Mode WebSocket connection and event loop.
 // It registers itself as the alertMgr state-change callback, then blocks until ctx is done.
 func (a *App) Run(ctx context.Context) {
-	// Register as state-change callback so pinned message updates on every alert change.
 	a.alertMgr.SetOnStateChange(a.scheduleRefresh)
-
-	// Start debounce goroutine: coalesces rapid state-change signals into one refresh.
 	go a.refreshLoop(ctx)
 
-	// Run the WebSocket connection in a background goroutine.
+	// Event consumer goroutine — must be running before RunContext so socket.Events
+	// is always drained. Each event dispatched in its own goroutine so the consumer
+	// never blocks and the WebSocket ping/pong cycle is never starved.
 	go func() {
-		a.logger.Info("socket mode connecting to Slack WebSocket")
-		if err := a.socket.RunContext(ctx); err != nil && ctx.Err() == nil {
-			a.logger.Error("socket mode RunContext failed", "error", err)
-		} else {
-			a.logger.Info("socket mode RunContext exited cleanly")
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case evt, ok := <-a.socket.Events:
+				if !ok {
+					return
+				}
+				go a.dispatch(ctx, evt)
+			}
 		}
 	}()
 
-	// Schedule initial pinned dashboard non-blocking so the event loop
-	// starts immediately and socket.Events is always being drained.
+	// Post initial pinned dashboard asynchronously.
 	go a.UpdatePinned()
 
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case evt, ok := <-a.socket.Events:
-			if !ok {
-				return
-			}
-			a.dispatch(ctx, evt)
-		}
+	// RunContext blocks here until ctx is cancelled. It manages the WebSocket
+	// connection, reconnecting automatically on disconnect.
+	a.logger.Info("socket mode connecting to Slack WebSocket")
+	if err := a.socket.RunContext(ctx); err != nil && ctx.Err() == nil {
+		a.logger.Error("socket mode RunContext failed", "error", err)
 	}
 }
 
@@ -105,8 +103,7 @@ func (a *App) scheduleRefresh() {
 	}
 }
 
-// refreshLoop drains pendingRefresh with a short debounce so rapid alert storms
-// result in only one Slack API call.
+// refreshLoop drains pendingRefresh so rapid alert storms coalesce into one refresh.
 func (a *App) refreshLoop(ctx context.Context) {
 	for {
 		select {
@@ -119,6 +116,7 @@ func (a *App) refreshLoop(ctx context.Context) {
 }
 
 // dispatch routes a socketmode event to the appropriate handler.
+// Called in a goroutine per event — must not share mutable state without locking.
 func (a *App) dispatch(ctx context.Context, evt socketmode.Event) {
 	switch evt.Type {
 	case socketmode.EventTypeConnecting:
@@ -137,7 +135,7 @@ func (a *App) dispatch(ctx context.Context, evt socketmode.Event) {
 			return
 		}
 		a.socket.Ack(*evt.Request)
-		go a.handleSlashCommand(ctx, cmd)
+		a.handleSlashCommand(ctx, cmd)
 
 	case socketmode.EventTypeInteractive:
 		payload, ok := evt.Data.(slack.InteractionCallback)
@@ -148,11 +146,10 @@ func (a *App) dispatch(ctx context.Context, evt socketmode.Event) {
 		switch payload.Type {
 		case slack.InteractionTypeBlockActions:
 			a.socket.Ack(*evt.Request)
-			go a.handleBlockAction(ctx, payload)
+			a.handleBlockAction(ctx, payload)
 		case slack.InteractionTypeViewSubmission:
-			// Ack closes the modal; errors are posted as ephemeral messages.
 			a.socket.Ack(*evt.Request)
-			go a.handleModalSubmit(ctx, payload)
+			a.handleModalSubmit(ctx, payload)
 		default:
 			a.socket.Ack(*evt.Request)
 		}
@@ -164,8 +161,13 @@ func (a *App) dispatch(ctx context.Context, evt socketmode.Event) {
 	}
 }
 
-// postEphemeral sends a message visible only to the given user in the given channel.
+// postEphemeral sends a message visible only to the given user.
+// Falls back to the configured channel if channelID is empty (modal submissions
+// don't carry a channel ID).
 func (a *App) postEphemeral(channelID, userID, text string) {
+	if channelID == "" {
+		channelID = a.cfg.ChannelID
+	}
 	if _, err := a.client.PostEphemeral(channelID, userID,
 		slack.MsgOptionText(text, false),
 	); err != nil {
@@ -198,7 +200,7 @@ func (a *App) openModal(triggerID string, view slack.ModalViewRequest) {
 	}
 }
 
-// instanceNames returns all configured instance names in sorted order.
+// instanceNames returns all configured instance names.
 func (a *App) instanceNames() []string {
 	var names []string
 	_ = a.chMgr.ForEach(func(name string, _ *chclient.Client) error {
