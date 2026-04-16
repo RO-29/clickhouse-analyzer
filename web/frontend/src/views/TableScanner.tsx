@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Search, RefreshCw, ChevronDown, ChevronRight,
   Database, HardDrive, Activity, Code, AlertTriangle,
@@ -609,6 +609,7 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
   const [modalEntry, setModalEntry] = useState<TableScanEntry | null>(null)
   const [includeSystem, setIncludeSystem] = useState(false)
   const [selectedDb, setSelectedDb] = useState('all')
+  const selectedDbRef = useRef('all')
 
   const { analyze } = useAIAnalysis(instance)
 
@@ -642,21 +643,28 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
     }
   }, [selectedInstance, instances]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Keep ref in sync so load() always reads the current DB filter without
+  // being a dep (which would break the dropdown by re-fetching on every change).
+  selectedDbRef.current = selectedDb
+
   const load = useCallback(async () => {
     if (!instance) return
     setLoading(true)
     setError('')
     try {
       const now = Math.floor(Date.now() / 1000)
-      const data = await api.tableScan(instance, now - rangePreset, now, includeSystem)
+      const dbFilter = selectedDbRef.current !== 'all' ? selectedDbRef.current : undefined
+      const data = await api.tableScan(instance, now - rangePreset, now, includeSystem, dbFilter)
       setResult(data)
-      setSelectedDb('all') // reset db filter when data reloads
     } catch (e: any) {
       setError(e.message ?? 'Failed to load')
     } finally {
       setLoading(false)
     }
   }, [instance, rangePreset, includeSystem])
+
+  // Reset DB selector when instance, range, or system toggle changes.
+  useEffect(() => { setSelectedDb('all') }, [instance, rangePreset, includeSystem])
 
   useEffect(() => { load() }, [load, refreshKey])
 
