@@ -28,6 +28,7 @@ interface HistoryChartProps {
   title: string
   height?: number
   yFormat?: 'bytes' | 'ms' | 'number'
+  note?: string  // shown below title when all series values are zero (N/A indicator)
   onAnalyze?: (data: Record<string, any>[], series: SeriesDef[], title: string) => void
 }
 
@@ -37,6 +38,7 @@ export function HistoryChart({
   title,
   height = 160,
   yFormat = 'number',
+  note,
   onAnalyze,
 }: HistoryChartProps) {
   const data = Array.isArray(rawData) ? rawData : []
@@ -136,12 +138,20 @@ export function HistoryChart({
   }
 
   const empty = data.length === 0
+  const allZero = !empty && note !== undefined && series.every(s =>
+    data.every(row => !(Number(row[s.key]) > 0))
+  )
 
   return (
     <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl overflow-hidden">
       <div className="px-5 pt-4 pb-2 flex items-center gap-2">
-        <span className="text-xs font-semibold uppercase tracking-wider text-[var(--dim)] flex-1">{title}</span>
-        {onAnalyze && !empty && (
+        <div className="flex-1 min-w-0">
+          <span className="text-xs font-semibold uppercase tracking-wider text-[var(--dim)]">{title}</span>
+          {allZero && note && (
+            <span className="ml-2 text-[11px] text-[var(--dim)] italic normal-case tracking-normal">{note}</span>
+          )}
+        </div>
+        {onAnalyze && !empty && !allZero && (
           <button
             onClick={() => onAnalyze(data, series, title)}
             className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-purple-400 hover:bg-purple-500/15 border border-transparent hover:border-purple-500/20 transition-colors"
@@ -163,6 +173,10 @@ export function HistoryChart({
                 No data in range
               </text>
             </svg>
+          </div>
+        ) : allZero ? (
+          <div style={{ height }} className="flex items-center justify-center">
+            <span className="text-[var(--dim)] text-xs italic opacity-60">— not applicable —</span>
           </div>
         ) : (
           <div style={{ height }}>

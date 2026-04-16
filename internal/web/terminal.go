@@ -522,7 +522,7 @@ func (s *Server) handleS3Stats(w http.ResponseWriter, r *http.Request) {
 			max(ProfileEvents['S3ReadMicroseconds']/nullIf(ProfileEvents['S3ReadRequestsCount'],0))/1000 as max_latency_ms,
 			sum(ProfileEvents['S3ReadRequestsCount']) as total_s3_requests,
 			any(user) as user,
-			substring(any(query),1,200) as sample_query
+			substring(any(query),1,500) as sample_query
 		FROM system.query_log
 		WHERE type='QueryFinish' AND ProfileEvents['S3ReadRequestsCount'] > 0
 		  AND event_time >= now() - INTERVAL 1 HOUR

@@ -788,30 +788,28 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
                     onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
                   />
                 )}
-                {/* Mark cache */}
-                {timeline.some(r => Number(r.avg_mark_cache_hit_pct) > 0) && (
-                  <HistoryChart
-                    title="Mark Cache Hit Rate (%)"
-                    data={timeline}
-                    series={[{ key: 'avg_mark_cache_hit_pct', label: 'Hit %', color: C.cyan }]}
-                    height={100}
-                    onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
-                  />
-                )}
-                {/* S3 latency — only shown when this pattern uses S3 */}
-                {timeline.some(r => Number(r.avg_s3_latency_ms) > 0) && (
-                  <HistoryChart
-                    title="S3 Latency & Requests"
-                    data={timeline}
-                    series={[
-                      { key: 'avg_s3_latency_ms', label: 'Avg Latency ms', color: C.yellow },
-                      { key: 'avg_s3_requests', label: 'Requests/exec', color: C.orange },
-                    ]}
-                    yFormat="ms"
-                    height={100}
-                    onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
-                  />
-                )}
+                {/* Mark cache — always shown; N/A means data fully served from uncompressed/OS cache */}
+                <HistoryChart
+                  title="Mark Cache Hit Rate (%)"
+                  data={timeline}
+                  series={[{ key: 'avg_mark_cache_hit_pct', label: 'Hit %', color: C.cyan }]}
+                  note="No disk index reads — data served from uncompressed or OS page cache"
+                  height={100}
+                  onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
+                />
+                {/* S3 latency — always shown; N/A means this pattern does not read from S3 storage */}
+                <HistoryChart
+                  title="S3 Latency & Requests per Exec"
+                  data={timeline}
+                  series={[
+                    { key: 'avg_s3_latency_ms', label: 'Avg Latency ms', color: C.yellow },
+                    { key: 'avg_s3_requests', label: 'Requests/exec', color: C.orange },
+                  ]}
+                  yFormat="ms"
+                  note="No S3 reads — this query pattern does not access S3-backed storage"
+                  height={100}
+                  onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
+                />
               </div>
             </>
           )}
@@ -974,28 +972,26 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
                   onAnalyze={() => {}}
                 />
               )}
-              {patternTimeline.some(r => Number(r.avg_mark_cache_hit_pct) > 0) && (
-                <HistoryChart
-                  title="Mark Cache Hit Rate (%)"
-                  data={patternTimeline}
-                  series={[{ key: 'avg_mark_cache_hit_pct', label: 'Hit %', color: C.cyan }]}
-                  height={100}
-                  onAnalyze={() => {}}
-                />
-              )}
-              {patternTimeline.some(r => Number(r.avg_s3_latency_ms) > 0) && (
-                <HistoryChart
-                  title="S3 Latency & Requests"
-                  data={patternTimeline}
-                  series={[
-                    { key: 'avg_s3_latency_ms', label: 'Avg Latency ms', color: C.yellow },
-                    { key: 'avg_s3_requests', label: 'Requests/exec', color: C.orange },
-                  ]}
-                  yFormat="ms"
-                  height={100}
-                  onAnalyze={() => {}}
-                />
-              )}
+              <HistoryChart
+                title="Mark Cache Hit Rate (%)"
+                data={patternTimeline}
+                series={[{ key: 'avg_mark_cache_hit_pct', label: 'Hit %', color: C.cyan }]}
+                note="No disk index reads — data served from uncompressed or OS page cache"
+                height={100}
+                onAnalyze={() => {}}
+              />
+              <HistoryChart
+                title="S3 Latency & Requests per Exec"
+                data={patternTimeline}
+                series={[
+                  { key: 'avg_s3_latency_ms', label: 'Avg Latency ms', color: C.yellow },
+                  { key: 'avg_s3_requests', label: 'Requests/exec', color: C.orange },
+                ]}
+                yFormat="ms"
+                note="No S3 reads — this query pattern does not access S3-backed storage"
+                height={100}
+                onAnalyze={() => {}}
+              />
             </>
           )}
         </div>
@@ -1790,12 +1786,13 @@ function S3Tab({ instance, from, to, refreshKey, onAnalyze, onShowQuery }: TabPr
               { key: 'max_latency_ms', label: 'Max ms', tooltip: 'Maximum single S3 request latency observed', format: (v: any) => fmtDuration(Number(v ?? 0)) },
               {
                 key: 'sample_query', label: 'Sample',
+                tooltip: 'Example SQL query for this hash — hover to read, click ⤢ for full text',
                 format: (v: any) => {
                   const q = String(v ?? '')
                   return (
-                    <span className="flex items-center gap-1.5 group/q min-w-0">
-                      <span className="text-[var(--dim)] text-xs font-mono truncate">
-                        {q.length > 60 ? q.slice(0, 60) + '…' : q}
+                    <span className="flex items-center gap-1.5 group/q min-w-0" title={q}>
+                      <span className="text-[var(--dim)] text-xs font-mono">
+                        {q.length > 150 ? q.slice(0, 150) + '…' : q}
                       </span>
                       {q && (
                         <button
