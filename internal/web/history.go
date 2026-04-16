@@ -591,6 +591,50 @@ func (s *Server) handleQueryPatternTimeline(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
+	// Always enrich with ProfileEvents from system.query_log — mark cache, S3, CPU, read rows.
+	profileSQL := fmt.Sprintf(`SELECT
+		toStartOfInterval(event_time, INTERVAL %d SECOND) as ts,
+		avg(read_rows) as avg_read_rows,
+		avg(written_rows) as avg_written_rows,
+		avg(ProfileEvents['UserTimeMicroseconds'] + ProfileEvents['SystemTimeMicroseconds']) / 1000 as avg_cpu_ms,
+		avgIf(
+			ProfileEvents['MarkCacheHits'] * 100.0 / (ProfileEvents['MarkCacheHits'] + ProfileEvents['MarkCacheMisses']),
+			ProfileEvents['MarkCacheHits'] + ProfileEvents['MarkCacheMisses'] > 0
+		) as avg_mark_cache_hit_pct,
+		avg(ProfileEvents['S3ReadRequestsCount']) as avg_s3_requests,
+		avgIf(
+			ProfileEvents['S3ReadMicroseconds'] / ProfileEvents['S3ReadRequestsCount'] / 1000,
+			ProfileEvents['S3ReadRequestsCount'] > 0
+		) as avg_s3_latency_ms
+	FROM system.query_log
+	WHERE normalized_query_hash = %s
+	  AND event_time >= '%s' AND event_time <= '%s'
+	  AND type IN ('QueryFinish', 'ExceptionWhileProcessing')
+	GROUP BY ts ORDER BY ts`, bucket, sqlSafeUInt(hash), fromTime, toTime)
+
+	profileRows, profileErr := client.Query(ctx, profileSQL)
+	if profileErr == nil && len(profileRows) > 0 {
+		// Index profile rows by ts string for merge.
+		profMap := make(map[string]map[string]interface{}, len(profileRows))
+		for _, pr := range profileRows {
+			if ts, ok := pr["ts"]; ok {
+				profMap[fmt.Sprintf("%v", ts)] = pr
+			}
+		}
+		// Merge into main rows.
+		for _, row := range rows {
+			tsKey := fmt.Sprintf("%v", row["ts"])
+			if pr, ok := profMap[tsKey]; ok {
+				for _, k := range []string{"avg_read_rows", "avg_written_rows", "avg_cpu_ms",
+					"avg_mark_cache_hit_pct", "avg_s3_requests", "avg_s3_latency_ms"} {
+					if v, exists := pr[k]; exists {
+						row[k] = v
+					}
+				}
+			}
+		}
+	}
+
 	writeJSON(w, http.StatusOK, rows)
 }
 
@@ -935,19 +979,20 @@ func (s *Server) handleQuerySamples(w http.ResponseWriter, r *http.Request) {
 
 	fromTime, toTime := parseFromTo(r)
 	limit := parseIntParam(r, "limit", 100)
-	hash := r.URL.Query().Get("hash")       // filter by normalized_query_hash
-	user := r.URL.Query().Get("user")       // filter by user
-	kind := r.URL.Query().Get("kind")       // filter by query_kind
-	minMs := r.URL.Query().Get("min_ms")    // filter by min duration
+	hash := r.URL.Query().Get("hash")             // filter by normalized_query_hash
+	user := r.URL.Query().Get("user")             // filter by user
+	kind := r.URL.Query().Get("kind")             // filter by query_kind
+	minMs := r.URL.Query().Get("min_ms")          // filter by min duration
+	errorsOnly := r.URL.Query().Get("errors_only") == "1" // show only exceptions
 
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
 	// Try ch_analyzer.query_samples first (fast).
-	samples, err := s.queryFromSamples(ctx, client, fromTime, toTime, hash, user, kind, minMs, limit)
+	samples, err := s.queryFromSamples(ctx, client, fromTime, toTime, hash, user, kind, minMs, errorsOnly, limit)
 	if err != nil || len(samples) == 0 {
 		// Fall back to system.query_log.
-		samples, err = s.queryFromQueryLog(ctx, client, fromTime, toTime, hash, user, kind, minMs, limit)
+		samples, err = s.queryFromQueryLog(ctx, client, fromTime, toTime, hash, user, kind, minMs, errorsOnly, limit)
 		if err != nil {
 			slog.Warn("query samples fallback failed", "err", err, "instance", instance)
 			writeJSON(w, http.StatusOK, []map[string]interface{}{})
@@ -960,7 +1005,7 @@ func (s *Server) handleQuerySamples(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) queryFromSamples(ctx context.Context, client *chclient.Client,
-	fromTime, toTime, hash, user, kind, minMs string, limit int) ([]map[string]interface{}, error) {
+	fromTime, toTime, hash, user, kind, minMs string, errorsOnly bool, limit int) ([]map[string]interface{}, error) {
 
 	// Check table exists first.
 	rows, err := client.Query(ctx, "SELECT count() as cnt FROM ch_analyzer.query_samples LIMIT 1")
@@ -983,6 +1028,9 @@ func (s *Server) queryFromSamples(ctx context.Context, client *chclient.Client,
 	if minMs != "" {
 		filters = append(filters, fmt.Sprintf("query_duration_ms >= %s", sqlSafeUInt(minMs)))
 	}
+	if errorsOnly {
+		filters = append(filters, "is_exception = 1")
+	}
 
 	sql := fmt.Sprintf(`SELECT
 		event_time,
@@ -998,7 +1046,8 @@ func (s *Server) queryFromSamples(ctx context.Context, client *chclient.Client,
 		is_exception,
 		exception_code,
 		client_name,
-		interface
+		interface,
+		'' AS tables_accessed
 	FROM ch_analyzer.query_samples
 	WHERE %s
 	ORDER BY event_time DESC
@@ -1008,13 +1057,17 @@ func (s *Server) queryFromSamples(ctx context.Context, client *chclient.Client,
 }
 
 func (s *Server) queryFromQueryLog(ctx context.Context, client *chclient.Client,
-	fromTime, toTime, hash, user, kind, minMs string, limit int) ([]map[string]interface{}, error) {
+	fromTime, toTime, hash, user, kind, minMs string, errorsOnly bool, limit int) ([]map[string]interface{}, error) {
 
 	var filters []string
 	filters = append(filters,
 		fmt.Sprintf("event_time >= '%s' AND event_time <= '%s'", fromTime, toTime),
-		"is_initial_query = 1",
-		"type IN ('QueryFinish', 'ExceptionWhileProcessing')")
+		"is_initial_query = 1")
+	if errorsOnly {
+		filters = append(filters, "type = 'ExceptionWhileProcessing'")
+	} else {
+		filters = append(filters, "type IN ('QueryFinish', 'ExceptionWhileProcessing')")
+	}
 	if hash != "" {
 		filters = append(filters, fmt.Sprintf("normalized_query_hash = %s", sqlSafeUInt(hash)))
 	}
@@ -1042,7 +1095,8 @@ func (s *Server) queryFromQueryLog(ctx context.Context, client *chclient.Client,
 		if(type = 'ExceptionWhileProcessing', 1, 0) AS is_exception,
 		exception_code,
 		client_name,
-		interface
+		interface,
+		arrayStringConcat(arrayFilter(x -> x != 'ch_analyzer', tables), ', ') AS tables_accessed
 	FROM system.query_log
 	WHERE %s
 	ORDER BY event_time DESC

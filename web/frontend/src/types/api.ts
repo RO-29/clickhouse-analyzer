@@ -112,6 +112,7 @@ export interface QuerySample {
   exception_code: number
   client_name: string
   interface: string
+  tables_accessed?: string
 }
 
 export interface QueryUser {

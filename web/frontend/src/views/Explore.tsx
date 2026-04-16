@@ -251,9 +251,10 @@ const SORT_OPTIONS = [
 
 interface QueryPatternsTabProps extends TabProps {
   onDrillHash?: (hash: string, user?: string) => void
+  onDrillFail?: (hash: string) => void
 }
 
-function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQuery, onDrillHash }: QueryPatternsTabProps) {
+function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQuery, onDrillHash, onDrillFail }: QueryPatternsTabProps) {
   const [patterns, setPatterns] = useState<QueryPatternV2[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -454,7 +455,7 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
     {
       key: 'failures',
       label: 'Fails',
-      tooltip: 'Number of executions that raised an exception. Click to see error messages and charts.',
+      tooltip: 'Number of executions that raised an exception. Click to see the failed query samples.',
       format: (v: any, row: any) => {
         const n = Number(v)
         const hash = String(row.normalized_query_hash)
@@ -464,9 +465,9 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
           : <span className="text-amber-400 text-xs font-medium">{n}</span>
         return (
           <button
-            onClick={e => { e.stopPropagation(); setFailHash(h => h === hash ? null : hash); setSelectedHash(null) }}
+            onClick={e => { e.stopPropagation(); onDrillFail?.(hash) }}
             className="hover:opacity-75 transition-opacity"
-            title="Click to see failure details"
+            title="Click to see failed query samples"
           >
             {chip}
           </button>
@@ -728,7 +729,7 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
                 )
               })()}
 
-              {/* 3-chart grid */}
+              {/* Charts grid */}
               <div className="grid grid-cols-1 gap-3">
                 <HistoryChart
                   title="Executions & Failures"
@@ -737,7 +738,7 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
                     { key: 'cnt', label: 'Executions', color: C.blue },
                     { key: 'failures', label: 'Failures', color: C.red },
                   ]}
-                  height={130}
+                  height={120}
                   onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
                 />
                 <HistoryChart
@@ -749,7 +750,7 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
                     { key: 'max_ms', label: 'Max', color: C.red },
                   ]}
                   yFormat="ms"
-                  height={130}
+                  height={120}
                   onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
                 />
                 <HistoryChart
@@ -760,9 +761,57 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
                     { key: 'avg_read_bytes', label: 'Avg Read Bytes', color: C.cyan },
                   ]}
                   yFormat="bytes"
-                  height={130}
+                  height={120}
                   onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
                 />
+                {/* CPU time */}
+                {timeline.some(r => Number(r.avg_cpu_ms) > 0) && (
+                  <HistoryChart
+                    title="CPU Time (User + System)"
+                    data={timeline}
+                    series={[{ key: 'avg_cpu_ms', label: 'Avg CPU', color: C.orange }]}
+                    yFormat="ms"
+                    height={100}
+                    onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
+                  />
+                )}
+                {/* Read rows */}
+                {timeline.some(r => Number(r.avg_read_rows) > 0) && (
+                  <HistoryChart
+                    title="Rows Read / Written"
+                    data={timeline}
+                    series={[
+                      { key: 'avg_read_rows', label: 'Read Rows', color: C.blue },
+                      { key: 'avg_written_rows', label: 'Written Rows', color: C.green },
+                    ]}
+                    height={100}
+                    onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
+                  />
+                )}
+                {/* Mark cache */}
+                {timeline.some(r => Number(r.avg_mark_cache_hit_pct) > 0) && (
+                  <HistoryChart
+                    title="Mark Cache Hit Rate (%)"
+                    data={timeline}
+                    series={[{ key: 'avg_mark_cache_hit_pct', label: 'Hit %', color: C.cyan }]}
+                    height={100}
+                    onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
+                  />
+                )}
+                {/* S3 latency — only shown when this pattern uses S3 */}
+                {timeline.some(r => Number(r.avg_s3_latency_ms) > 0) && (
+                  <HistoryChart
+                    title="S3 Latency & Requests"
+                    data={timeline}
+                    series={[
+                      { key: 'avg_s3_latency_ms', label: 'Avg Latency ms', color: C.yellow },
+                      { key: 'avg_s3_requests', label: 'Requests/exec', color: C.orange },
+                    ]}
+                    yFormat="ms"
+                    height={100}
+                    onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
+                  />
+                )}
               </div>
             </>
           )}
@@ -779,10 +828,11 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
 interface SamplesTabProps extends TabProps {
   initialHash?: string
   initialUser?: string
+  initialErrorsOnly?: boolean
   onClearDrill?: () => void
 }
 
-function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, initialUser, onClearDrill }: SamplesTabProps) {
+function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, initialUser, initialErrorsOnly, onClearDrill }: SamplesTabProps) {
   const [samples, setSamples] = useState<QuerySample[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -790,11 +840,35 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
   const [userFilter, setUserFilter] = useState(initialUser ?? '')
   const [kindFilter, setKindFilter] = useState('')
   const [minMs, setMinMs] = useState('')
+  const [errorsOnly, setErrorsOnly] = useState(initialErrorsOnly ?? false)
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
+
+  // Charts shown when drilling into failures for a specific hash
+  const [failTimeline, setFailTimeline] = useState<Record<string, any>[]>([])
+  const [patternTimeline, setPatternTimeline] = useState<Record<string, any>[]>([])
 
   // When initial drill context changes, update filters.
   useEffect(() => { setHashFilter(initialHash ?? '') }, [initialHash])
   useEffect(() => { setUserFilter(initialUser ?? '') }, [initialUser])
+  useEffect(() => { setErrorsOnly(initialErrorsOnly ?? false) }, [initialErrorsOnly])
+
+  // Load charts when we have a hash + errorsOnly drill (came from FAILS click)
+  useEffect(() => {
+    if (!hashFilter || !errorsOnly) { setFailTimeline([]); setPatternTimeline([]); return }
+    let c = false
+    Promise.all([
+      api.history.failures(instance, from, to, hashFilter),
+      api.history.queryPatternTimeline(instance, hashFilter, from, to),
+    ]).then(([fd, tl]) => {
+      if (c) return
+      const tlArr = Array.isArray(fd.timeline) ? fd.timeline : []
+      const map = new Map<string, number>()
+      for (const r of tlArr) map.set(r.ts, (map.get(r.ts) ?? 0) + (Number(r.cnt) || 0))
+      setFailTimeline([...map.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([ts, cnt]) => ({ ts, cnt })))
+      setPatternTimeline(Array.isArray(tl) ? tl : [])
+    }).catch(() => {})
+    return () => { c = true }
+  }, [instance, hashFilter, errorsOnly, from, to])
 
   useEffect(() => {
     let c = false
@@ -805,13 +879,14 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
       user: userFilter || undefined,
       kind: kindFilter || undefined,
       minMs: minMs || undefined,
+      errorsOnly: errorsOnly || undefined,
       limit: 200,
     })
       .then(d => { if (!c) setSamples(d) })
       .catch(e => { if (!c) setError(e.message) })
       .finally(() => { if (!c) setLoading(false) })
     return () => { c = true }
-  }, [instance, from, to, refreshKey, hashFilter, userFilter, kindFilter, minMs])
+  }, [instance, from, to, refreshKey, hashFilter, userFilter, kindFilter, minMs, errorsOnly])
 
   const toggleExpand = (i: number) => {
     setExpanded(prev => {
@@ -830,15 +905,112 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
 
   return (
     <div className="space-y-3">
+      {/* Failure charts — shown when drilling from FAILS click (hash + errorsOnly) */}
+      {hashFilter && errorsOnly && (failTimeline.length > 0 || patternTimeline.length > 0) && (
+        <div className="space-y-3">
+          {failTimeline.length > 0 && (
+            <HistoryChart
+              title="Failures Over Time"
+              data={failTimeline}
+              series={[{ key: 'cnt', label: 'Failed Executions', color: C.red }]}
+              height={110}
+              onAnalyze={() => {}}
+            />
+          )}
+          {patternTimeline.length > 0 && (
+            <>
+              <HistoryChart
+                title="Executions (All + Failures)"
+                data={patternTimeline}
+                series={[
+                  { key: 'cnt', label: 'Total Execs', color: C.blue },
+                  { key: 'failures', label: 'Failures', color: C.red },
+                ]}
+                height={100}
+                onAnalyze={() => {}}
+              />
+              <HistoryChart
+                title="Latency — Avg / P95 / Max"
+                data={patternTimeline}
+                series={[
+                  { key: 'avg_ms', label: 'Avg', color: C.green },
+                  { key: 'p95_ms', label: 'P95', color: C.yellow },
+                  { key: 'max_ms', label: 'Max', color: C.red },
+                ]}
+                yFormat="ms"
+                height={110}
+                onAnalyze={() => {}}
+              />
+              <HistoryChart
+                title="Memory & Read Bytes"
+                data={patternTimeline}
+                series={[
+                  { key: 'avg_memory', label: 'Memory', color: C.purple },
+                  { key: 'avg_read_bytes', label: 'Read Bytes', color: C.cyan },
+                ]}
+                yFormat="bytes"
+                height={110}
+                onAnalyze={() => {}}
+              />
+              {patternTimeline.some(r => Number(r.avg_cpu_ms) > 0) && (
+                <HistoryChart
+                  title="CPU Time (User + System)"
+                  data={patternTimeline}
+                  series={[{ key: 'avg_cpu_ms', label: 'Avg CPU', color: C.orange }]}
+                  yFormat="ms"
+                  height={100}
+                  onAnalyze={() => {}}
+                />
+              )}
+              {patternTimeline.some(r => Number(r.avg_read_rows) > 0) && (
+                <HistoryChart
+                  title="Rows Read / Written"
+                  data={patternTimeline}
+                  series={[
+                    { key: 'avg_read_rows', label: 'Read Rows', color: C.blue },
+                    { key: 'avg_written_rows', label: 'Written Rows', color: C.green },
+                  ]}
+                  height={100}
+                  onAnalyze={() => {}}
+                />
+              )}
+              {patternTimeline.some(r => Number(r.avg_mark_cache_hit_pct) > 0) && (
+                <HistoryChart
+                  title="Mark Cache Hit Rate (%)"
+                  data={patternTimeline}
+                  series={[{ key: 'avg_mark_cache_hit_pct', label: 'Hit %', color: C.cyan }]}
+                  height={100}
+                  onAnalyze={() => {}}
+                />
+              )}
+              {patternTimeline.some(r => Number(r.avg_s3_latency_ms) > 0) && (
+                <HistoryChart
+                  title="S3 Latency & Requests"
+                  data={patternTimeline}
+                  series={[
+                    { key: 'avg_s3_latency_ms', label: 'Avg Latency ms', color: C.yellow },
+                    { key: 'avg_s3_requests', label: 'Requests/exec', color: C.orange },
+                  ]}
+                  yFormat="ms"
+                  height={100}
+                  onAnalyze={() => {}}
+                />
+              )}
+            </>
+          )}
+        </div>
+      )}
+
       {/* Filters */}
       <Card>
-        <div className="flex flex-wrap gap-2 items-end">
-          {(hashFilter || userFilter) && (
+        <div className="flex flex-wrap gap-2 items-center">
+          {(hashFilter || userFilter || errorsOnly) && (
             <div className="flex items-center gap-1.5 px-2 py-1 rounded-full bg-[var(--accent)]/15 border border-[var(--accent)]/30 text-xs text-[var(--accent)]">
               {hashFilter && <span>hash: {hashFilter.slice(0, 12)}</span>}
               {userFilter && <span>user: {userFilter}</span>}
+              {errorsOnly && <span className="text-red-400">errors only</span>}
               <button
-                onClick={() => { setHashFilter(''); setUserFilter(''); onClearDrill?.() }}
+                onClick={() => { setHashFilter(''); setUserFilter(''); setErrorsOnly(false); onClearDrill?.() }}
                 className="ml-1 hover:text-[var(--fg)]"
               >
                 <X size={10} />
@@ -875,6 +1047,17 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
               placeholder="0"
             />
           </div>
+          <button
+            onClick={() => setErrorsOnly(v => !v)}
+            className={cn(
+              'flex items-center gap-1 px-2 py-1 rounded text-xs border transition-colors',
+              errorsOnly
+                ? 'bg-red-500/15 border-red-500/30 text-red-400'
+                : 'border-[var(--border)] text-[var(--dim)] hover:text-[var(--fg)]',
+            )}
+          >
+            Errors only
+          </button>
           <span className="ml-auto text-xs text-[var(--dim)]">{samples.length} rows</span>
         </div>
       </Card>
@@ -927,6 +1110,14 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
                         <span className="font-mono ml-1">{String(s.normalized_query_hash).slice(0, 16)}</span>
                       </span>
                     </div>
+                    {s.tables_accessed && (
+                      <div className="flex flex-wrap gap-1 text-xs">
+                        <span className="text-[var(--dim)] shrink-0">Tables:</span>
+                        {String(s.tables_accessed).split(', ').filter(Boolean).map((t, i) => (
+                          <span key={i} className="inline-flex px-1.5 py-0.5 rounded bg-[var(--hover)] border border-[var(--border)] font-mono text-[11px]">{t}</span>
+                        ))}
+                      </div>
+                    )}
                     {/* Query text */}
                     <div className="relative">
                       <pre className="text-xs font-mono text-[var(--fg)] whitespace-pre-wrap break-all leading-relaxed max-h-48 overflow-y-auto bg-[var(--card)] border border-[var(--border)] rounded p-2">
@@ -2004,9 +2195,10 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
   const { instances, selectedInstance, setSelectedInstance, setView, from, to } = useStore()
   const [tab, setTab] = useState<Tab>('patterns')
   const [queryModal, setQueryModal] = useState<string | null>(null)
-  // Drill state: clicking "Samples →" in Patterns tab or a row in Users tab navigates to Samples with filter pre-set.
+  // Drill state: clicking "Samples →" or "FAILS" in Patterns tab navigates to Samples with filter pre-set.
   const [drillHash, setDrillHash] = useState<string | undefined>()
   const [drillUser, setDrillUser] = useState<string | undefined>()
+  const [drillErrorsOnly, setDrillErrorsOnly] = useState(false)
   const inst = selectedInstance || instances[0] || ''
 
   const { analyze } = useAIAnalysis(inst)
@@ -2028,18 +2220,28 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
   const handleDrillHash = useCallback((hash: string) => {
     setDrillHash(hash)
     setDrillUser(undefined)
+    setDrillErrorsOnly(false)
+    setTab('samples')
+  }, [])
+
+  const handleDrillFail = useCallback((hash: string) => {
+    setDrillHash(hash)
+    setDrillUser(undefined)
+    setDrillErrorsOnly(true)
     setTab('samples')
   }, [])
 
   const handleDrillUser = useCallback((user: string) => {
     setDrillUser(user)
     setDrillHash(undefined)
+    setDrillErrorsOnly(false)
     setTab('samples')
   }, [])
 
   const handleClearDrill = useCallback(() => {
     setDrillHash(undefined)
     setDrillUser(undefined)
+    setDrillErrorsOnly(false)
   }, [])
 
   return (
@@ -2095,6 +2297,7 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
               instance={inst} from={from} to={to} refreshKey={refreshKey}
               onAnalyze={handleAnalyze} onShowQuery={handleShowQuery}
               onDrillHash={handleDrillHash}
+              onDrillFail={handleDrillFail}
             />
           )}
           {tab === 'samples' && (
@@ -2103,6 +2306,7 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
               onAnalyze={handleAnalyze} onShowQuery={handleShowQuery}
               initialHash={drillHash}
               initialUser={drillUser}
+              initialErrorsOnly={drillErrorsOnly}
               onClearDrill={handleClearDrill}
             />
           )}

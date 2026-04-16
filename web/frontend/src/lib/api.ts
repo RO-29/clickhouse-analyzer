@@ -114,12 +114,13 @@ export const api = {
       get<QueryPatternV2[]>(`/api/instances/${inst}/query-patterns-v2?from=${from}&to=${to}&limit=${limit}&sort_by=${sortBy}`),
     queryPatternTimeline: (inst: string, hash: string, from: number, to: number) =>
       get<Record<string, any>[]>(`/api/instances/${inst}/query-pattern-timeline?hash=${hash}&from=${from}&to=${to}`),
-    querySamples: (inst: string, from: number, to: number, opts?: { hash?: string; user?: string; kind?: string; minMs?: string; limit?: number }) => {
+    querySamples: (inst: string, from: number, to: number, opts?: { hash?: string; user?: string; kind?: string; minMs?: string; limit?: number; errorsOnly?: boolean }) => {
       const p = new URLSearchParams({ from: String(from), to: String(to), limit: String(opts?.limit ?? 100) })
       if (opts?.hash) p.set('hash', opts.hash)
       if (opts?.user) p.set('user', opts.user)
       if (opts?.kind) p.set('kind', opts.kind)
       if (opts?.minMs) p.set('min_ms', opts.minMs)
+      if (opts?.errorsOnly) p.set('errors_only', '1')
       return get<QuerySample[]>(`/api/instances/${inst}/query-samples?${p}`)
     },
     queryPatternOverview: (inst: string, from: number, to: number, topN = 8) =>

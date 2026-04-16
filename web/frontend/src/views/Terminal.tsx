@@ -270,7 +270,7 @@ export default function Terminal() {
       api.terminal.execute(
         inst,
         `SELECT database, table, name, type FROM system.columns
-         WHERE database NOT IN ('system','information_schema','INFORMATION_SCHEMA')
+         WHERE database NOT IN ('information_schema','INFORMATION_SCHEMA')
          ORDER BY database, table, name LIMIT 10000`,
         10000,
       ).catch(() => null),
@@ -279,13 +279,14 @@ export default function Terminal() {
       const items: SchemaItem[] = []
       const seen = new Set<string>()
 
-      // Tables
+      // Tables — API returns `table_name` field (not `name`)
       if (Array.isArray(tables)) {
         for (const t of tables) {
-          if (!t.database || !t.name) continue
-          const fq = `${t.database}.${t.name}`
+          const tname = t.table_name || t.name
+          if (!t.database || !tname) continue
+          const fq = `${t.database}.${tname}`
           if (!seen.has(fq)) { items.push({ label: fq, kind: 'table', detail: t.database }); seen.add(fq) }
-          if (!seen.has(t.name)) { items.push({ label: t.name, kind: 'table', detail: t.database }); seen.add(t.name) }
+          if (!seen.has(tname)) { items.push({ label: tname, kind: 'table', detail: t.database }); seen.add(tname) }
         }
       }
 
