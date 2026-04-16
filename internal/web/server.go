@@ -224,6 +224,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/auth/login", s.handleAuthLogin)
 	mux.HandleFunc("POST /api/auth/callback", s.handleAuthCallback)
 	mux.HandleFunc("POST /api/auth/refresh", s.handleAuthRefresh)
+	mux.HandleFunc("POST /api/auth/set-tokens", s.handleAuthSetTokens)
 	mux.HandleFunc("GET /api/maintenance", s.handleMaintenanceList)
 	mux.HandleFunc("POST /api/maintenance", s.handleMaintenanceCreate)
 	mux.HandleFunc("DELETE /api/maintenance/{id}", s.handleMaintenanceDelete)

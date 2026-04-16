@@ -599,3 +599,81 @@ func refreshOAuthToken(refreshToken string, scopes []string) (claudeCredentials,
 	}
 	return claudeCredentials{}, lastErr
 }
+
+// POST /api/auth/set-tokens — directly write OAuth tokens to the credentials file.
+// Accepts the raw credentials JSON (paste from ~/.claude/.credentials.json on any
+// authenticated machine) or a flat {accessToken, refreshToken, expiresAt} object.
+func (s *Server) handleAuthSetTokens(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 16384))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "could not read body")
+		return
+	}
+
+	home := findClaudeHome()
+	if home == "" {
+		home = "/var/lib/ch-analyzer"
+	}
+	_ = os.MkdirAll(filepath.Join(home, ".claude"), 0o755)
+	credsPath := filepath.Join(home, ".claude", ".credentials.json")
+
+	// Bare token string: sk-ant-oat01-… or sk-ant-ort01-…
+	if bare := strings.TrimSpace(string(body)); strings.HasPrefix(bare, "sk-ant-") && !strings.Contains(bare, "{") {
+		var c claudeCredentials
+		c.ClaudeAiOauth.AccessToken = bare
+		c.ClaudeAiOauth.ExpiresAt = time.Now().Add(24 * time.Hour).UnixMilli()
+		out, _ := json.Marshal(c)
+		if err := os.WriteFile(credsPath, out, 0o600); err != nil {
+			writeErr(w, http.StatusInternalServerError, "write failed: "+err.Error())
+			return
+		}
+		slog.Info("auth set-tokens: wrote bare access token", "path", credsPath)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
+
+	// Try wrapped form first (paste of full .credentials.json).
+	var wrapped claudeCredentials
+	if err := json.Unmarshal(body, &wrapped); err == nil && wrapped.ClaudeAiOauth.AccessToken != "" {
+		if err := os.WriteFile(credsPath, body, 0o600); err != nil {
+			writeErr(w, http.StatusInternalServerError, "write failed: "+err.Error())
+			return
+		}
+		slog.Info("auth set-tokens: wrote wrapped credentials", "path", credsPath)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
+
+	// Flat form: {accessToken, refreshToken, expiresAt (optional)}.
+	var flat struct {
+		AccessToken      string   `json:"accessToken"`
+		RefreshToken     string   `json:"refreshToken"`
+		ExpiresAt        int64    `json:"expiresAt"`
+		Scopes           []string `json:"scopes"`
+		SubscriptionType string   `json:"subscriptionType"`
+		RateLimitTier    string   `json:"rateLimitTier"`
+	}
+	if err := json.Unmarshal(body, &flat); err != nil || flat.AccessToken == "" {
+		writeErr(w, http.StatusBadRequest, "expected {accessToken, refreshToken} or full credentials JSON")
+		return
+	}
+	var c claudeCredentials
+	c.ClaudeAiOauth.AccessToken = flat.AccessToken
+	c.ClaudeAiOauth.RefreshToken = flat.RefreshToken
+	if flat.ExpiresAt > 0 {
+		c.ClaudeAiOauth.ExpiresAt = flat.ExpiresAt
+	} else {
+		c.ClaudeAiOauth.ExpiresAt = time.Now().Add(1 * time.Hour).UnixMilli()
+	}
+	c.ClaudeAiOauth.Scopes = flat.Scopes
+	c.ClaudeAiOauth.SubscriptionType = flat.SubscriptionType
+	c.ClaudeAiOauth.RateLimitTier = flat.RateLimitTier
+
+	out, _ := json.Marshal(c)
+	if err := os.WriteFile(credsPath, out, 0o600); err != nil {
+		writeErr(w, http.StatusInternalServerError, "write failed: "+err.Error())
+		return
+	}
+	slog.Info("auth set-tokens: wrote flat credentials", "path", credsPath)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}

@@ -12,6 +12,7 @@ import { Badge } from '../components/Badge'
 import { MetricChart } from '../components/MetricChart'
 import { HealthChecklist } from '../components/HealthChecklist'
 import { DataTable } from '../components/DataTable'
+import { AlertDetailPanel } from '../components/AlertDetailPanel'
 import type { Alert, DiskInfo, ReplicaStatus, S3Stats, MaintenanceWindow } from '../types/api'
 
 type DetailTab = 'summary' | 'queries' | 'storage' | 'replication' | 'history'
@@ -98,6 +99,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
   const [activeTab, setActiveTab] = useState<DetailTab>('summary')
   const [activeWindow, setActiveWindow] = useState<MaintenanceWindow | null>(null)
   const [alertHistory, setAlertHistory] = useState<Alert[]>([])
+  const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null)
   const [queries, setQueries] = useState<Record<string, any>[]>([])
   const [tables, setTables] = useState<Record<string, any>[]>([])
   const [disks, setDisks] = useState<DiskInfo[]>([])
@@ -364,7 +366,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
           {activeAlerts.length > 0 && (
             <Section title={`Active Alerts · ${activeAlerts.length}`} defaultOpen>
               <Card noPad>
-                <DataTable columns={alertCols} data={activeAlerts.sort((a, b) => b.created_at - a.created_at)} pageSize={20} />
+                <DataTable columns={alertCols} data={activeAlerts.sort((a, b) => b.created_at - a.created_at)} pageSize={20} onRowClick={row => setSelectedAlert(row as Alert)} />
               </Card>
             </Section>
           )}
@@ -678,6 +680,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
                   columns={alertCols}
                   data={(showActiveOnly ? rangeAlerts.filter(a => !a.resolved) : rangeAlerts).sort((a, b) => b.created_at - a.created_at)}
                   pageSize={50}
+                  onRowClick={row => setSelectedAlert(row as Alert)}
                 />
               </Card>
             )}
@@ -746,6 +749,14 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
             <div className="text-[12px] text-[var(--dim)] text-center py-4">No activity data for selected range</div>
           )}
         </div>
+      )}
+
+      {selectedAlert && (
+        <AlertDetailPanel
+          alert={selectedAlert}
+          onClose={() => setSelectedAlert(null)}
+          onResolve={!selectedAlert.resolved ? handleResolveDetailAlert : undefined}
+        />
       )}
     </div>
   )

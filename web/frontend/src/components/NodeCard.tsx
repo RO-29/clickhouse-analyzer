@@ -18,17 +18,27 @@ function AlertRow({
   onResolve,
   resolving,
   onNav,
+  onSelect,
 }: {
   alert: any
   onResolve: (key: string) => void
   resolving: boolean
   onNav: () => void
+  onSelect?: (alert: any) => void
 }) {
   const [open, setOpen] = useState(false)
+  const handleClick = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (onSelect) {
+      onSelect(alert)
+    } else {
+      setOpen(o => !o)
+    }
+  }
   return (
     <div>
       <button
-        onClick={e => { e.stopPropagation(); setOpen(o => !o) }}
+        onClick={handleClick}
         className="w-full flex items-center gap-2 text-[11px] text-left rounded hover:bg-[var(--hover)] px-2 py-1 transition-colors"
       >
         <Badge className={cn('border shrink-0', sevColor(alert.severity))}>
@@ -40,9 +50,9 @@ function AlertRow({
         {alert.possibly_recovered && (
           <RotateCcw size={9} className="text-green-400 shrink-0" />
         )}
-        <ChevronRight size={9} className={cn('text-[var(--dim)] shrink-0 transition-transform', open && 'rotate-90')} />
+        <ChevronRight size={9} className={cn('text-[var(--dim)] shrink-0 transition-transform', !onSelect && open && 'rotate-90')} />
       </button>
-      {open && (
+      {!onSelect && open && (
         <div
           className="mx-2 mb-1 p-2 rounded bg-[var(--hover)] border border-[var(--border)] text-[11px] space-y-1.5"
           onClick={e => e.stopPropagation()}
@@ -79,11 +89,13 @@ export function NodeCard({
   onClick,
   staleAlerts = 0,
   onResolved,
+  onSelectAlert,
 }: {
   instance: Instance
   onClick: () => void
   staleAlerts?: number
   onResolved?: () => void
+  onSelectAlert?: (alert: any) => void
 }) {
   const { navToDetail } = useStore()
   const [expanded, setExpanded] = useState(false)
@@ -222,6 +234,7 @@ export function NodeCard({
               onResolve={handleResolve}
               resolving={resolvingKey === a.dedup_key}
               onNav={() => navToDetail(instance.name)}
+              onSelect={onSelectAlert}
             />
           ))}
         </div>

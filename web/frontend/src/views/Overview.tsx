@@ -8,6 +8,7 @@ import { Card, Section } from '../components/Card'
 import { Badge } from '../components/Badge'
 import { NodeCard } from '../components/NodeCard'
 import { DataTable } from '../components/DataTable'
+import { AlertDetailPanel } from '../components/AlertDetailPanel'
 import type { Instance, Alert, AlertStats, HealthResponse } from '../types/api'
 
 /* ── Loading skeleton ──────────────────────────────────────────────────── */
@@ -113,6 +114,7 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
 
   const [instances, setLocalInstances] = useState<Instance[]>([])
   const [alerts, setAlerts] = useState<Alert[]>([])
+  const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null)
@@ -329,6 +331,7 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
                 onClick={() => goToInstance(inst.name)}
                 staleAlerts={staleByInstance.get(inst.name) ?? 0}
                 onResolved={() => setManualRefreshTick(t => t + 1)}
+                onSelectAlert={setSelectedAlert}
               />
             ))
           )}
@@ -342,9 +345,16 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
           defaultOpen={freshAlerts.length <= 20}
         >
           <Card noPad>
-            <DataTable columns={alertCols} data={freshAlerts} pageSize={50} />
+            <DataTable columns={alertCols} data={freshAlerts} pageSize={50} onRowClick={row => setSelectedAlert(row as Alert)} />
           </Card>
         </Section>
+      )}
+
+      {selectedAlert && (
+        <AlertDetailPanel
+          alert={selectedAlert}
+          onClose={() => setSelectedAlert(null)}
+        />
       )}
     </div>
   )

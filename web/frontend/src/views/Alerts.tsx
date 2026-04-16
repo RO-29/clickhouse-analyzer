@@ -6,6 +6,7 @@ import { api } from '../lib/api'
 import { fmtTime, cn } from '../lib/utils'
 import { Card } from '../components/Card'
 import { Badge } from '../components/Badge'
+import { AlertDetailPanel } from '../components/AlertDetailPanel'
 import { SqlBlock } from '../components/SqlBlock'
 import type { Alert, Suggestion } from '../types/api'
 
@@ -378,53 +379,27 @@ function AlertMessageRenderer({ message, instance }: { message: string; instance
 }
 
 /* ------------------------------------------------------------------ */
-/*  AlertRow (expandable)                                             */
+/*  AlertRow — slim clickable row, opens slide-in panel              */
 /* ------------------------------------------------------------------ */
-function AlertRow({ alert, showMeta, staleHours, snoozed, acked, onAnalyze, onResolve, onSnoozeChange, onAckChange }: {
+function AlertRow({ alert, showMeta, staleHours, snoozed, acked, onSelect }: {
   alert: Alert
   showMeta?: boolean
   staleHours: number
   snoozed: Record<string, number>
   acked: Record<string, any>
-  onAnalyze?: (alert: Alert) => void
-  onResolve?: (dedupKey: string) => void
-  onSnoozeChange?: () => void
-  onAckChange?: () => void
+  onSelect?: (alert: Alert) => void
 }) {
-  const [expanded, setExpanded] = useState(false)
-  const [suggestions, setSuggestions] = useState<Suggestion | null>(null)
-  const [loadingSugg, setLoadingSugg] = useState(false)
-  const { openTableDetail } = useStore()
   const stale = isStale(alert, staleHours)
   const snoozedUntil = snoozeUntil(alert.dedup_key, snoozed)
-  const runbook = useMemo(() => getRunbook(alert), [alert])
   const alertIsAcked = isAcked(alert.dedup_key, acked)
-  const ackedInfo = acked[alert.dedup_key] as { by: string; note: string; at: number } | undefined
-
-  // Inline ack form state
-  const [showAckForm, setShowAckForm] = useState(false)
-  const [ackBy, setAckBy] = useState('user')
-  const [ackNote, setAckNote] = useState('')
-
-  const handleExpand = useCallback(() => {
-    const next = !expanded
-    setExpanded(next)
-    if (next && !suggestions && !loadingSugg) {
-      setLoadingSugg(true)
-      api.suggestions(alert.category).then(setSuggestions).catch(() => {}).finally(() => setLoadingSugg(false))
-    }
-  }, [expanded, suggestions, loadingSugg, alert.category])
-
-  const invSql = useMemo(() => investigationSql(alert), [alert])
-  const tableInfo = useMemo(() => parseTableFromAlert(alert), [alert])
 
   return (
     <div className={cn('border-b border-[var(--border)] last:border-0', stale && 'opacity-60')}>
       <button
-        onClick={handleExpand}
+        onClick={() => onSelect?.(alert)}
         className="w-full flex items-center gap-3 px-3 py-2.5 text-left text-sm hover:bg-[var(--hover)] transition-colors"
       >
-        {expanded ? <ChevronDown size={14} className="shrink-0 text-[var(--dim)]" /> : <ChevronRight size={14} className="shrink-0 text-[var(--dim)]" />}
+        <ChevronRight size={14} className="shrink-0 text-[var(--dim)]" />
         {stale
           ? <Badge className="bg-[var(--border)] text-[var(--dim)] border border-[var(--border)] text-xs shrink-0">stale</Badge>
           : <Badge severity={alert.severity} />
@@ -450,183 +425,6 @@ function AlertRow({ alert, showMeta, staleHours, snoozed, acked, onAnalyze, onRe
         <span className="text-[var(--dim)] text-xs shrink-0">{fmtTime(alert.created_at)}</span>
         {alert.resolved && <Badge className="bg-green-500/10 text-green-400 border-green-500/20">resolved</Badge>}
       </button>
-
-      {expanded && (
-        <div className="px-3 pb-4 pl-10 space-y-4">
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-2 text-sm">
-            <div><span className="text-[var(--dim)]">Instance: </span>{alert.instance}</div>
-            <div><span className="text-[var(--dim)]">Category: </span>{alert.category}</div>
-            <div><span className="text-[var(--dim)]">Dedup Key: </span><span className="font-mono text-xs">{alert.dedup_key}</span></div>
-            <div><span className="text-[var(--dim)]">Created: </span>{fmtTime(alert.created_at)}</div>
-            {stale && (
-              <div><span className="text-[var(--dim)]">Last seen: </span><span className="text-yellow-400">{fmtTime(alert.updated_at ?? alert.created_at)}</span></div>
-            )}
-            {alert.resolved_at && <div><span className="text-[var(--dim)]">Resolved: </span>{fmtTime(alert.resolved_at)}</div>}
-          </div>
-
-          {alert.message && <AlertMessageRenderer message={alert.message} instance={alert.instance} />}
-
-          {loadingSugg && <div className="text-sm text-[var(--dim)]">Loading suggestions...</div>}
-          {suggestions && suggestions.suggestions.length > 0 && (
-            <div>
-              <div className="text-xs font-medium uppercase tracking-wider text-[var(--dim)] mb-2">Suggestions</div>
-              <div className="space-y-2">
-                {suggestions.suggestions.map((tip, i) => {
-                  const backtickMatch = tip.match(/^([\s\S]*?)```(?:\w+)?\n?([\s\S]+?)```([\s\S]*)$/s)
-                  if (backtickMatch) {
-                    const before = backtickMatch[1].trim(), sql = backtickMatch[2].trim(), after = backtickMatch[3].trim()
-                    return (
-                      <div key={i} className="space-y-1">
-                        {before && <div className="text-sm pl-2 border-l-2 border-[var(--border)]">{before}</div>}
-                        {looksLikeSql(sql) ? <SqlBlock sql={sql} instance={alert.instance} /> : <pre className="text-sm bg-[var(--hover)] rounded p-2 border border-[var(--border)] font-mono">{sql}</pre>}
-                        {after && <div className="text-sm pl-2 border-l-2 border-[var(--border)]">{after}</div>}
-                      </div>
-                    )
-                  }
-                  const sqlMatch = tip.match(/^(.*?):\s*(SELECT\s|SHOW\s|SYSTEM\s|OPTIMIZE\s|KILL\s)(.*)/is)
-                  if (sqlMatch) {
-                    return (
-                      <div key={i} className="space-y-1">
-                        <div className="text-sm pl-2 border-l-2 border-[var(--border)]">{sqlMatch[1].trim()}</div>
-                        <SqlBlock sql={(sqlMatch[2] + sqlMatch[3]).trim()} instance={alert.instance} />
-                      </div>
-                    )
-                  }
-                  if (looksLikeSql(tip)) return <SqlBlock key={i} sql={tip} instance={alert.instance} />
-                  return <div key={i} className="text-sm pl-2 border-l-2 border-[var(--border)]">{tip}</div>
-                })}
-              </div>
-            </div>
-          )}
-
-          {tableInfo && (
-            <button
-              onClick={() => openTableDetail(alert.instance, tableInfo.database, tableInfo.table)}
-              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium bg-[var(--accent)]/15 text-[var(--accent)] hover:bg-[var(--accent)]/25 transition-colors"
-            >
-              <Table2 size={14} />
-              Explore Table: {tableInfo.database}.{tableInfo.table}
-            </button>
-          )}
-
-          <div>
-            <div className="text-xs font-medium uppercase tracking-wider text-[var(--dim)] mb-2">Investigation Queries</div>
-            <div className="space-y-2">
-              {invSql.map((sql, i) => <SqlBlock key={i} sql={sql} instance={alert.instance} />)}
-            </div>
-          </div>
-
-          {runbook && <RunbookPanel runbook={runbook} />}
-
-          <div className="flex items-center flex-wrap gap-2">
-            {onAnalyze && (
-              <button
-                onClick={() => onAnalyze(alert)}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-purple-400 hover:bg-purple-500/15 border border-purple-500/20 transition-colors"
-              >
-                <Sparkles size={11} />
-                Analyze with AI
-              </button>
-            )}
-            {onResolve && !alert.resolved && (
-              <button
-                onClick={() => onResolve(alert.dedup_key)}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-green-400 hover:bg-green-500/15 border border-green-500/20 transition-colors"
-              >
-                Mark resolved
-              </button>
-            )}
-            {!alert.resolved && !snoozedUntil && (
-              <>
-                <button
-                  onClick={() => { snoozeAlert(alert.dedup_key, 4); onSnoozeChange?.() }}
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-amber-400 hover:bg-amber-500/15 border border-amber-500/20 transition-colors"
-                  title="Hide this alert for 4 hours"
-                >
-                  <BellOff size={11} />
-                  Snooze 4h
-                </button>
-                <button
-                  onClick={() => { snoozeAlert(alert.dedup_key, 24); onSnoozeChange?.() }}
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-amber-400 hover:bg-amber-500/15 border border-amber-500/20 transition-colors"
-                  title="Hide this alert for 24 hours"
-                >
-                  <BellOff size={11} />
-                  Snooze 24h
-                </button>
-              </>
-            )}
-            {snoozedUntil && (
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-amber-400">Snoozed until {fmtTime(snoozedUntil)}</span>
-                <button
-                  onClick={() => { unsnoozeAlert(alert.dedup_key); onSnoozeChange?.() }}
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-amber-400 hover:bg-amber-500/15 border border-amber-500/20 transition-colors"
-                >
-                  <Bell size={11} />
-                  Unsnooze
-                </button>
-              </div>
-            )}
-            {/* Acknowledge */}
-            {!alert.resolved && !alertIsAcked && !showAckForm && (
-              <button
-                onClick={() => setShowAckForm(true)}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-green-400 hover:bg-green-500/15 border border-green-500/20 transition-colors"
-              >
-                Acknowledge
-              </button>
-            )}
-            {!alert.resolved && !alertIsAcked && showAckForm && (
-              <div className="flex items-center gap-2 flex-wrap">
-                <input
-                  type="text"
-                  value={ackBy}
-                  onChange={e => setAckBy(e.target.value)}
-                  placeholder="By"
-                  className="bg-[var(--surface)] border border-[var(--border)] rounded px-2 py-1 text-xs w-24 focus:outline-none focus:border-[var(--accent)]"
-                />
-                <input
-                  type="text"
-                  value={ackNote}
-                  onChange={e => setAckNote(e.target.value)}
-                  placeholder="Note (optional)"
-                  className="bg-[var(--surface)] border border-[var(--border)] rounded px-2 py-1 text-xs w-40 focus:outline-none focus:border-[var(--accent)]"
-                />
-                <button
-                  onClick={() => {
-                    ackAlert(alert.dedup_key, ackBy || 'user', ackNote)
-                    setShowAckForm(false)
-                    onAckChange?.()
-                  }}
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-green-400 hover:bg-green-500/15 border border-green-500/20 transition-colors"
-                >
-                  Confirm
-                </button>
-                <button
-                  onClick={() => setShowAckForm(false)}
-                  className="text-xs text-[var(--dim)] hover:text-[var(--text)] transition-colors"
-                >
-                  Cancel
-                </button>
-              </div>
-            )}
-            {alertIsAcked && ackedInfo && (
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-xs text-green-400">
-                  Acknowledged by {ackedInfo.by}{ackedInfo.note ? ` — ${ackedInfo.note}` : ''}
-                </span>
-                <button
-                  onClick={() => { unackAlert(alert.dedup_key); onAckChange?.() }}
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-green-400 hover:bg-green-500/15 border border-green-500/20 transition-colors"
-                >
-                  Unacknowledge
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   )
 }
@@ -634,7 +432,7 @@ function AlertRow({ alert, showMeta, staleHours, snoozed, acked, onAnalyze, onRe
 /* ------------------------------------------------------------------ */
 /*  Timeline view                                                      */
 /* ------------------------------------------------------------------ */
-function TimelineView({ alerts, staleHours }: { alerts: Alert[]; staleHours: number }) {
+function TimelineView({ alerts, staleHours, onSelect }: { alerts: Alert[]; staleHours: number; onSelect?: (alert: Alert) => void }) {
   // Group by calendar day (local time), newest first
   const byDay = useMemo(() => {
     const map = new Map<string, Alert[]>()
@@ -684,18 +482,22 @@ function TimelineView({ alerts, staleHours }: { alerts: Alert[]; staleHours: num
                   </div>
 
                   {/* Card */}
-                  <div className={cn(
-                    'flex-1 rounded-lg border p-3 mb-2',
-                    stale
-                      ? 'border-[var(--border)] bg-[var(--hover)]'
-                      : a.resolved
-                        ? 'border-green-500/20 bg-green-500/5'
-                        : a.severity === 'critical'
-                          ? 'border-red-500/20 bg-red-500/5'
-                          : a.severity === 'warn'
-                            ? 'border-yellow-500/20 bg-yellow-500/5'
-                            : 'border-[var(--border)] bg-[var(--surface)]',
-                  )}>
+                  <div
+                    onClick={() => onSelect?.(a)}
+                    className={cn(
+                      'flex-1 rounded-lg border p-3 mb-2 transition-colors',
+                      onSelect && 'cursor-pointer hover:brightness-95',
+                      stale
+                        ? 'border-[var(--border)] bg-[var(--hover)]'
+                        : a.resolved
+                          ? 'border-green-500/20 bg-green-500/5'
+                          : a.severity === 'critical'
+                            ? 'border-red-500/20 bg-red-500/5'
+                            : a.severity === 'warn'
+                              ? 'border-yellow-500/20 bg-yellow-500/5'
+                              : 'border-[var(--border)] bg-[var(--surface)]',
+                    )}
+                  >
                     <div className="flex items-start gap-2">
                       {stale
                         ? <Badge className="bg-[var(--border)] text-[var(--dim)] border border-[var(--border)] text-xs shrink-0">stale</Badge>
@@ -753,7 +555,8 @@ function StatCard({ label, value, color, sub }: { label: string; value: string |
 type ViewMode = 'grouped' | 'flat' | 'timeline'
 
 export default function Alerts({ refreshKey }: { refreshKey?: number }) {
-  const { instances: cachedInstances, customFrom, customTo, setView, selectedInstance, alertPreset, setAlertPreset } = useStore()
+  const { instances: cachedInstances, customFrom, customTo, setView, selectedInstance, alertPreset, setAlertPreset, navToDetail } = useStore()
+  const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null)
   const { analyze } = useAIAnalysis(selectedInstance)
   const handleAnalyzeAlert = useCallback((alert: Alert) => {
     analyze(`Alert: ${alert.title}`, { alert }, { contextType: 'row', tab: 'alerts', elementId: String(alert.id) })
@@ -1158,11 +961,11 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
       {filtered.length === 0 ? (
         <div className="text-sm text-[var(--dim)] text-center py-12">No alerts match the current filters</div>
       ) : viewMode === 'timeline' ? (
-        <TimelineView alerts={filtered} staleHours={staleHours} />
+        <TimelineView alerts={filtered} staleHours={staleHours} onSelect={setSelectedAlert} />
       ) : viewMode === 'flat' ? (
         <Card className="!p-0">
           {filtered.slice(flatPage * FLAT_PAGE_SIZE, (flatPage + 1) * FLAT_PAGE_SIZE).map((alert) => (
-            <AlertRow key={alert.id} alert={alert} showMeta staleHours={staleHours} snoozed={snoozed} acked={acked} onAnalyze={handleAnalyzeAlert} onResolve={!alert.resolved ? handleResolveAlert : undefined} onSnoozeChange={handleSnoozeChange} onAckChange={handleAckChange} />
+            <AlertRow key={alert.id} alert={alert} showMeta staleHours={staleHours} snoozed={snoozed} acked={acked} onSelect={setSelectedAlert} />
           ))}
           {filtered.length > FLAT_PAGE_SIZE && (
             <div className="flex items-center justify-between px-3 py-2 border-t border-[var(--border)]">
@@ -1226,13 +1029,26 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
                 </button>
                 {!isCollapsed && (
                   <div className="border-t border-[var(--border)]">
-                    {groupAlerts.map((alert) => <AlertRow key={alert.id} alert={alert} staleHours={staleHours} snoozed={snoozed} acked={acked} onAnalyze={handleAnalyzeAlert} onResolve={!alert.resolved ? handleResolveAlert : undefined} onSnoozeChange={handleSnoozeChange} onAckChange={handleAckChange} />)}
+                    {groupAlerts.map((alert) => <AlertRow key={alert.id} alert={alert} staleHours={staleHours} snoozed={snoozed} acked={acked} onSelect={setSelectedAlert} />)}
                   </div>
                 )}
               </Card>
             )
           })}
         </div>
+      )}
+
+      {selectedAlert && (
+        <AlertDetailPanel
+          alert={selectedAlert}
+          staleHours={staleHours}
+          onClose={() => setSelectedAlert(null)}
+          onResolve={!selectedAlert.resolved ? handleResolveAlert : undefined}
+          onSnoozeChange={handleSnoozeChange}
+          onAckChange={handleAckChange}
+          onAnalyze={alert => { handleAnalyzeAlert(alert); setSelectedAlert(null) }}
+          onNavToInstance={name => { navToDetail(name); setSelectedAlert(null) }}
+        />
       )}
     </div>
   )

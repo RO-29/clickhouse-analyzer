@@ -5,6 +5,7 @@ import { api } from '../lib/api'
 import { cn } from '../lib/utils'
 import { Card } from '../components/Card'
 import { Badge } from '../components/Badge'
+import { AlertDetailPanel } from '../components/AlertDetailPanel'
 import type { Alert, AlertStats } from '../types/api'
 
 /* ------------------------------------------------------------------ */
@@ -66,7 +67,7 @@ const SEV_BORDER: Record<string, string> = {
 /* ------------------------------------------------------------------ */
 
 export default function AlertHistory({ refreshKey }: { refreshKey?: number }) {
-  const { instances, setView } = useStore()
+  const { instances, setView, navToDetail } = useStore()
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [stats, setStats] = useState<AlertStats | null>(null)
   const [loading, setLoading] = useState(true)
@@ -76,7 +77,7 @@ export default function AlertHistory({ refreshKey }: { refreshKey?: number }) {
   const [categoryFilter, setCategoryFilter] = useState('')
   const [search, setSearch] = useState('')
   const [activeOnly, setActiveOnly] = useState(false)
-  const [expandedId, setExpandedId] = useState<number | null>(null)
+  const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null)
 
   // Fetch history + stats whenever range / instance filter changes
   useEffect(() => {
@@ -277,72 +278,60 @@ export default function AlertHistory({ refreshKey }: { refreshKey?: number }) {
                 {label} <span className="font-normal normal-case">({items.length})</span>
               </div>
               <div className="space-y-1">
-                {items.map(alert => {
-                  const expanded = expandedId === alert.id
-                  return (
-                    <div
-                      key={alert.id}
-                      className={cn(
-                        'border rounded-lg overflow-hidden transition-colors cursor-pointer',
-                        SEV_BORDER[alert.severity] ?? 'border-[var(--border)]',
-                        expanded ? 'bg-[var(--hover)]' : 'hover:bg-[var(--hover)]/50'
-                      )}
-                      onClick={() => setExpandedId(expanded ? null : alert.id)}
-                    >
-                      {/* Row */}
-                      <div className="flex items-start gap-3 p-3">
-                        <div className={cn(
-                          'w-2 h-2 rounded-full mt-[5px] flex-shrink-0',
-                          SEV_DOT[alert.severity] ?? 'bg-[var(--text-muted)]'
-                        )} />
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className={cn('text-sm font-medium truncate', SEV_TEXT[alert.severity])}>
-                              {alert.title}
+                {items.map(alert => (
+                  <div
+                    key={alert.id}
+                    className={cn(
+                      'border rounded-lg overflow-hidden transition-colors cursor-pointer hover:bg-[var(--hover)]/50',
+                      SEV_BORDER[alert.severity] ?? 'border-[var(--border)]',
+                    )}
+                    onClick={() => setSelectedAlert(alert)}
+                  >
+                    <div className="flex items-start gap-3 p-3">
+                      <div className={cn(
+                        'w-2 h-2 rounded-full mt-[5px] flex-shrink-0',
+                        SEV_DOT[alert.severity] ?? 'bg-[var(--text-muted)]'
+                      )} />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className={cn('text-sm font-medium truncate', SEV_TEXT[alert.severity])}>
+                            {alert.title}
+                          </span>
+                          {alert.resolved ? (
+                            <span className="flex items-center gap-0.5 text-xs text-[#22c55e]">
+                              <CheckCircle className="w-3 h-3" /> resolved
                             </span>
-                            {alert.resolved ? (
-                              <span className="flex items-center gap-0.5 text-xs text-[#22c55e]">
-                                <CheckCircle className="w-3 h-3" /> resolved
-                              </span>
-                            ) : (
-                              <span className="text-xs font-medium text-[#ef4444]">firing</span>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                            <span className="text-xs text-[var(--text-muted)]">{alert.instance}</span>
-                            <Badge className="text-[var(--dim)] border-[var(--border)]">{alert.category}</Badge>
-                            <span className="text-xs text-[var(--text-muted)]">{fmtTs(alert.created_at)}</span>
-                            {alert.duration_s > 0 && (
-                              <span className="text-xs text-[var(--text-muted)] flex items-center gap-0.5">
-                                <Clock className="w-3 h-3" />
-                                {fmtDuration(alert.duration_s)}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                        <span className="text-xs text-[var(--text-muted)] flex-shrink-0">{expanded ? '▲' : '▼'}</span>
-                      </div>
-
-                      {/* Expanded message */}
-                      {expanded && (
-                        <div className="px-8 pb-4 border-t border-[var(--border)]">
-                          <pre className="text-xs text-[var(--text)] whitespace-pre-wrap font-sans leading-relaxed mt-3">
-                            {alert.message}
-                          </pre>
-                          {alert.resolved_at && (
-                            <div className="mt-2 text-xs text-[var(--text-muted)]">
-                              Resolved: {new Date(alert.resolved_at * 1000).toLocaleString()}
-                            </div>
+                          ) : (
+                            <span className="text-xs font-medium text-[#ef4444]">firing</span>
                           )}
                         </div>
-                      )}
+                        <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                          <span className="text-xs text-[var(--text-muted)]">{alert.instance}</span>
+                          <Badge className="text-[var(--dim)] border-[var(--border)]">{alert.category}</Badge>
+                          <span className="text-xs text-[var(--text-muted)]">{fmtTs(alert.created_at)}</span>
+                          {alert.duration_s > 0 && (
+                            <span className="text-xs text-[var(--text-muted)] flex items-center gap-0.5">
+                              <Clock className="w-3 h-3" />
+                              {fmtDuration(alert.duration_s)}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <span className="text-[10px] text-[var(--dim)] shrink-0">→</span>
                     </div>
-                  )
-                })}
+                  </div>
+                ))}
               </div>
             </div>
           ))}
         </div>
+      )}
+      {selectedAlert && (
+        <AlertDetailPanel
+          alert={selectedAlert}
+          onClose={() => setSelectedAlert(null)}
+          onNavToInstance={name => { navToDetail(name); setSelectedAlert(null) }}
+        />
       )}
     </div>
   )

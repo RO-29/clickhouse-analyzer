@@ -278,7 +278,7 @@ function QueryDetailPanel({ pattern, timeline, tlLoading, instance, onClose, onD
         onClick={onClose}
       />
       {/* Panel */}
-      <div className="fixed right-0 top-0 h-full z-50 flex flex-col bg-[var(--card)] border-l border-[var(--border)] shadow-2xl w-[520px] max-w-full">
+      <div className="fixed right-0 top-0 h-full z-50 flex flex-col bg-[var(--card)] border-l border-[var(--border)] shadow-2xl w-[45vw] min-w-[480px] max-w-full">
 
         {/* ── Header ── */}
         <div className="shrink-0 border-b border-[var(--border)] bg-[var(--surface)]">
@@ -651,9 +651,9 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
             </span>
             {q && (
               <button
-                onClick={e => { e.stopPropagation(); onShowQuery(q) }}
+                onClick={e => { e.stopPropagation(); setSelectedHash(String(row.normalized_query_hash)) }}
                 className="shrink-0 p-0.5 rounded text-[var(--dim)] hover:text-[var(--accent)] opacity-0 group-hover/row:opacity-100 transition-all"
-                title="View full query"
+                title="Open detail panel"
               >
                 <Maximize2 size={10} />
               </button>

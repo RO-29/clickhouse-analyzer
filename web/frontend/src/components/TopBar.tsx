@@ -38,26 +38,54 @@ const QUICK_RANGES = [
 
 /* ── Re-auth modal ─────────────────────────────────────────────────────────── */
 function ReAuthModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
+  const [tab, setTab] = useState<'login' | 'paste'>('paste')
   const [lines, setLines] = useState<{ type: 'output' | 'url' | 'error'; text: string }[]>([])
   const [state, setState] = useState<'idle' | 'running' | 'done' | 'error'>('idle')
   const [loginUrl, setLoginUrl] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  const [showManual, setShowManual] = useState(false)
   const [callbackUrl, setCallbackUrl] = useState('')
   const [callbackState, setCallbackState] = useState<'idle' | 'submitting' | 'ok' | 'error'>('idle')
   const [callbackError, setCallbackError] = useState('')
+  const [pasteJson, setPasteJson] = useState('')
+  const [pasteState, setPasteState] = useState<'idle' | 'submitting' | 'ok' | 'error'>('idle')
+  const [pasteError, setPasteError] = useState('')
   const abortRef = useRef<AbortController | null>(null)
+
+  const submitPaste = async () => {
+    const raw = pasteJson.trim()
+    if (!raw) return
+    setPasteState('submitting')
+    setPasteError('')
+    try {
+      const r = await fetch('/api/auth/set-tokens', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: raw,
+      })
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}))
+        throw new Error(j.error || `HTTP ${r.status}`)
+      }
+      setPasteState('ok')
+      setTimeout(onSuccess, 800)
+    } catch (e: any) {
+      setPasteState('error')
+      setPasteError(e.message ?? 'Failed')
+    }
+  }
 
   const buildCallbackUrl = (raw: string): string => {
     raw = raw.trim()
     if (raw.startsWith('http')) return raw
     let code = raw
-    let state = ''
+    let st = ''
     const hashIdx = raw.indexOf('#')
-    if (hashIdx !== -1) { code = raw.slice(0, hashIdx); state = raw.slice(hashIdx + 1) }
-    if (!state && loginUrl) {
-      try { state = new URL(loginUrl).searchParams.get('state') ?? '' } catch {}
+    if (hashIdx !== -1) { code = raw.slice(0, hashIdx); st = raw.slice(hashIdx + 1) }
+    if (!st && loginUrl) {
+      try { st = new URL(loginUrl).searchParams.get('state') ?? '' } catch {}
     }
-    return state ? `${code}#${state}` : code
+    return st ? `${code}#${st}` : code
   }
 
   const submitCallback = async (rawOverride?: string) => {
@@ -168,81 +196,121 @@ function ReAuthModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
           <Lock size={15} className="text-orange-400 shrink-0" />
           <div className="flex-1">
             <div className="text-sm font-semibold">Re-authenticate Claude</div>
-            <div className="text-[11px] text-[var(--dim)] mt-0.5">
-              Your claude.ai session expired. Complete login in the browser tab that just opened.
-            </div>
+            <div className="text-[11px] text-[var(--dim)] mt-0.5">Your claude.ai session expired.</div>
           </div>
           <button onClick={onClose} className="p-1.5 rounded text-[var(--dim)] hover:text-[var(--fg)] hover:bg-[var(--hover)] transition-colors">
             <X size={14} />
           </button>
         </div>
+
+        {/* Tabs */}
+        <div className="flex border-b border-[var(--border)]">
+          {(['paste', 'login'] as const).map(t => (
+            <button key={t} onClick={() => setTab(t)}
+              className={cn('px-4 py-2 text-[11px] font-medium transition-colors',
+                tab === t ? 'border-b-2 border-[var(--accent)] text-[var(--fg)]' : 'text-[var(--dim)] hover:text-[var(--fg)]')}>
+              {t === 'paste' ? 'Paste Tokens' : 'Login Flow'}
+            </button>
+          ))}
+        </div>
+
         <div className="p-5 space-y-3">
-          {state === 'running' && !loginUrl && (
-            <div className="flex items-center gap-2 text-sm text-[var(--dim)]">
-              <Loader2 size={14} className="animate-spin" /> Starting authentication flow…
+          {/* ── Paste tokens tab ── */}
+          {tab === 'paste' && (
+            <div className="space-y-3">
+              <p className="text-[11px] text-[var(--dim)]">
+                Paste your OAuth access token (<code className="font-mono bg-[var(--surface)] px-1 rounded text-[var(--fg)]">sk-ant-oat01-…</code>),
+                the full credentials JSON from <code className="font-mono bg-[var(--surface)] px-1 rounded text-[var(--fg)]">~/.claude/.credentials.json</code>,
+                or any JSON containing <code className="font-mono bg-[var(--surface)] px-1 rounded text-[var(--fg)]">accessToken</code>.
+              </p>
+              <textarea
+                rows={5}
+                value={pasteJson}
+                onChange={e => setPasteJson(e.target.value)}
+                placeholder="sk-ant-oat01-… or paste full credentials JSON"
+                className="w-full bg-[var(--surface)] border border-[var(--border)] rounded px-3 py-2 text-[10px] font-mono text-[var(--fg)] placeholder-[var(--dim)] focus:outline-none focus:border-[var(--accent)] resize-none"
+              />
+              {pasteState === 'error' && <p className="text-[10px] text-red-400">{pasteError}</p>}
+              {pasteState === 'ok' && <p className="text-[10px] text-green-400">Saved — you're back in.</p>}
+              <button onClick={submitPaste} disabled={pasteState === 'submitting' || !pasteJson.trim()}
+                className="px-4 py-1.5 rounded text-[11px] font-medium bg-[var(--accent)] text-white hover:opacity-90 disabled:opacity-50">
+                {pasteState === 'submitting' ? <Loader2 size={11} className="animate-spin inline" /> : 'Save'}
+              </button>
             </div>
           )}
-          {loginUrl && (
-            <div className="rounded-lg border border-blue-500/30 bg-blue-500/10 p-3 space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] font-semibold text-blue-400">Login URL</span>
-                <div className="flex items-center gap-1.5">
-                  <button onClick={copyUrl} className="flex items-center gap-1 px-2 py-1 rounded text-[10px] bg-[var(--surface)] border border-[var(--border)] text-[var(--dim)] hover:text-[var(--fg)] transition-colors">
-                    {copied ? <Check size={10} className="text-green-400" /> : <Copy size={10} />}
-                    {copied ? 'Copied!' : 'Copy'}
-                  </button>
-                  <a href={loginUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 px-2 py-1 rounded text-[10px] bg-blue-500 text-white hover:bg-blue-600 transition-colors">
-                    <ExternalLink size={10} /> Open
-                  </a>
+
+          {/* ── Login flow tab ── */}
+          {tab === 'login' && (
+            <>
+              {state === 'running' && !loginUrl && (
+                <div className="flex items-center gap-2 text-sm text-[var(--dim)]">
+                  <Loader2 size={14} className="animate-spin" /> Starting authentication flow…
                 </div>
+              )}
+              {loginUrl && (
+                <div className="rounded-lg border border-blue-500/30 bg-blue-500/10 p-3 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-semibold text-blue-400">Login URL</span>
+                    <div className="flex items-center gap-1.5">
+                      <button onClick={copyUrl} className="flex items-center gap-1 px-2 py-1 rounded text-[10px] bg-[var(--surface)] border border-[var(--border)] text-[var(--dim)] hover:text-[var(--fg)] transition-colors">
+                        {copied ? <Check size={10} className="text-green-400" /> : <Copy size={10} />}
+                        {copied ? 'Copied!' : 'Copy'}
+                      </button>
+                      <a href={loginUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 px-2 py-1 rounded text-[10px] bg-blue-500 text-white hover:bg-blue-600 transition-colors">
+                        <ExternalLink size={10} /> Open
+                      </a>
+                    </div>
+                  </div>
+                  <input readOnly value={loginUrl} onFocus={e => e.target.select()}
+                    className="w-full bg-[var(--surface)] border border-[var(--border)] rounded px-2 py-1.5 text-[10px] font-mono text-blue-300 focus:outline-none" />
+                  <p className="text-[10px] text-[var(--dim)]">Complete login in the browser — this panel will close automatically when done.</p>
+                </div>
+              )}
+              {nonUrlLines.filter(l => l.type === 'output').length > 0 && (
+                <div className="rounded-lg bg-[var(--surface)] border border-[var(--border)] p-3 space-y-0.5 font-mono text-[10px]">
+                  {nonUrlLines.filter(l => l.type === 'output').map((l, i) => (
+                    <div key={i} className="text-[var(--dim)]">{l.text}</div>
+                  ))}
+                </div>
+              )}
+              {/* Manual callback — collapsed by default */}
+              {loginUrl && state !== 'done' && (
+                <div>
+                  <button onClick={() => setShowManual(v => !v)} className="text-[10px] text-[var(--dim)] hover:text-[var(--fg)] underline">
+                    {showManual ? 'Hide' : 'Not completing automatically? Paste callback URL'}
+                  </button>
+                  {showManual && (
+                    <div className="mt-2 space-y-2">
+                      <div className="flex gap-2">
+                        <input type="text" value={callbackUrl} onChange={e => setCallbackUrl(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') submitCallback() }}
+                          placeholder="Paste redirect URL or code…"
+                          className="flex-1 bg-[var(--card)] border border-[var(--border)] rounded px-2 py-1.5 text-[10px] font-mono text-[var(--fg)] placeholder-[var(--dim)] focus:outline-none focus:border-[var(--accent)]"
+                        />
+                        <button onClick={() => submitCallback()} disabled={callbackState === 'submitting' || !callbackUrl.trim()}
+                          className="px-3 py-1.5 rounded text-[11px] font-medium bg-[var(--accent)] text-white hover:opacity-90 disabled:opacity-50">
+                          {callbackState === 'submitting' ? <Loader2 size={11} className="animate-spin" /> : 'Submit'}
+                        </button>
+                      </div>
+                      {callbackState === 'error' && <p className="text-[10px] text-red-400">{callbackError}</p>}
+                      {callbackState === 'ok' && <p className="text-[10px] text-green-400">Forwarded — waiting…</p>}
+                    </div>
+                  )}
+                </div>
+              )}
+              {state === 'done' && <div className="text-sm text-green-400">Authentication completed.</div>}
+              {state === 'error' && !loginUrl && (
+                <div className="text-[11px] text-red-400">Login flow failed. Try the "Paste Tokens" tab instead.</div>
+              )}
+              <div className="flex items-center gap-2">
+                {state === 'running' && loginUrl && (
+                  <><Loader2 size={10} className="animate-spin text-[var(--dim)]" />
+                  <span className="text-[10px] text-[var(--dim)]">Waiting for login to complete…</span></>
+                )}
+                {state === 'done' && <span className="text-[10px] text-green-400">Done</span>}
               </div>
-              <input readOnly value={loginUrl} onFocus={e => e.target.select()}
-                className="w-full bg-[var(--surface)] border border-[var(--border)] rounded px-2 py-1.5 text-[10px] font-mono text-blue-300 focus:outline-none" />
-              <p className="text-[10px] text-[var(--dim)]">A browser tab was opened automatically. This panel will close once login is complete.</p>
-            </div>
+            </>
           )}
-          {loginUrl && state !== 'done' && callbackState !== 'ok' && (
-            <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3 space-y-2">
-              <div className="text-[10px] font-semibold text-[var(--dim)]">After login — paste the redirect URL from your browser (or just the code)</div>
-              <p className="text-[10px] text-[var(--dim)]">Paste the code or full redirect URL.</p>
-              <div className="flex gap-2">
-                <input type="text" value={callbackUrl} onChange={e => setCallbackUrl(e.target.value)}
-                  onPaste={e => { e.preventDefault(); const p = e.clipboardData.getData('text').trim(); setCallbackUrl(p); submitCallback(p) }}
-                  onKeyDown={e => { if (e.key === 'Enter') submitCallback() }}
-                  placeholder="Paste code or full redirect URL…"
-                  className="flex-1 bg-[var(--card)] border border-[var(--border)] rounded px-2 py-1.5 text-[10px] font-mono text-[var(--fg)] placeholder-[var(--dim)] focus:outline-none focus:border-[var(--accent)]"
-                />
-                <button onClick={() => submitCallback()} disabled={callbackState === 'submitting' || !callbackUrl.trim()}
-                  className="px-3 py-1.5 rounded text-[11px] font-medium bg-[var(--accent)] text-white hover:opacity-90 disabled:opacity-50">
-                  {callbackState === 'submitting' ? <Loader2 size={11} className="animate-spin" /> : 'Submit'}
-                </button>
-              </div>
-              {callbackState === 'error' && <p className="text-[10px] text-red-400">{callbackError}</p>}
-            </div>
-          )}
-          {callbackState === 'ok' && state !== 'done' && (
-            <div className="flex items-center gap-2 text-[11px] text-green-400">
-              <Check size={11} /> Callback forwarded — waiting for claude to complete… <Loader2 size={10} className="animate-spin ml-1" />
-            </div>
-          )}
-          {nonUrlLines.filter(l => l.type === 'output').length > 0 && (
-            <div className="rounded-lg bg-[var(--surface)] border border-[var(--border)] p-3 space-y-0.5 font-mono text-[10px]">
-              {nonUrlLines.filter(l => l.type === 'output').map((l, i) => (
-                <div key={i} className="text-[var(--dim)]">{l.text}</div>
-              ))}
-            </div>
-          )}
-          {state === 'done' && !loginUrl && <div className="text-sm text-green-400">Authentication completed successfully.</div>}
-          {state === 'error' && !loginUrl && (
-            <div className="text-sm text-red-400">Login flow failed. SSH in and run: <code className="font-mono bg-[var(--surface)] px-1 rounded">HOME=/var/lib/ch-analyzer claude auth login</code></div>
-          )}
-          <div className="flex items-center gap-2">
-            {state === 'running' && loginUrl && (
-              <><Loader2 size={10} className="animate-spin text-[var(--dim)]" />
-              <span className="text-[10px] text-[var(--dim)]">Waiting for login…</span></>
-            )}
-            {state === 'done' && <span className="text-[10px] text-green-400">Done</span>}
-          </div>
         </div>
       </div>
     </div>
