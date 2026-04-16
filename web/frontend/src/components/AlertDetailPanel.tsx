@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useCallback } from 'react'
 import {
   X, Bell, BellOff, BookOpen, Sparkles, Table2, ChevronRight,
-  AlertTriangle, Clock, Hash, Server, Tag,
+  AlertTriangle, Clock, Hash, Server, Tag, Search,
 } from 'lucide-react'
 import { cn, fmtTime } from '../lib/utils'
 import { api } from '../lib/api'
@@ -340,7 +340,7 @@ export function AlertDetailPanel({
   onAnalyze,
   onNavToInstance,
 }: AlertDetailPanelProps) {
-  const { openTableDetail } = useStore()
+  const { openTableDetail, navToExploreWithRange } = useStore()
   const [tab, setTab] = useState<PanelTab>('details')
   const [suggestions, setSuggestions] = useState<Suggestion | null>(null)
   const [loadingSugg, setLoadingSugg] = useState(false)
@@ -598,10 +598,26 @@ export function AlertDetailPanel({
 
           {/* --- Investigate tab --- */}
           {tab === 'investigate' && (
-            <div>
-              <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--dim)] mb-3">Investigation Queries</div>
-              <div className="space-y-3">
-                {invSql.map((sql, i) => <SqlBlock key={i} sql={sql} instance={alert.instance} />)}
+            <div className="space-y-4">
+              {/* Open in Explore at alert time ±10m */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    const alertTime = alert.created_at
+                    navToExploreWithRange(alert.instance, alertTime - 600, alertTime + 600)
+                    onClose()
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium text-blue-400 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/20 transition-colors"
+                >
+                  <Search size={11} />
+                  Open Explore at alert time ±10m
+                </button>
+              </div>
+              <div>
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--dim)] mb-3">Investigation Queries</div>
+                <div className="space-y-3">
+                  {invSql.map((sql, i) => <SqlBlock key={i} sql={sql} instance={alert.instance} />)}
+                </div>
               </div>
             </div>
           )}

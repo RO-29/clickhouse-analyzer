@@ -1,8 +1,9 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { ChevronRight, RotateCcw, Wrench } from 'lucide-react'
 import { cn, scoreColor, sevColor, fmtTime } from '../lib/utils'
 import { api } from '../lib/api'
 import { Badge } from './Badge'
+import { Sparkline } from './Sparkline'
 import { useStore } from '../hooks/useStore'
 import type { Instance } from '../types/api'
 
@@ -100,6 +101,24 @@ export function NodeCard({
   const { navToDetail } = useStore()
   const [expanded, setExpanded] = useState(false)
   const [resolvingKey, setResolvingKey] = useState<string | null>(null)
+  const [sparklines, setSparklines] = useState<{ cpu: number[]; mem: number[] } | null>(null)
+
+  // Fetch sparkline data (1h, 20 points) — lazy, fires after mount
+  useEffect(() => {
+    let cancelled = false
+    const now = Math.floor(Date.now() / 1000)
+    const from = now - 3600
+    Promise.all([
+      api.metrics(instance.name, 'cpu_pct', from, now, 20),
+      api.metrics(instance.name, 'memory_pct', from, now, 20),
+    ]).then(([cpuResp, memResp]) => {
+      if (cancelled) return
+      const cpu = (cpuResp?.points ?? []).map((d: any) => Number(d?.value ?? 0))
+      const mem = (memResp?.points ?? []).map((d: any) => Number(d?.value ?? 0))
+      if (cpu.length >= 2 || mem.length >= 2) setSparklines({ cpu, mem })
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [instance.name])
 
   const handleResolve = useCallback(async (dedupKey: string) => {
     setResolvingKey(dedupKey)
@@ -169,16 +188,26 @@ export function NodeCard({
         {/* Key metrics */}
         <div className="hidden sm:flex items-center gap-4 shrink-0">
           {[
-            { label: 'CPU', value: cpuPct != null ? `${cpuPct.toFixed(0)}%` : '—', warn: cpuPct != null && cpuPct > 80, crit: cpuPct != null && cpuPct > 95 },
-            { label: 'MEM', value: memPct != null ? `${memPct.toFixed(0)}%` : '—', warn: memPct != null && memPct > 85, crit: memPct != null && memPct > 95 },
-            { label: 'Queries', value: runningQ != null ? String(Math.round(runningQ)) : '—', warn: false, crit: false },
-            { label: 'Merges', value: activeMerges != null ? String(Math.round(activeMerges)) : '—', warn: false, crit: false },
+            { label: 'CPU', value: cpuPct != null ? `${cpuPct.toFixed(0)}%` : '—', warn: cpuPct != null && cpuPct > 80, crit: cpuPct != null && cpuPct > 95, sparkColor: '#f97316', sparkData: sparklines?.cpu },
+            { label: 'MEM', value: memPct != null ? `${memPct.toFixed(0)}%` : '—', warn: memPct != null && memPct > 85, crit: memPct != null && memPct > 95, sparkColor: '#7c3aed', sparkData: sparklines?.mem },
+            { label: 'Queries', value: runningQ != null ? String(Math.round(runningQ)) : '—', warn: false, crit: false, sparkColor: undefined, sparkData: undefined },
+            { label: 'Merges', value: activeMerges != null ? String(Math.round(activeMerges)) : '—', warn: false, crit: false, sparkColor: undefined, sparkData: undefined },
           ].map(m => (
             <div key={m.label} className="text-right min-w-[48px]">
-              <div className={cn(
-                'text-[12px] font-semibold tabular-nums leading-tight',
-                m.crit ? 'text-red-400' : m.warn ? 'text-yellow-400' : 'text-[var(--text)]',
-              )}>{m.value}</div>
+              {m.sparkData && m.sparkData.length >= 2 ? (
+                <div className="flex items-end justify-end gap-1">
+                  <div className={cn(
+                    'text-[12px] font-semibold tabular-nums leading-tight',
+                    m.crit ? 'text-red-400' : m.warn ? 'text-yellow-400' : 'text-[var(--text)]',
+                  )}>{m.value}</div>
+                  <Sparkline data={m.sparkData} color={m.sparkColor} width={36} height={16} fill />
+                </div>
+              ) : (
+                <div className={cn(
+                  'text-[12px] font-semibold tabular-nums leading-tight',
+                  m.crit ? 'text-red-400' : m.warn ? 'text-yellow-400' : 'text-[var(--text)]',
+                )}>{m.value}</div>
+              )}
               <div className="text-[10px] text-[var(--dim)] uppercase tracking-wider">{m.label}</div>
             </div>
           ))}

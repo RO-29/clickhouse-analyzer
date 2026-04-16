@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import {
   LayoutDashboard, Bell, BellDot, Search, GitCompareArrows, Lightbulb, TerminalSquare, FileText, Database,
   Sun, Moon, ChevronsLeft, ChevronsRight, Sparkles, RefreshCw, ScanSearch, DollarSign, Shield, PlayCircle, Compass,
+  Rows3, Command,
 } from 'lucide-react'
 import { useStore, type View } from '../hooks/useStore'
 import { cn, scoreColor } from '../lib/utils'
@@ -71,11 +72,11 @@ interface SidebarProps {
   onMobileClose?: () => void
 }
 
-export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
+export function Sidebar({ mobileOpen = false, onMobileClose, onOpenPalette }: SidebarProps & { onOpenPalette?: () => void }) {
   const {
     view, setView, sidebarCollapsed, setSidebarCollapsed,
     theme, toggleTheme, refreshInterval, setRefreshInterval,
-    navToDetail, chatSessions,
+    navToDetail, chatSessions, denseMode, setDenseMode,
   } = useStore()
 
   const hasActiveAnalysis = chatSessions.some(s =>
@@ -255,7 +256,14 @@ export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
           {/* Refresh interval */}
           {!collapsed ? (
             <div className="flex items-center gap-1 px-1">
-              <span className="text-[9px] text-[var(--dim)] uppercase tracking-wider mr-auto opacity-70">Refresh</span>
+              <span className="text-[9px] text-[var(--dim)] uppercase tracking-wider opacity-70">Refresh</span>
+              {refreshInterval > 0 && (
+                <span className="flex items-center gap-1 text-[9px] text-green-400 font-medium ml-0.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse shrink-0" />
+                  LIVE
+                </span>
+              )}
+              <div className="flex-1" />
               {REFRESH_OPTIONS.map(opt => (
                 <button
                   key={opt.value}
@@ -270,6 +278,32 @@ export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
                   {opt.label}
                 </button>
               ))}
+            </div>
+          ) : null}
+
+          {/* Dense mode + Cmd+K */}
+          {!collapsed ? (
+            <div className="flex items-center gap-1 px-1">
+              <button
+                onClick={() => setDenseMode(!denseMode)}
+                title={denseMode ? 'Switch to comfortable layout' : 'Switch to dense layout'}
+                className={cn(
+                  'flex items-center gap-1.5 px-2 py-1 rounded text-[10px] transition-colors flex-1',
+                  denseMode
+                    ? 'text-[var(--accent)] bg-[var(--accent-subtle)]'
+                    : 'text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)]',
+                )}
+              >
+                <Rows3 size={11} /> Dense
+              </button>
+              <button
+                onClick={onOpenPalette}
+                title="Open command palette (⌘K)"
+                className="flex items-center gap-1 px-2 py-1 rounded text-[10px] text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)] transition-colors"
+              >
+                <Command size={11} />
+                <span className="text-[9px] opacity-60">⌘K</span>
+              </button>
             </div>
           ) : null}
 

@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
-import { Bell, BellOff, BookOpen, Brain, ChevronDown, ChevronLeft, ChevronRight, Clock, RefreshCw, Sparkles, Table2, Trash2, Wrench, Zap } from 'lucide-react'
+import { Bell, BellOff, BookOpen, Brain, ChevronDown, ChevronLeft, ChevronRight, Clock, RefreshCw, Sparkles, Table2, Trash2, Wrench, Zap, Bookmark, X, CheckSquare, Square, CheckCheck } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
@@ -25,6 +25,25 @@ const STALE_OPTIONS = [
 
 function loadStaleHours(): number {
   try { return parseInt(localStorage.getItem(STALE_LS_KEY) ?? '24', 10) || 24 } catch { return 24 }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Saved filter views                                                  */
+/* ------------------------------------------------------------------ */
+const SAVED_VIEWS_KEY = 'ch-alert-saved-views'
+interface SavedView {
+  name: string
+  instance: string
+  severity: string
+  category: string
+  type: string
+  status: string
+}
+function loadSavedViews(): SavedView[] {
+  try { return JSON.parse(localStorage.getItem(SAVED_VIEWS_KEY) ?? '[]') } catch { return [] }
+}
+function persistSavedViews(views: SavedView[]) {
+  try { localStorage.setItem(SAVED_VIEWS_KEY, JSON.stringify(views)) } catch {}
 }
 
 function isStale(a: Alert, staleHours: number): boolean {
@@ -602,6 +621,15 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
   const [flatPage, setFlatPage] = useState(0)
   const FLAT_PAGE_SIZE = 50
 
+  // Saved filter views
+  const [savedViews, setSavedViews] = useState<SavedView[]>(() => loadSavedViews())
+  const [savingView, setSavingView] = useState(false)
+  const [saveViewName, setSaveViewName] = useState('')
+
+  // Bulk selection
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  const [bulkResolving, setBulkResolving] = useState(false)
+
   // Snooze state — tick forces re-reads from localStorage
   const [snoozeTick, setSnoozeTick] = useState(0)
   const snoozed = useMemo(() => loadSnoozed(), [snoozeTick]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -766,6 +794,67 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
       setResolving(false)
     }
   }, [staleHours, totalStaleUnfiltered])
+
+  // Saved views handlers
+  const saveCurrentView = useCallback(() => {
+    const name = saveViewName.trim()
+    if (!name) return
+    const view: SavedView = { name, instance: filterInstance, severity: filterSeverity, category: filterCategory, type: filterType, status: filterStatus }
+    const next = [...savedViews.filter(v => v.name !== name), view]
+    setSavedViews(next)
+    persistSavedViews(next)
+    setSavingView(false)
+    setSaveViewName('')
+  }, [saveViewName, filterInstance, filterSeverity, filterCategory, filterType, filterStatus, savedViews])
+
+  const deleteSavedView = useCallback((name: string) => {
+    const next = savedViews.filter(v => v.name !== name)
+    setSavedViews(next)
+    persistSavedViews(next)
+  }, [savedViews])
+
+  const applySavedView = useCallback((sv: SavedView) => {
+    setFilterInstance(sv.instance)
+    setFilterSeverity(sv.severity)
+    setFilterCategory(sv.category)
+    setFilterType(sv.type)
+    setFilterStatus(sv.status)
+  }, [])
+
+  // Bulk action handlers
+  const toggleSelectAlert = useCallback((id: number) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }, [])
+
+  const selectAll = useCallback(() => {
+    setSelectedIds(new Set(filtered.map(a => a.id)))
+  }, [filtered])
+
+  const clearSelection = useCallback(() => setSelectedIds(new Set()), [])
+
+  const bulkResolveSelected = useCallback(async () => {
+    if (!selectedIds.size) return
+    setBulkResolving(true)
+    const keys = filtered.filter(a => selectedIds.has(a.id) && a.dedup_key).map(a => a.dedup_key)
+    try {
+      await Promise.all(keys.map(k => api.alerts.resolve(k)))
+      const [active, history] = await Promise.all([api.alerts.active(), api.alerts.history()])
+      setActiveAlerts(active)
+      setHistoryAlerts(history)
+      setSelectedIds(new Set())
+    } catch {}
+    finally { setBulkResolving(false) }
+  }, [selectedIds, filtered])
+
+  const bulkSnoozeSelected = useCallback((hours: number) => {
+    filtered.filter(a => selectedIds.has(a.id) && a.dedup_key).forEach(a => snoozeAlert(a.dedup_key, hours))
+    handleSnoozeChange()
+    setSelectedIds(new Set())
+  }, [selectedIds, filtered, handleSnoozeChange])
 
   const Select = ({ value, onChange, options, label }: {
     value: string; onChange: (v: string) => void
@@ -957,6 +1046,51 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
           ]} />
       </div>
 
+      {/* ---- Saved filter views ---- */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {savedViews.map(sv => (
+          <span key={sv.name} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] bg-[var(--accent-subtle)] text-[var(--accent)] border border-[var(--accent)]/20">
+            <button onClick={() => applySavedView(sv)} className="hover:underline">{sv.name}</button>
+            <button onClick={() => deleteSavedView(sv.name)} className="text-[var(--dim)] hover:text-red-400 transition-colors"><X size={10} /></button>
+          </span>
+        ))}
+        {savingView ? (
+          <span className="inline-flex items-center gap-1">
+            <input
+              autoFocus
+              value={saveViewName}
+              onChange={e => setSaveViewName(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') saveCurrentView(); if (e.key === 'Escape') setSavingView(false) }}
+              placeholder="View name…"
+              className="bg-[var(--surface)] border border-[var(--accent)]/40 rounded px-2 py-0.5 text-[11px] focus:outline-none w-28"
+            />
+            <button onClick={saveCurrentView} className="text-[11px] text-[var(--accent)] hover:underline">Save</button>
+            <button onClick={() => setSavingView(false)} className="text-[11px] text-[var(--dim)] hover:text-[var(--text)]">Cancel</button>
+          </span>
+        ) : (
+          <button onClick={() => setSavingView(true)} className="inline-flex items-center gap-1 text-[11px] text-[var(--dim)] hover:text-[var(--accent)] transition-colors">
+            <Bookmark size={11} /> Save view
+          </button>
+        )}
+      </div>
+
+      {/* ---- Bulk action bar (shown when items are selected) ---- */}
+      {selectedIds.size > 0 && (
+        <div className="flex items-center gap-3 px-4 py-2.5 rounded-lg bg-[var(--accent-subtle)] border border-[var(--accent)]/20">
+          <CheckCheck size={14} className="text-[var(--accent)] shrink-0" />
+          <span className="text-[12px] font-medium text-[var(--accent)]">{selectedIds.size} selected</span>
+          <div className="flex-1" />
+          <button onClick={bulkResolveSelected} disabled={bulkResolving} className="flex items-center gap-1 px-3 py-1.5 rounded text-[11px] font-medium text-green-400 bg-green-500/10 hover:bg-green-500/20 border border-green-500/20 transition-colors disabled:opacity-50">
+            {bulkResolving ? <RefreshCw size={10} className="animate-spin" /> : <CheckCheck size={10} />}
+            Resolve selected
+          </button>
+          <button onClick={() => bulkSnoozeSelected(4)} className="flex items-center gap-1 px-3 py-1.5 rounded text-[11px] font-medium text-yellow-400 bg-yellow-500/10 hover:bg-yellow-500/20 border border-yellow-500/20 transition-colors">
+            <BellOff size={10} /> Snooze 4h
+          </button>
+          <button onClick={clearSelection} className="text-[11px] text-[var(--dim)] hover:text-[var(--text)] transition-colors">Clear</button>
+        </div>
+      )}
+
       {/* ---- Alert list ---- */}
       {filtered.length === 0 ? (
         <div className="text-sm text-[var(--dim)] text-center py-12">No alerts match the current filters</div>
@@ -964,8 +1098,30 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
         <TimelineView alerts={filtered} staleHours={staleHours} onSelect={setSelectedAlert} />
       ) : viewMode === 'flat' ? (
         <Card className="!p-0">
+          {/* Select all header */}
+          <div className="flex items-center gap-3 px-4 py-2 border-b border-[var(--border)] bg-[var(--surface)]/50">
+            <button
+              onClick={() => selectedIds.size === filtered.length ? clearSelection() : selectAll()}
+              className="text-[var(--dim)] hover:text-[var(--accent)] transition-colors"
+            >
+              {selectedIds.size === filtered.length && filtered.length > 0 ? <CheckSquare size={13} className="text-[var(--accent)]" /> : <Square size={13} />}
+            </button>
+            <span className="text-[10px] text-[var(--dim)] uppercase tracking-wider">
+              {selectedIds.size > 0 ? `${selectedIds.size} of ${filtered.length} selected` : `${filtered.length} alerts`}
+            </span>
+          </div>
           {filtered.slice(flatPage * FLAT_PAGE_SIZE, (flatPage + 1) * FLAT_PAGE_SIZE).map((alert) => (
-            <AlertRow key={alert.id} alert={alert} showMeta staleHours={staleHours} snoozed={snoozed} acked={acked} onSelect={setSelectedAlert} />
+            <div key={alert.id} className="flex items-start gap-2 pr-2">
+              <button
+                onClick={() => toggleSelectAlert(alert.id)}
+                className="mt-3 ml-4 text-[var(--dim)] hover:text-[var(--accent)] transition-colors shrink-0"
+              >
+                {selectedIds.has(alert.id) ? <CheckSquare size={12} className="text-[var(--accent)]" /> : <Square size={12} />}
+              </button>
+              <div className="flex-1 min-w-0">
+                <AlertRow alert={alert} showMeta staleHours={staleHours} snoozed={snoozed} acked={acked} onSelect={setSelectedAlert} />
+              </div>
+            </div>
           ))}
           {filtered.length > FLAT_PAGE_SIZE && (
             <div className="flex items-center justify-between px-3 py-2 border-t border-[var(--border)]">

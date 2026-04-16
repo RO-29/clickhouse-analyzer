@@ -756,6 +756,10 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
           alert={selectedAlert}
           onClose={() => setSelectedAlert(null)}
           onResolve={!selectedAlert.resolved ? handleResolveDetailAlert : undefined}
+          onAnalyze={a => {
+            analyze(`Alert: ${a.title}`, { row: a }, { contextType: 'row', tab: 'alerts', elementId: String(a.id) })
+            setSelectedAlert(null)
+          }}
         />
       )}
     </div>

@@ -27,6 +27,7 @@ export interface Store {
   chatSessions: ChatSession[]
   activeChatId: string | null
   aiPanelOpen: boolean
+  denseMode: boolean
 
   // Actions
   setView: (v: View) => void
@@ -46,6 +47,7 @@ export interface Store {
   alertPreset: { severity?: string; instance?: string } | null
   setAlertPreset: (preset: { severity?: string; instance?: string } | null) => void
   navToTerminal: (query: string, instance: string) => void
+  navToExploreWithRange: (instance: string, from: number, to: number) => void
   openTableDetail: (instance: string, database: string, table: string) => void
   closeTableDetail: () => void
   setChatSessions: (updater: ChatSession[] | ((prev: ChatSession[]) => ChatSession[])) => void
@@ -53,6 +55,7 @@ export interface Store {
   setAiPanelOpen: (v: boolean) => void
   authExpired: boolean
   setAuthExpired: (v: boolean) => void
+  setDenseMode: (v: boolean) => void
 }
 
 const StoreContext = createContext<Store | null>(null)
@@ -156,6 +159,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const [aiPanelOpen, setAiPanelOpen] = useState(false)
   const [authExpired, setAuthExpired] = useState(false)
+  const [denseMode, setDenseModeRaw] = useState(() => localStorage.getItem('ch-dense') === '1')
+  const setDenseMode = useCallback((v: boolean) => {
+    setDenseModeRaw(v)
+    localStorage.setItem('ch-dense', v ? '1' : '0')
+  }, [])
 
   const toggleTheme = useCallback(() => {
     setTheme(prev => {
@@ -194,9 +202,29 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const navToDetail = useCallback((instance: string) => {
     setSelectedInstanceRaw(instance)
-    patchURL({ instance: instance || null })
-    setView('detail')
-  }, [setView])
+    // pushState so browser back returns to previous view
+    const url = new URL(window.location.href)
+    url.searchParams.set('view', 'detail')
+    url.searchParams.set('instance', instance || '')
+    url.searchParams.delete('tab')
+    window.history.pushState(null, '', url.toString())
+    setViewState('detail')
+  }, [])
+
+  const navToExploreWithRange = useCallback((instance: string, from: number, to: number) => {
+    setSelectedInstanceRaw(instance)
+    setFrom(from)
+    setTo(to)
+    setRangePresetRaw('custom')
+    const url = new URL(window.location.href)
+    url.searchParams.set('view', 'explore')
+    url.searchParams.set('instance', instance || '')
+    url.searchParams.set('from', String(from))
+    url.searchParams.set('to', String(to))
+    url.searchParams.delete('tab')
+    window.history.pushState(null, '', url.toString())
+    setViewState('explore')
+  }, [])
 
   const navToAlerts = useCallback((filters?: { severity?: string; instance?: string }) => {
     setAlertPreset(filters ?? null)
@@ -246,8 +274,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     aiPanelOpen, setAiPanelOpen,
     authExpired, setAuthExpired,
     navToDetail, navToAlerts, alertPreset, setAlertPreset,
-    navToTerminal,
+    navToTerminal, navToExploreWithRange,
     openTableDetail, closeTableDetail,
+    denseMode, setDenseMode,
   }
 
   // ── Browser back/forward button support ──────────────────────────────────

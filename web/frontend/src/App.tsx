@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { StoreProvider, useStore } from './hooks/useStore'
 import { Sidebar } from './components/Sidebar'
 import { TopBar } from './components/TopBar'
+import { CommandPalette } from './components/CommandPalette'
 import Overview from './views/Overview'
 import Detail from './views/Detail'
 import Alerts from './views/Alerts'
@@ -30,6 +31,7 @@ function Layout() {
   const intervalRef = useRef<number>(0)
   const [tick, setTick] = useState(0)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
+  const [paletteOpen, setPaletteOpen] = useState(false)
   // Mount ChatAnalyzer once on first visit and keep it alive (preserves session state)
   const [analyzerMounted, setAnalyzerMounted] = useState(view === 'analyzer')
   const {
@@ -44,6 +46,18 @@ function Layout() {
     deleteSession: aiDeleteSession,
   } = useAIAnalysis(selectedInstance)
   const aiSpacerHeight = aiOpen ? PANEL_EXPANDED_HEIGHT : PANEL_COLLAPSED_HEIGHT
+
+  // Cmd+K → open command palette
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault()
+        setPaletteOpen(o => !o)
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [])
 
   // Warn before unload/refresh if any analysis is actively streaming
   const hasActiveAnalysis = aiSessions.some(s => s.messages.some(m => m.status === 'streaming'))
@@ -97,7 +111,7 @@ function Layout() {
 
   return (
     <div className="flex min-h-screen bg-[var(--bg)] text-[var(--text)]">
-      <Sidebar mobileOpen={mobileSidebarOpen} onMobileClose={() => setMobileSidebarOpen(false)} />
+      <Sidebar mobileOpen={mobileSidebarOpen} onMobileClose={() => setMobileSidebarOpen(false)} onOpenPalette={() => setPaletteOpen(true)} />
       <div className={cn("flex-1 flex flex-col transition-all duration-200", sidebarCollapsed ? "md:ml-14" : "md:ml-[220px]")}>
         <TopBar onMobileMenuClick={() => setMobileSidebarOpen(o => !o)} />
         <main className={cn(
@@ -128,6 +142,7 @@ function Layout() {
           onClose={closeTableDetail}
         />
       )}
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
       {view !== 'analyzer' && (
         <AIAnalysisPanel
           instance={selectedInstance}

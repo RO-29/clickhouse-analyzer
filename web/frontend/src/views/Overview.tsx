@@ -105,7 +105,7 @@ function MetricChip({
 
 /* ── Overview ────────────────────────────────────────────────────────── */
 export default function Overview({ refreshKey }: { refreshKey?: number }) {
-  const { setView, setInstance, setInstances, navToAlerts } = useStore()
+  const { setView, setInstance, setInstances, navToAlerts, navToDetail, denseMode } = useStore()
   const [analyzeInstance, setAnalyzeInstance] = useState('')
   const { analyze } = useAIAnalysis(analyzeInstance)
   const handleAnalyze = useCallback((data: Record<string, any>) => {
@@ -345,7 +345,7 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
           defaultOpen={freshAlerts.length <= 20}
         >
           <Card noPad>
-            <DataTable columns={alertCols} data={freshAlerts} pageSize={50} onRowClick={row => setSelectedAlert(row as Alert)} />
+            <DataTable columns={alertCols} data={freshAlerts} pageSize={50} onRowClick={row => setSelectedAlert(row as Alert)} dense={denseMode} />
           </Card>
         </Section>
       )}
@@ -354,6 +354,11 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
         <AlertDetailPanel
           alert={selectedAlert}
           onClose={() => setSelectedAlert(null)}
+          onAnalyze={a => {
+            analyze(`Alert: ${a.title}`, { row: a }, { contextType: 'row', tab: 'alerts', elementId: String(a.id) })
+            setSelectedAlert(null)
+          }}
+          onNavToInstance={name => { navToDetail(name); setSelectedAlert(null) }}
         />
       )}
     </div>
