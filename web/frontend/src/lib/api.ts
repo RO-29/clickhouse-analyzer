@@ -165,6 +165,8 @@ export const api = {
     schema: (inst: string) => get<any[]>(`/api/instances/${inst}/advisor/schema`),
     cardinality: (inst: string) => get<any[]>(`/api/instances/${inst}/advisor/cardinality`),
     storagePolicy: (inst: string) => get<any[]>(`/api/instances/${inst}/advisor/storage-policy`),
+    queryAntiPatterns: (inst: string) => get<any[]>(`/api/instances/${inst}/advisor/query-antipatterns`),
+    tableAntiPatterns: (inst: string) => get<any[]>(`/api/instances/${inst}/advisor/table-antipatterns`),
   },
   tableDetail: (inst: string, db: string, table: string) => get<any>(`/api/instances/${inst}/table-detail/${db}/${table}`),
   tableScan: (inst: string, from?: number, to?: number, includeSystem?: boolean, db?: string) => {

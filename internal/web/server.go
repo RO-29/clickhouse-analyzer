@@ -184,6 +184,8 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/instances/{name}/advisor/schema", s.handleAdvisorSchema)
 	mux.HandleFunc("GET /api/instances/{name}/advisor/cardinality", s.handleAdvisorCardinality)
 	mux.HandleFunc("GET /api/instances/{name}/advisor/storage-policy", s.handleAdvisorStoragePolicy)
+	mux.HandleFunc("GET /api/instances/{name}/advisor/query-antipatterns", s.handleAdvisorQueryAntiPatterns)
+	mux.HandleFunc("GET /api/instances/{name}/advisor/table-antipatterns", s.handleAdvisorTableAntiPatterns)
 	mux.HandleFunc("GET /api/instances/{name}/table-detail/{db}/{table}", s.handleTableDetail)
 
 	// Historical analysis endpoints (from history.go).

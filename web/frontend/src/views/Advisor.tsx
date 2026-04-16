@@ -124,6 +124,65 @@ function FixButton({ sql, instance }: { sql: string; instance: string }) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Extra columns per query anti-pattern type                         */
+/* ------------------------------------------------------------------ */
+function getAPExtraColumns(type: string) {
+  switch (type) {
+    case 'select_star':
+      return [
+        { key: 'avg_read_bytes', label: 'Avg Read', format: (v: any) => fmtBytes(Number(v) || 0) },
+        { key: 'avg_read_rows',  label: 'Avg Rows',  format: (v: any) => fmtNum(Number(v) || 0) },
+      ]
+    case 'high_memory':
+      return [
+        { key: 'avg_memory',    label: 'Avg RAM',  format: (v: any) => fmtBytes(Number(v) || 0) },
+        { key: 'avg_read_rows', label: 'Avg Rows', format: (v: any) => fmtNum(Number(v) || 0) },
+      ]
+    case 'full_scan':
+      return [
+        { key: 'avg_read_rows',   label: 'Read Rows',   format: (v: any) => fmtNum(Number(v) || 0) },
+        { key: 'avg_result_rows', label: 'Result Rows', format: (v: any) => fmtNum(Number(v) || 0) },
+        { key: 'scan_ratio', label: 'Ratio', format: (v: any) => <span className="text-red-400 font-mono">{fmtNum(Number(v) || 0)}×</span> },
+      ]
+    case 'no_limit':
+    case 'order_no_limit':
+      return [
+        { key: 'avg_result_rows', label: 'Avg Result Rows', format: (v: any) => fmtNum(Number(v) || 0) },
+        { key: 'avg_read_bytes',  label: 'Avg Read',        format: (v: any) => fmtBytes(Number(v) || 0) },
+      ]
+    case 'high_error_rate':
+      return [
+        { key: 'error_count',    label: 'Errors',     format: (v: any) => <span className="text-red-400">{fmtNum(Number(v) || 0)}</span> },
+        { key: 'error_rate_pct', label: 'Error Rate', format: (v: any) => <span className="text-red-400">{(Number(v) || 0).toFixed(1)}%</span> },
+      ]
+    case 'low_mark_cache':
+      return [
+        { key: 'cache_hit_pct', label: 'Cache Hit %', format: (v: any) => {
+          const pct = Number(v) || 0
+          return <span className={pct < 30 ? 'text-red-400 font-mono' : 'text-yellow-400 font-mono'}>{pct.toFixed(1)}%</span>
+        }},
+        { key: 'avg_read_rows', label: 'Avg Rows', format: (v: any) => fmtNum(Number(v) || 0) },
+      ]
+    case 'high_frequency':
+      return [
+        { key: 'avg_memory', label: 'Avg RAM', format: (v: any) => fmtBytes(Number(v) || 0) },
+      ]
+    case 'uses_final':
+      return [
+        { key: 'avg_read_rows', label: 'Avg Rows', format: (v: any) => fmtNum(Number(v) || 0) },
+        { key: 'avg_memory',    label: 'Avg RAM',  format: (v: any) => fmtBytes(Number(v) || 0) },
+      ]
+    case 'global_in_join':
+      return [
+        { key: 'avg_read_rows', label: 'Avg Rows', format: (v: any) => fmtNum(Number(v) || 0) },
+        { key: 'avg_memory',    label: 'Avg RAM',  format: (v: any) => fmtBytes(Number(v) || 0) },
+      ]
+    default:
+      return []
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /*  Advisor view                                                      */
 /* ------------------------------------------------------------------ */
 export default function Advisor() {
@@ -161,6 +220,8 @@ export default function Advisor() {
   const [schema, setSchema] = useState<SectionState<any>>(emptySection())
   const [cardinality, setCardinality] = useState<SectionState<any>>(emptySection())
   const [storagePolicy, setStoragePolicy] = useState<SectionState<any>>(emptySection())
+  const [queryAP, setQueryAP] = useState<SectionState<any>>(emptySection())
+  const [tableAP, setTableAP] = useState<SectionState<any>>(emptySection())
 
   // Cardinality requires a separate button
   const [cardinalityRun, setCardinalityRun] = useState(false)
@@ -175,6 +236,7 @@ export default function Advisor() {
       compression: true, indexMemory: true, queryRegression: true,
       newPatterns: true, unusedTables: true, schema: true,
       cardinality: true, storagePolicy: true,
+      queryAP: true, tableAP: true,
     })
     setExpanded({})
 
@@ -196,6 +258,8 @@ export default function Advisor() {
     load(setUnusedTables, () => api.advisor.unusedTables(inst))
     load(setSchema, () => api.advisor.schema(inst))
     load(setStoragePolicy, () => api.advisor.storagePolicy(inst))
+    load(setQueryAP, () => api.advisor.queryAntiPatterns(inst))
+    load(setTableAP, () => api.advisor.tableAntiPatterns(inst))
   }, [inst])
 
   const runCardinality = useCallback(async () => {
@@ -223,6 +287,8 @@ export default function Advisor() {
     { label: 'Schema', count: schema.data !== null ? schema.data.reduce((s: number, r: any) => s + (r.recommendations?.length ?? 0), 0) : null },
     { label: 'Cardinality', count: count(cardinality) },
     { label: 'Storage Policy', count: count(storagePolicy) },
+    { label: 'Query Anti-patterns', count: queryAP.data ? queryAP.data.filter((g: any) => g.count > 0).length : null },
+    { label: 'Table Anti-patterns', count: tableAP.data ? tableAP.data.filter((g: any) => g.count > 0).length : null },
   ]
 
   /* ---- Compression ratio color ---- */
@@ -759,6 +825,165 @@ export default function Advisor() {
             />
             <ShowAllButton sectionKey="storagePolicy" total={storagePolicy.data.length} />
           </>)}
+        </Section>
+      )}
+
+      {/* ---- Section 9: Query Anti-patterns ---- */}
+      {hasRun && (
+        <Section
+          title="Query Anti-patterns"
+          count={queryAP.data ? queryAP.data.filter((g: any) => g.count > 0).length : null}
+          collapsed={!!collapsed['queryAP']}
+          onToggle={() => toggle('queryAP')}
+          loading={queryAP.loading}
+          error={queryAP.error}
+          onAnalyze={() => analyze('Query Anti-patterns', { issues: queryAP.data, instance: inst }, { contextType: 'tab', tab: 'advisor', elementId: 'queryAP' })}
+        >
+          {queryAP.data && queryAP.data.every((g: any) => g.count === 0) && (
+            <div className="text-sm text-[var(--dim)]">No query anti-patterns detected in the last 24h.</div>
+          )}
+          {queryAP.data && queryAP.data.some((g: any) => g.count > 0) && (
+            <div className="space-y-4">
+              {queryAP.data.filter((g: any) => g.count > 0).map((group: any) => (
+                <div key={group.type} className="border border-[var(--border)] rounded-lg overflow-hidden">
+                  {/* Group header */}
+                  <div className="flex items-center gap-3 px-4 py-3 bg-[var(--hover)]">
+                    <Badge className={cn(
+                      'border shrink-0',
+                      group.severity === 'critical' ? 'bg-red-500/10 text-red-400 border-red-500/20'
+                        : group.severity === 'warn' ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20'
+                          : 'bg-blue-500/10 text-blue-400 border-blue-500/20',
+                    )}>
+                      {group.severity}
+                    </Badge>
+                    <span className="font-medium text-sm">{group.title}</span>
+                    <Badge className="bg-[var(--border)] text-[var(--dim)] border border-[var(--border)] ml-auto">
+                      {group.count} {group.count === 1 ? 'pattern' : 'patterns'}
+                    </Badge>
+                  </div>
+                  {/* Description */}
+                  <div className="px-4 py-2 text-xs text-[var(--dim)] border-b border-[var(--border)]">
+                    {group.description}
+                  </div>
+                  {/* Queries table */}
+                  <div className="px-4 py-3">
+                    <DataTable
+                      columns={[
+                        {
+                          key: 'hash',
+                          label: 'Hash',
+                          format: (v: any) => <span className="font-mono text-xs">{String(v ?? '').slice(0, 10)}</span>,
+                        },
+                        {
+                          key: 'sample_query',
+                          label: 'Query',
+                          format: (v: any) => (
+                            <span className="font-mono text-xs block max-w-xs truncate" title={String(v ?? '')}>
+                              {String(v ?? '').slice(0, 120)}
+                            </span>
+                          ),
+                        },
+                        { key: 'exec_count', label: 'Runs', format: (v: any) => fmtNum(v) },
+                        { key: 'avg_ms', label: 'Avg', format: (v: any) => fmtDuration(Number(v) || 0) },
+                        ...getAPExtraColumns(group.type),
+                      ]}
+                      data={limitRows(`qap_${group.type}`, group.queries)}
+                      onRowClick={(row) => row.sample_query && navToTerminal(row.sample_query, inst)}
+                    />
+                    <ShowAllButton sectionKey={`qap_${group.type}`} total={group.queries.length} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </Section>
+      )}
+
+      {/* ---- Section 10: Table Design Anti-patterns ---- */}
+      {hasRun && (
+        <Section
+          title="Table Design Anti-patterns"
+          count={tableAP.data ? tableAP.data.filter((g: any) => g.count > 0).length : null}
+          collapsed={!!collapsed['tableAP']}
+          onToggle={() => toggle('tableAP')}
+          loading={tableAP.loading}
+          error={tableAP.error}
+          onAnalyze={() => analyze('Table Design Anti-patterns', { issues: tableAP.data, instance: inst }, { contextType: 'tab', tab: 'advisor', elementId: 'tableAP' })}
+        >
+          {tableAP.data && tableAP.data.every((g: any) => g.count === 0) && (
+            <div className="text-sm text-[var(--dim)]">No table design anti-patterns detected.</div>
+          )}
+          {tableAP.data && tableAP.data.some((g: any) => g.count > 0) && (
+            <div className="space-y-4">
+              {tableAP.data.filter((g: any) => g.count > 0).map((group: any) => (
+                <div key={group.type} className="border border-[var(--border)] rounded-lg overflow-hidden">
+                  {/* Group header */}
+                  <div className="flex items-center gap-3 px-4 py-3 bg-[var(--hover)]">
+                    <Badge className={cn(
+                      'border shrink-0',
+                      group.severity === 'critical' ? 'bg-red-500/10 text-red-400 border-red-500/20'
+                        : group.severity === 'warn' ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20'
+                          : 'bg-blue-500/10 text-blue-400 border-blue-500/20',
+                    )}>
+                      {group.severity}
+                    </Badge>
+                    <span className="font-medium text-sm">{group.title}</span>
+                    <Badge className="bg-[var(--border)] text-[var(--dim)] border border-[var(--border)] ml-auto">
+                      {group.count} {group.count === 1 ? 'table' : 'tables'}
+                    </Badge>
+                  </div>
+                  {/* Description */}
+                  <div className="px-4 py-2 text-xs text-[var(--dim)] border-b border-[var(--border)]">
+                    {group.description}
+                  </div>
+                  {/* Tables */}
+                  <div className="px-4 py-3">
+                    <DataTable
+                      columns={[
+                        { key: 'database', label: 'Database' },
+                        {
+                          key: 'table',
+                          label: 'Table',
+                          format: (v: any, row: any) => (
+                            <button
+                              className="text-[var(--accent)] hover:underline text-left"
+                              onClick={() => openTableDetail(inst, row.database, v)}
+                            >
+                              {v}
+                            </button>
+                          ),
+                        },
+                        {
+                          key: 'metric',
+                          label: 'Value',
+                          format: (v: any, row: any) => (
+                            <span className={cn(
+                              'font-mono text-sm font-medium',
+                              row.severity === 'critical' ? 'text-red-400'
+                                : row.severity === 'warn' ? 'text-yellow-400'
+                                  : 'text-blue-400',
+                            )}>
+                              {fmtNum(Number(v) || 0)} {row.metric_label}
+                            </span>
+                          ),
+                        },
+                        { key: 'size_human', label: 'Size', format: (v: any) => v || '—' },
+                        { key: 'detail', label: 'Detail', format: (v: any) => <span className="text-xs text-[var(--dim)]">{v}</span> },
+                        {
+                          key: 'fix_hint',
+                          label: '',
+                          format: (v: any) => v ? <FixButton sql={v} instance={inst} /> : null,
+                        },
+                      ]}
+                      data={limitRows(`tap_${group.type}`, group.tables.map((t: any) => ({ ...t, severity: group.severity })))}
+                      onRowClick={(row) => row.fix_hint && navToTerminal(row.fix_hint, inst)}
+                    />
+                    <ShowAllButton sectionKey={`tap_${group.type}`} total={group.tables.length} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </Section>
       )}
     </div>

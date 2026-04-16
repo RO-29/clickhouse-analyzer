@@ -260,37 +260,54 @@ export default function Terminal() {
     if (selectedInstance && !terminalInstance) setInst(selectedInstance)
   }, [selectedInstance, terminalInstance])
 
+  // Ensure inst is always populated once instances load
+  useEffect(() => {
+    if (instances.length > 0) {
+      setInst(prev => prev || instances[0])
+    }
+  }, [instances])
+
   // Fetch tables + columns for autocomplete
   useEffect(() => {
     if (!inst) return
     let cancelled = false
 
+    // Two parallel queries: one for tables, one for columns
     Promise.all([
-      api.tables(inst).catch(() => [] as any[]),
+      api.terminal.execute(
+        inst,
+        `SELECT database, name AS table_name FROM system.tables
+         WHERE database NOT IN ('information_schema','INFORMATION_SCHEMA')
+           AND name NOT LIKE '.%'
+         ORDER BY database, name LIMIT 5000`,
+        5000,
+      ).catch(() => null),
       api.terminal.execute(
         inst,
         `SELECT database, table, name, type FROM system.columns
          WHERE database NOT IN ('information_schema','INFORMATION_SCHEMA')
-         ORDER BY database, table, name LIMIT 10000`,
-        10000,
+           AND table NOT LIKE '.%'
+         ORDER BY database, table, name LIMIT 20000`,
+        20000,
       ).catch(() => null),
-    ]).then(([tables, colRes]) => {
+    ]).then(([tblRes, colRes]) => {
       if (cancelled) return
       const items: SchemaItem[] = []
       const seen = new Set<string>()
 
-      // Tables — API returns `table_name` field (not `name`)
-      if (Array.isArray(tables)) {
-        for (const t of tables) {
-          const tname = t.table_name || t.name
-          if (!t.database || !tname) continue
-          const fq = `${t.database}.${tname}`
-          if (!seen.has(fq)) { items.push({ label: fq, kind: 'table', detail: t.database }); seen.add(fq) }
-          if (!seen.has(tname)) { items.push({ label: tname, kind: 'table', detail: t.database }); seen.add(tname) }
+      // Tables from system.tables
+      if (tblRes?.rows) {
+        for (const t of tblRes.rows) {
+          const db    = String(t.database || '')
+          const tname = String(t.table_name || '')
+          if (!db || !tname) continue
+          const fq = `${db}.${tname}`
+          if (!seen.has(fq)) { items.push({ label: fq, kind: 'table', detail: db }); seen.add(fq) }
+          if (!seen.has(tname)) { items.push({ label: tname, kind: 'table', detail: db }); seen.add(tname) }
         }
       }
 
-      // Columns
+      // Columns from system.columns
       if (colRes?.rows) {
         for (const r of colRes.rows) {
           const col = String(r.name || '')
@@ -298,10 +315,8 @@ export default function Terminal() {
           const db  = String(r.database || '')
           const typ = String(r.type || '')
           if (!col) continue
-          // table.column
           const tqc = `${tbl}.${col}`
           if (!seen.has(tqc)) { items.push({ label: tqc, kind: 'column', detail: typ }); seen.add(tqc) }
-          // bare column (dedup)
           if (!seen.has(col)) { items.push({ label: col, kind: 'column', detail: `${db}.${tbl} · ${typ}` }); seen.add(col) }
         }
       }
@@ -375,6 +390,7 @@ export default function Terminal() {
             onChange={e => { setInst(e.target.value); setSelectedInstance(e.target.value) }}
             className="rounded-md border border-[var(--border)] bg-[var(--card)] px-3 py-1.5 text-sm text-[var(--fg)] focus:outline-none focus:border-[var(--accent)]"
           >
+            {instances.length === 0 && <option value="">No instances</option>}
             {instances.map(i => <option key={i} value={i}>{i}</option>)}
           </select>
         </div>
