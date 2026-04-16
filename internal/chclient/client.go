@@ -5,6 +5,7 @@
 package chclient
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -205,13 +206,9 @@ func (c *Client) Query(ctx context.Context, sql string) ([]map[string]interface{
 		return nil, err
 	}
 
-	var resp chJSONResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("chclient[%s]: failed to decode JSON response: %w (body prefix: %s)",
-			c.name, err, truncate(body, 256))
-	}
-	if resp.Exception != "" {
-		return nil, fmt.Errorf("chclient[%s]: server exception: %s", c.name, resp.Exception)
+	resp, err := decodeQueryResponse(c.name, body)
+	if err != nil {
+		return nil, err
 	}
 
 	c.logger.Debug("query executed",
@@ -234,13 +231,9 @@ func (c *Client) QueryFull(ctx context.Context, sql string) (*FullQueryResult, e
 		return nil, err
 	}
 
-	var resp chJSONResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("chclient[%s]: failed to decode JSON response: %w (body prefix: %s)",
-			c.name, err, truncate(body, 256))
-	}
-	if resp.Exception != "" {
-		return nil, fmt.Errorf("chclient[%s]: server exception: %s", c.name, resp.Exception)
+	resp, err := decodeQueryResponse(c.name, body)
+	if err != nil {
+		return nil, err
 	}
 
 	meta := make([]ColumnMeta, len(resp.Meta))
@@ -273,13 +266,9 @@ func (c *Client) QueryWithSettings(ctx context.Context, sql string, settings map
 		return nil, err
 	}
 
-	var resp chJSONResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("chclient[%s]: failed to decode JSON response: %w (body prefix: %s)",
-			c.name, err, truncate(body, 256))
-	}
-	if resp.Exception != "" {
-		return nil, fmt.Errorf("chclient[%s]: server exception: %s", c.name, resp.Exception)
+	resp, err := decodeQueryResponse(c.name, body)
+	if err != nil {
+		return nil, err
 	}
 
 	meta := make([]ColumnMeta, len(resp.Meta))
@@ -298,6 +287,25 @@ func (c *Client) QueryWithSettings(ctx context.Context, sql string, settings map
 }
 
 // ---------------------------------------------------------------------------
+// decodeQueryResponse decodes a ClickHouse FORMAT JSON response body.
+// It uses json.Decoder with UseNumber() so that large 64-bit integer values
+// (UInt64 / Int64) are preserved as json.Number strings rather than being
+// truncated to float64. Callers can use fmt.Sprintf("%v", v) or the local
+// toString() helper to convert json.Number values to exact decimal strings.
+func decodeQueryResponse(name string, body []byte) (*chJSONResponse, error) {
+	var resp chJSONResponse
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	if err := dec.Decode(&resp); err != nil {
+		return nil, fmt.Errorf("chclient[%s]: failed to decode JSON response: %w (body prefix: %s)",
+			name, err, truncate(body, 256))
+	}
+	if resp.Exception != "" {
+		return nil, fmt.Errorf("chclient[%s]: server exception: %s", name, resp.Exception)
+	}
+	return &resp, nil
+}
+
 // QuerySingleValue – returns a single scalar as string
 // ---------------------------------------------------------------------------
 

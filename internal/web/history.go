@@ -986,7 +986,7 @@ func (s *Server) queryFromSamples(ctx context.Context, client *chclient.Client,
 		event_time,
 		user,
 		query_kind,
-		toString(normalized_query_hash) AS normalized_query_hash,
+		normalized_query_hash,
 		substring(query_text, 1, 500) AS query_text,
 		query_duration_ms,
 		read_rows,
@@ -1030,7 +1030,7 @@ func (s *Server) queryFromQueryLog(ctx context.Context, client *chclient.Client,
 		event_time,
 		user,
 		query_kind,
-		toString(normalized_query_hash) AS normalized_query_hash,
+		normalized_query_hash,
 		substring(query, 1, 500) AS query_text,
 		query_duration_ms,
 		read_rows,
@@ -1070,7 +1070,7 @@ func (s *Server) handleQueryPatternOverview(w http.ResponseWriter, r *http.Reque
 
 	// Get top N patterns by total_ms in this time range.
 	topSQL := fmt.Sprintf(`SELECT
-		toString(normalized_query_hash) AS normalized_query_hash,
+		normalized_query_hash,
 		sum(query_duration_ms) AS total_ms,
 		any(substring(query_text, 1, 80)) AS label
 	FROM ch_analyzer.query_samples
@@ -1083,7 +1083,7 @@ func (s *Server) handleQueryPatternOverview(w http.ResponseWriter, r *http.Reque
 	if err != nil || len(topRows) == 0 {
 		// Fall back to system.query_log.
 		topSQL = fmt.Sprintf(`SELECT
-			toString(normalized_query_hash) AS normalized_query_hash,
+			normalized_query_hash,
 			sum(query_duration_ms) AS total_ms,
 			any(substring(query, 1, 80)) AS label
 		FROM system.query_log
@@ -1115,7 +1115,7 @@ func (s *Server) handleQueryPatternOverview(w http.ResponseWriter, r *http.Reque
 	// Get time-bucketed data for those top patterns.
 	timeSQL := fmt.Sprintf(`SELECT
 		toStartOfInterval(event_time, INTERVAL %d SECOND) AS ts,
-		toString(normalized_query_hash) AS normalized_query_hash,
+		normalized_query_hash,
 		sum(query_duration_ms) AS total_ms,
 		count() AS cnt
 	FROM ch_analyzer.query_samples
@@ -1129,7 +1129,7 @@ func (s *Server) handleQueryPatternOverview(w http.ResponseWriter, r *http.Reque
 		// Fall back to system.query_log.
 		timeSQL = fmt.Sprintf(`SELECT
 			toStartOfInterval(event_time, INTERVAL %d SECOND) AS ts,
-			toString(normalized_query_hash) AS normalized_query_hash,
+			normalized_query_hash,
 			sum(query_duration_ms) AS total_ms,
 			count() AS cnt
 		FROM system.query_log
@@ -1247,7 +1247,7 @@ func (s *Server) handleQueryPatternsV2(w http.ResponseWriter, r *http.Request) {
 
 	// Try ch_analyzer.query_samples first.
 	sql := fmt.Sprintf(`SELECT
-		toString(normalized_query_hash) AS normalized_query_hash,
+		normalized_query_hash,
 		count() AS cnt,
 		any(query_kind) AS kind,
 		sum(query_duration_ms) AS total_ms,
@@ -1272,7 +1272,7 @@ func (s *Server) handleQueryPatternsV2(w http.ResponseWriter, r *http.Request) {
 	if err != nil || len(rows) == 0 {
 		// Fall back to system.query_log.
 		sql = fmt.Sprintf(`SELECT
-			toString(normalized_query_hash) AS normalized_query_hash,
+			normalized_query_hash,
 			count() AS cnt,
 			any(query_kind) AS kind,
 			sum(query_duration_ms) AS total_ms,
