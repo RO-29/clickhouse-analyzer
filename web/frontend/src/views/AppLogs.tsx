@@ -8,14 +8,14 @@ import type { LogEntry } from '../types/api'
 const LEVELS = ['DEBUG', 'INFO', 'WARN', 'ERROR'] as const
 
 const LEVEL_COLOR: Record<string, string> = {
-  DEBUG: 'text-gray-400',
+  DEBUG: 'text-[var(--dim)]',
   INFO:  'text-blue-400',
   WARN:  'text-yellow-400',
   ERROR: 'text-red-400',
 }
 
 const LEVEL_BG: Record<string, string> = {
-  DEBUG: 'bg-gray-500/10  text-gray-400  border-gray-500/20',
+  DEBUG: 'bg-[var(--border)] text-[var(--dim)] border-[var(--border)]',
   INFO:  'bg-blue-500/10  text-blue-400  border-blue-500/20',
   WARN:  'bg-yellow-500/10 text-yellow-400 border-yellow-500/20',
   ERROR: 'bg-red-500/10   text-red-400   border-red-500/20',

@@ -129,6 +129,69 @@ func isReadOnlyQuery(sql string) bool {
 	return allowedFirstKeywords[keyword]
 }
 
+// splitStatements splits a SQL string into individual statements on semicolons,
+// correctly handling single-quoted string literals and -- line comments.
+func splitStatements(query string) []string {
+	var stmts []string
+	var cur strings.Builder
+	inStr := false
+	inLineComment := false
+
+	for i := 0; i < len(query); i++ {
+		ch := query[i]
+
+		if inLineComment {
+			cur.WriteByte(ch)
+			if ch == '\n' {
+				inLineComment = false
+			}
+			continue
+		}
+
+		if inStr {
+			cur.WriteByte(ch)
+			if ch == '\'' {
+				// handle escaped '' inside strings
+				if i+1 < len(query) && query[i+1] == '\'' {
+					cur.WriteByte(query[i+1])
+					i++
+				} else {
+					inStr = false
+				}
+			}
+			continue
+		}
+
+		// Detect line comment start
+		if ch == '-' && i+1 < len(query) && query[i+1] == '-' {
+			inLineComment = true
+			cur.WriteByte(ch)
+			continue
+		}
+
+		if ch == '\'' {
+			inStr = true
+			cur.WriteByte(ch)
+			continue
+		}
+
+		if ch == ';' {
+			if stmt := strings.TrimSpace(cur.String()); stmt != "" {
+				stmts = append(stmts, stmt)
+			}
+			cur.Reset()
+			continue
+		}
+
+		cur.WriteByte(ch)
+	}
+
+	if stmt := strings.TrimSpace(cur.String()); stmt != "" {
+		stmts = append(stmts, stmt)
+	}
+	return stmts
+}
+
 // ---------------------------------------------------------------------------
 // 1. POST /api/query — Execute a read-only SQL query
 // ---------------------------------------------------------------------------
@@ -140,12 +203,13 @@ type queryRequest struct {
 }
 
 type queryResponse struct {
-	Columns  []string                 `json:"columns"`
-	Types    []string                 `json:"types"`
-	Rows     []map[string]interface{} `json:"rows"`
-	RowCount int                      `json:"row_count"`
-	ElapsedMs int64                   `json:"elapsed_ms"`
-	Instance string                   `json:"instance"`
+	Columns       []string                 `json:"columns"`
+	Types         []string                 `json:"types"`
+	Rows          []map[string]interface{} `json:"rows"`
+	RowCount      int                      `json:"row_count"`
+	ElapsedMs     int64                    `json:"elapsed_ms"`
+	Instance      string                   `json:"instance"`
+	StatementsRun int                      `json:"statements_run,omitempty"`
 }
 
 func (s *Server) handleQueryExecute(w http.ResponseWriter, r *http.Request) {
@@ -169,12 +233,21 @@ func (s *Server) handleQueryExecute(w http.ResponseWriter, r *http.Request) {
 		req.Limit = 1000
 	}
 
-	// Security: validate the query is read-only.
-	if !isReadOnlyQuery(req.Query) {
-		keyword := extractFirstKeyword(req.Query)
-		writeErr(w, http.StatusForbidden, fmt.Sprintf("query type %q is not allowed; only SELECT, SHOW, DESCRIBE, EXPLAIN, EXISTS, WITH are permitted", keyword))
-		s.recordQueryHistory(req.Instance, req.Query, 0, 0, "forbidden: query type not allowed")
+	// Split into individual statements (supports multi-statement input)
+	stmts := splitStatements(req.Query)
+	if len(stmts) == 0 {
+		writeErr(w, http.StatusBadRequest, "no statements found")
 		return
+	}
+
+	// Security: validate all statements are read-only before executing any.
+	for _, stmt := range stmts {
+		if !isReadOnlyQuery(stmt) {
+			keyword := extractFirstKeyword(stmt)
+			writeErr(w, http.StatusForbidden, fmt.Sprintf("query type %q is not allowed; only SELECT, SHOW, DESCRIBE, EXPLAIN, EXISTS, WITH are permitted", keyword))
+			s.recordQueryHistory(req.Instance, req.Query, 0, 0, "forbidden: query type not allowed")
+			return
+		}
 	}
 
 	// Get client for instance.
@@ -189,57 +262,82 @@ func (s *Server) handleQueryExecute(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	settings := map[string]string{
-		"max_execution_time": "30",
-		"max_result_rows":    fmt.Sprintf("%d", req.Limit),
+		"max_execution_time":   "30",
+		"max_result_rows":      fmt.Sprintf("%d", req.Limit),
 		"result_overflow_mode": "break",
 	}
 
-	start := time.Now()
-	result, err := client.QueryWithSettings(ctx, req.Query, settings)
-	elapsedMs := time.Since(start).Milliseconds()
-
-	// Truncate query for logging.
-	logQuery := req.Query
-	if len(logQuery) > 200 {
-		logQuery = logQuery[:200] + "..."
-	}
-
-	if err != nil {
-		slog.Warn("terminal query failed",
-			"instance", req.Instance,
-			"query", logQuery,
-			"elapsed_ms", elapsedMs,
-			"err", err,
-		)
-		s.recordQueryHistory(req.Instance, req.Query, 0, elapsedMs, err.Error())
-		writeErr(w, http.StatusInternalServerError, "query execution failed: "+err.Error())
-		return
-	}
-
-	slog.Info("terminal query executed",
-		"instance", req.Instance,
-		"query", logQuery,
-		"elapsed_ms", elapsedMs,
-		"rows", result.Rows,
+	var (
+		lastResult *struct {
+			Columns []string
+			Types   []string
+			Rows    []map[string]interface{}
+			Count   int
+		}
+		totalElapsed int64
 	)
 
-	// Extract column names and types from metadata.
-	columns := make([]string, len(result.Meta))
-	types := make([]string, len(result.Meta))
-	for i, m := range result.Meta {
-		columns[i] = m.Name
-		types[i] = m.Type
+	for i, stmt := range stmts {
+		start := time.Now()
+		result, err := client.QueryWithSettings(ctx, stmt, settings)
+		elapsedMs := time.Since(start).Milliseconds()
+		totalElapsed += elapsedMs
+
+		logQuery := stmt
+		if len(logQuery) > 200 {
+			logQuery = logQuery[:200] + "..."
+		}
+
+		if err != nil {
+			slog.Warn("terminal query failed",
+				"instance", req.Instance,
+				"stmt", i+1,
+				"query", logQuery,
+				"elapsed_ms", elapsedMs,
+				"err", err,
+			)
+			s.recordQueryHistory(req.Instance, stmt, 0, elapsedMs, err.Error())
+			errMsg := err.Error()
+			if len(stmts) > 1 {
+				errMsg = fmt.Sprintf("statement %d/%d failed: %s", i+1, len(stmts), errMsg)
+			}
+			writeErr(w, http.StatusInternalServerError, "query execution failed: "+errMsg)
+			return
+		}
+
+		slog.Info("terminal query executed",
+			"instance", req.Instance,
+			"stmt", i+1,
+			"query", logQuery,
+			"elapsed_ms", elapsedMs,
+			"rows", result.Rows,
+		)
+
+		columns := make([]string, len(result.Meta))
+		types := make([]string, len(result.Meta))
+		for j, m := range result.Meta {
+			columns[j] = m.Name
+			types[j] = m.Type
+		}
+
+		lastResult = &struct {
+			Columns []string
+			Types   []string
+			Rows    []map[string]interface{}
+			Count   int
+		}{columns, types, result.Data, result.Rows}
+
+		s.recordQueryHistory(req.Instance, stmt, result.Rows, elapsedMs, "")
 	}
 
-	s.recordQueryHistory(req.Instance, req.Query, result.Rows, elapsedMs, "")
-
 	writeJSON(w, http.StatusOK, queryResponse{
-		Columns:   columns,
-		Types:     types,
-		Rows:      result.Data,
-		RowCount:  result.Rows,
-		ElapsedMs: elapsedMs,
-		Instance:  req.Instance,
+		Columns:       lastResult.Columns,
+		Types:         lastResult.Types,
+		Rows:          lastResult.Rows,
+		RowCount:      lastResult.Count,
+		ElapsedMs:     totalElapsed,
+		Instance:      req.Instance,
+		StatementsRun: len(stmts),
 	})
 }
 

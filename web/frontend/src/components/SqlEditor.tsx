@@ -12,6 +12,7 @@ import { EditorView, keymap } from '@codemirror/view'
 import { EditorState, Prec } from '@codemirror/state'
 import { sql } from '@codemirror/lang-sql'
 import { oneDark } from '@codemirror/theme-one-dark'
+import { useStore } from '../hooks/useStore'
 import {
   autocompletion,
   type CompletionContext,
@@ -84,10 +85,13 @@ interface SqlEditorProps {
   /** Extra completions — tables and columns from schema */
   schemaCompletions?: SchemaItem[]
   height?: string
+  forceDark?: boolean  // always use dark theme regardless of app theme
 }
 
 export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
-  ({ value, onChange, onSubmit, schemaCompletions = [], height = '200px' }, ref) => {
+  ({ value, onChange, onSubmit, schemaCompletions = [], height = '200px', forceDark = false }, ref) => {
+    const { theme } = useStore()
+    const isDark = forceDark || theme === 'dark'
     const containerRef = useRef<HTMLDivElement>(null)
     const viewRef = useRef<EditorView | null>(null)
     // Use refs so callbacks in extensions don't go stale
@@ -114,9 +118,12 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
       getValue: () => viewRef.current?.state.doc.toString() ?? '',
     }))
 
-    // Create editor once on mount
+    // Create/recreate editor when theme changes
     useEffect(() => {
       if (!containerRef.current) return
+
+      // Preserve current content across recreations
+      const savedValue = viewRef.current?.state.doc.toString() ?? value
 
       const customCompletion = (context: CompletionContext): CompletionResult | null => {
         const word = context.matchBefore(/[\w.]*/)
@@ -136,12 +143,56 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
         }
       }
 
+      const themeExt = isDark
+        ? [
+            oneDark,
+            EditorView.theme({
+              '&': { height, borderRadius: '0.5rem' },
+              '.cm-scroller': {
+                overflow: 'auto',
+                fontFamily: '"JetBrains Mono", "Fira Code", ui-monospace, monospace',
+                fontSize: '13px',
+                lineHeight: '1.6',
+              },
+              '.cm-content': { padding: '8px 0', caretColor: '#60a5fa' },
+              '.cm-focused': { outline: 'none' },
+              '.cm-gutters': { borderRight: '1px solid rgba(255,255,255,0.06)', minWidth: '40px' },
+              '.cm-lineNumbers .cm-gutterElement': { paddingRight: '12px', color: 'rgba(255,255,255,0.2)' },
+              '.cm-activeLine': { backgroundColor: 'rgba(255,255,255,0.03)' },
+              '.cm-cursor': { borderLeftColor: '#60a5fa' },
+              '.cm-tooltip-autocomplete': { border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px' },
+            }),
+          ]
+        : [
+            EditorView.theme({
+              '&': { height, borderRadius: '0.5rem', backgroundColor: 'var(--editor-bg)' },
+              '.cm-scroller': {
+                overflow: 'auto',
+                fontFamily: '"JetBrains Mono", "Fira Code", ui-monospace, monospace',
+                fontSize: '13px',
+                lineHeight: '1.6',
+                backgroundColor: 'var(--editor-bg)',
+              },
+              '.cm-content': { padding: '8px 0', caretColor: 'var(--editor-cursor)' },
+              '.cm-focused': { outline: 'none' },
+              '.cm-gutters': {
+                backgroundColor: 'var(--editor-gutter)',
+                borderRight: '1px solid var(--editor-border)',
+                minWidth: '40px',
+              },
+              '.cm-lineNumbers .cm-gutterElement': { paddingRight: '12px', color: 'var(--editor-gutter-fg)' },
+              '.cm-activeLine': { backgroundColor: 'var(--editor-active)' },
+              '.cm-cursor': { borderLeftColor: 'var(--editor-cursor)' },
+              '.cm-tooltip-autocomplete': { border: '1px solid var(--editor-border)', borderRadius: '6px' },
+            }),
+          ]
+
       const state = EditorState.create({
-        doc: value,
+        doc: savedValue,
         extensions: [
           basicSetup,
           sql(),
-          oneDark,
+          ...themeExt,
           autocompletion({ override: [customCompletion], activateOnTyping: true, maxRenderedOptions: 20 }),
           // High-priority Ctrl/Cmd+Enter binding (beats basicSetup's Enter)
           Prec.highest(keymap.of([{
@@ -154,25 +205,10 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
               onChangeRef.current(update.state.doc.toString())
             }
           }),
-          EditorView.theme({
-            '&': { height, borderRadius: '0.5rem' },
-            '.cm-scroller': {
-              overflow: 'auto',
-              fontFamily: '"JetBrains Mono", "Fira Code", ui-monospace, monospace',
-              fontSize: '13px',
-              lineHeight: '1.6',
-            },
-            '.cm-content': { padding: '8px 0', caretColor: '#60a5fa' },
-            '.cm-focused': { outline: 'none' },
-            '.cm-gutters': { borderRight: '1px solid rgba(255,255,255,0.06)', minWidth: '40px' },
-            '.cm-lineNumbers .cm-gutterElement': { paddingRight: '12px', color: 'rgba(255,255,255,0.2)' },
-            '.cm-activeLine': { backgroundColor: 'rgba(255,255,255,0.03)' },
-            '.cm-cursor': { borderLeftColor: '#60a5fa' },
-            '.cm-tooltip-autocomplete': { border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px' },
-          }),
         ],
       })
 
+      viewRef.current?.destroy()
       const view = new EditorView({ state, parent: containerRef.current })
       viewRef.current = view
 
@@ -181,7 +217,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
         viewRef.current = null
       }
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []) // mount only
+    }, [isDark, height]) // recreate on theme or height change
 
     // Sync external value → editor (e.g. loading from history)
     useEffect(() => {

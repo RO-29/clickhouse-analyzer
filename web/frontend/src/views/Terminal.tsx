@@ -427,7 +427,7 @@ export default function Terminal() {
 
         {/* Error */}
         {error && (
-          <div className="rounded-lg bg-red-500/10 border border-red-500/20 p-4 font-mono text-xs text-red-400 whitespace-pre-wrap leading-relaxed">
+          <div className="rounded-lg bg-red-500/10 border border-red-500/20 p-4 font-mono text-xs text-[var(--red)] whitespace-pre-wrap leading-relaxed">
             {error}
           </div>
         )}
@@ -461,6 +461,9 @@ export default function Terminal() {
               )}
 
               <div className="ml-auto flex items-center gap-2">
+                {result.statements_run && result.statements_run > 1 && (
+                  <span className="text-xs text-[var(--dim)] italic">{result.statements_run} statements · last result shown</span>
+                )}
                 <span className="text-xs text-[var(--dim)]">
                   {fmtCompact(result.row_count)} rows · {fmtDuration(result.elapsed_ms)}
                 </span>

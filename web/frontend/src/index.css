@@ -21,6 +21,20 @@
     --yellow: #eab308;
     --red: #ef4444;
     --code-bg: #0d0d14;
+    /* SQL syntax colours */
+    --syn-kw: #60a5fa;
+    --syn-fn: #22d3ee;
+    --syn-str: #fbbf24;
+    --syn-num: #34d399;
+    --syn-cmt: #8888a0;
+    --syn-op: #9ca3af;
+    /* Editor */
+    --editor-bg: #1e1e2e;
+    --editor-gutter: #16162a;
+    --editor-border: #2a2a3a;
+    --editor-gutter-fg: rgba(255,255,255,0.2);
+    --editor-active: rgba(255,255,255,0.03);
+    --editor-cursor: #60a5fa;
   }
 
   [data-theme="light"] {
@@ -30,7 +44,7 @@
     --border: #e2e2e8;
     --text: #1a1a2e;
     --fg: #1a1a2e;
-    --dim: #6b6b80;
+    --dim: #5c5c72;
     --hover: #f0f0f6;
     --accent: #3b82f6;
     --accent-hover: #2563eb;
@@ -38,6 +52,20 @@
     --yellow: #ca8a04;
     --red: #dc2626;
     --code-bg: #f0f0f4;
+    /* SQL syntax colours — darker for light bg */
+    --syn-kw: #1d4ed8;
+    --syn-fn: #0e7490;
+    --syn-str: #b45309;
+    --syn-num: #047857;
+    --syn-cmt: #6b7280;
+    --syn-op: #374151;
+    /* Editor */
+    --editor-bg: #ffffff;
+    --editor-gutter: #f3f4f6;
+    --editor-border: #e2e2e8;
+    --editor-gutter-fg: #9ca3af;
+    --editor-active: rgba(59,130,246,0.04);
+    --editor-cursor: #3b82f6;
   }
 
   html {

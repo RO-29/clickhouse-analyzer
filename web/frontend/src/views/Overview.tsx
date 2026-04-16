@@ -298,7 +298,7 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
           <Card className={infoFiring > 0 ? 'hover:border-blue-500/40 transition-colors cursor-pointer' : ''}>
             <div className={`text-2xl font-bold ${infoFiring > 0 ? 'text-blue-400' : 'text-[var(--dim)]'}`}>{infoFiring}</div>
             <div className="text-xs text-[var(--dim)] mt-1 uppercase tracking-wider">
-              Info{staleCount > 0 ? <span className="ml-1 text-gray-500 normal-case font-normal">+{staleCount} stale</span> : null}
+              Info{staleCount > 0 ? <span className="ml-1 text-[var(--dim)] normal-case font-normal">+{staleCount} stale</span> : null}
             </div>
           </Card>
         </button>

@@ -426,7 +426,7 @@ function AlertRow({ alert, showMeta, staleHours, snoozed, acked, onAnalyze, onRe
       >
         {expanded ? <ChevronDown size={14} className="shrink-0 text-[var(--dim)]" /> : <ChevronRight size={14} className="shrink-0 text-[var(--dim)]" />}
         {stale
-          ? <Badge className="bg-gray-500/10 text-gray-400 border border-gray-500/20 text-xs shrink-0">stale</Badge>
+          ? <Badge className="bg-[var(--border)] text-[var(--dim)] border border-[var(--border)] text-xs shrink-0">stale</Badge>
           : <Badge severity={alert.severity} />
         }
         {snoozedUntil && (
@@ -698,7 +698,7 @@ function TimelineView({ alerts, staleHours }: { alerts: Alert[]; staleHours: num
                   )}>
                     <div className="flex items-start gap-2">
                       {stale
-                        ? <Badge className="bg-gray-500/10 text-gray-400 border border-gray-500/20 text-xs shrink-0">stale</Badge>
+                        ? <Badge className="bg-[var(--border)] text-[var(--dim)] border border-[var(--border)] text-xs shrink-0">stale</Badge>
                         : <Badge severity={a.severity} />
                       }
                       <div className="flex-1 min-w-0">
@@ -1088,7 +1088,7 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
             <button
               onClick={handleResolveStale}
               disabled={resolving}
-              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium bg-gray-500/10 text-gray-400 hover:bg-gray-500/20 transition-colors disabled:opacity-50"
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium bg-[var(--border)] text-[var(--dim)] hover:bg-[var(--hover)] transition-colors disabled:opacity-50"
             >
               <Trash2 size={14} />
               {resolving ? 'Resolving...' : `Dismiss stale (${totalStaleUnfiltered})`}
@@ -1221,7 +1221,7 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
                   <Badge severity={worstSev} />
                   <div className="flex-1" />
                   {groupFiring > 0 && <span className={`text-xs ${firingTextColor}`}>{groupFiring} active</span>}
-                  {groupStale > 0 && <span className="text-xs text-gray-400 ml-2">{groupStale} stale</span>}
+                  {groupStale > 0 && <span className="text-xs text-[var(--dim)] ml-2">{groupStale} stale</span>}
                   {groupResolved > 0 && <span className="text-xs text-green-400 ml-2">{groupResolved} resolved</span>}
                 </button>
                 {!isCollapsed && (

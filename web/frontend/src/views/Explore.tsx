@@ -212,12 +212,12 @@ function SqlHighlight({ text, maxLen = 90 }: { text: string; maxLen?: number }) 
   return (
     <span className="font-mono text-xs">
       {tokens.map((tok, i) => {
-        if (tok.k === 'kw') return <span key={i} className="text-blue-400 font-medium">{tok.t}</span>
-        if (tok.k === 'fn') return <span key={i} className="text-cyan-400">{tok.t}</span>
-        if (tok.k === 'str') return <span key={i} className="text-amber-300/80">{tok.t}</span>
-        if (tok.k === 'num') return <span key={i} className="text-emerald-400/80">{tok.t}</span>
-        if (tok.k === 'cmt') return <span key={i} className="text-gray-500 italic">{tok.t}</span>
-        if (tok.k === 'op') return <span key={i} className="text-gray-400">{tok.t}</span>
+        if (tok.k === 'kw') return <span key={i} className="text-[var(--syn-kw)] font-medium">{tok.t}</span>
+        if (tok.k === 'fn') return <span key={i} className="text-[var(--syn-fn)]">{tok.t}</span>
+        if (tok.k === 'str') return <span key={i} className="text-[var(--syn-str)]">{tok.t}</span>
+        if (tok.k === 'num') return <span key={i} className="text-[var(--syn-num)]">{tok.t}</span>
+        if (tok.k === 'cmt') return <span key={i} className="text-[var(--syn-cmt)] italic">{tok.t}</span>
+        if (tok.k === 'op') return <span key={i} className="text-[var(--syn-op)]">{tok.t}</span>
         return <span key={i} className="text-[var(--fg)]">{tok.t}</span>
       })}
     </span>

@@ -22,8 +22,8 @@ const LEVEL_COLOR: Record<string, string> = {
   Warning: 'text-yellow-400',
   Notice: 'text-blue-400',
   Information: 'text-green-400',
-  Debug: 'text-gray-400',
-  Trace: 'text-gray-500',
+  Debug: 'text-[var(--dim)]',
+  Trace: 'text-[var(--dim)]',
 }
 
 function highlightSearch(text: string, search: string): ReactNode {

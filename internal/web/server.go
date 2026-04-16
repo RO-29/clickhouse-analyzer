@@ -1154,8 +1154,11 @@ func (s *Server) getHealthScore(instance string) float64 {
 				warnCats[a.Category] = true
 			}
 		}
-		score -= float64(len(critCats)) * 15
-		score -= float64(len(warnCats)) * 5
+		alertDeduct := float64(len(critCats))*10 + float64(len(warnCats))*3
+		if alertDeduct > 55 {
+			alertDeduct = 55
+		}
+		score -= alertDeduct
 	}
 
 	latest, err := s.store.QueryLatestMetrics(instance)

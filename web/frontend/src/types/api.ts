@@ -169,6 +169,7 @@ export interface QueryResult {
   rows: Record<string, any>[]
   row_count: number; elapsed_ms: number; instance: string
   error?: string
+  statements_run?: number
 }
 
 export interface QueryHistoryEntry {

@@ -87,7 +87,7 @@ export function NodeCard({
         <div className="font-medium truncate">{instance.name}</div>
         <div className="flex items-center gap-2">
           {staleAlerts > 0 && freshAlerts === 0 && (
-            <Badge className="bg-gray-500/10 text-gray-400 border border-gray-500/20 text-xs">
+            <Badge className="bg-[var(--border)] text-[var(--dim)] border border-[var(--border)] text-xs">
               {staleAlerts} stale
             </Badge>
           )}
@@ -145,7 +145,7 @@ export function NodeCard({
             <span className="text-xs font-medium text-blue-400">{counts.info} info</span>
           )}
           {staleAlerts > 0 && (
-            <span className="text-xs text-gray-500">+{staleAlerts} stale</span>
+            <span className="text-xs text-[var(--dim)]">+{staleAlerts} stale</span>
           )}
         </div>
       )}
