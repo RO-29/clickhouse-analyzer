@@ -2,11 +2,12 @@ import { useEffect, useState, useCallback } from 'react'
 import {
   LayoutDashboard, Bell, BellDot, Search, GitCompareArrows, Lightbulb, TerminalSquare, FileText, Database,
   Sun, Moon, ChevronsLeft, ChevronsRight, Sparkles, RefreshCw, ScanSearch, DollarSign, Shield, PlayCircle, Compass,
-  Rows3, Command,
+  Rows3, Command, Copy,
 } from 'lucide-react'
 import { useStore, type View } from '../hooks/useStore'
 import { cn, scoreColor } from '../lib/utils'
 import { api } from '../lib/api'
+import { flashToast } from '../lib/notify'
 import type { Instance } from '../types/api'
 
 interface NavItem { view: View; label: string; icon: typeof LayoutDashboard }
@@ -85,6 +86,7 @@ export function Sidebar({ mobileOpen = false, onMobileClose, onOpenPalette }: Si
 
   const [instances, setInstances] = useState<Instance[]>([])
   const [refreshing, setRefreshing] = useState(false)
+  const [copiedInst, setCopiedInst] = useState<string | null>(null)
 
   const fetchInstances = useCallback(async () => {
     try {
@@ -219,29 +221,46 @@ export function Sidebar({ mobileOpen = false, onMobileClose, onOpenPalette }: Si
               {collapsed && <div className="mt-2" />}
               <div className="space-y-0.5">
                 {instances.map(inst => (
-                  <button
-                    key={inst.name}
-                    onClick={() => { navToDetail(inst.name); onMobileClose?.() }}
-                    className={cn(
-                      'w-full flex items-center gap-2 rounded-md text-[12px] transition-colors',
-                      collapsed ? 'justify-center px-0 py-1.5' : 'px-3 py-1.5',
-                      'text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)]',
-                    )}
-                    title={collapsed ? `${inst.name} (${inst.health_score})` : undefined}
-                  >
-                    <span
-                      className="w-1.5 h-1.5 rounded-full shrink-0"
-                      style={{ backgroundColor: scoreColor(inst.health_score) }}
-                    />
+                  <div key={inst.name} className="group relative">
+                    <button
+                      onClick={() => { navToDetail(inst.name); onMobileClose?.() }}
+                      className={cn(
+                        'w-full flex items-center gap-2 rounded-md text-[12px] transition-colors',
+                        collapsed ? 'justify-center px-0 py-1.5' : 'px-3 py-1.5',
+                        'text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)]',
+                      )}
+                      title={collapsed ? `${inst.name} (${inst.health_score})` : undefined}
+                    >
+                      <span
+                        className="w-1.5 h-1.5 rounded-full shrink-0"
+                        style={{ backgroundColor: scoreColor(inst.health_score) }}
+                      />
+                      {!collapsed && (
+                        <>
+                          <span className="truncate flex-1 text-left">{inst.name}</span>
+                          <span className="text-[11px] font-mono" style={{ color: scoreColor(inst.health_score) }}>
+                            {Math.round(inst.health_score)}
+                          </span>
+                        </>
+                      )}
+                    </button>
                     {!collapsed && (
-                      <>
-                        <span className="truncate flex-1 text-left">{inst.name}</span>
-                        <span className="text-[11px] font-mono" style={{ color: scoreColor(inst.health_score) }}>
-                          {Math.round(inst.health_score)}
-                        </span>
-                      </>
+                      <button
+                        onClick={e => {
+                          e.stopPropagation()
+                          navigator.clipboard.writeText(inst.name).then(() => {
+                            setCopiedInst(inst.name)
+                            flashToast('Copied', 'done', inst.name)
+                            setTimeout(() => setCopiedInst(null), 1500)
+                          })
+                        }}
+                        className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded opacity-0 group-hover:opacity-100 text-[var(--dim)] hover:text-[var(--text)] transition-opacity"
+                        title="Copy name"
+                      >
+                        <Copy size={10} className={copiedInst === inst.name ? 'text-green-400' : ''} />
+                      </button>
                     )}
-                  </button>
+                  </div>
                 ))}
               </div>
             </div>

@@ -281,13 +281,17 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
 
       {/* ── Header ── */}
       <div className="flex items-center gap-3">
-        <button
-          onClick={goBack}
-          className="p-1.5 rounded-md hover:bg-[var(--hover)] text-[var(--dim)] hover:text-[var(--text)] transition-colors"
-        >
-          <ArrowLeft size={18} />
-        </button>
-        <h2 className="text-base font-bold flex-1">{instance}</h2>
+        <div className="flex items-center gap-1.5 flex-1 min-w-0">
+          <button
+            onClick={goBack}
+            className="flex items-center gap-1 text-sm text-[var(--dim)] hover:text-[var(--text)] transition-colors shrink-0"
+          >
+            <ArrowLeft size={14} />
+            Overview
+          </button>
+          <span className="text-[var(--dim)] opacity-40 text-sm">/</span>
+          <h2 className="text-sm font-semibold truncate">{instance}</h2>
+        </div>
         {refreshing && (
           <div className="flex items-center gap-1.5 text-[11px] text-[var(--dim)]">
             <RefreshCw size={10} className="animate-spin" /> Refreshing…

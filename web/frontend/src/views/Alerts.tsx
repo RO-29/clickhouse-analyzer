@@ -4,6 +4,7 @@ import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
 import { fmtTime, cn } from '../lib/utils'
+import { flashToast } from '../lib/notify'
 import { Card } from '../components/Card'
 import { Badge } from '../components/Badge'
 import { AlertDetailPanel } from '../components/AlertDetailPanel'
@@ -771,7 +772,9 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
       const [active, history] = await Promise.all([api.alerts.active(), api.alerts.history()])
       setActiveAlerts(active)
       setHistoryAlerts(history)
+      flashToast('Alert resolved', 'done')
     } catch (e: any) {
+      flashToast(e.message ?? 'Resolve failed', 'error')
       console.error('[CH-Analyzer] Resolve alert failed:', e.message)
     }
   }, [])
@@ -782,12 +785,12 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
     setResolving(true)
     try {
       const { resolved: n } = await api.alerts.resolveStale(staleHours)
-      // Refresh data after resolving
       const [active, history] = await Promise.all([api.alerts.active(), api.alerts.history()])
       setActiveAlerts(active)
       setHistoryAlerts(history)
-      console.info(`[CH-Analyzer] Resolved ${n} stale alerts`)
+      flashToast(`${n} stale alert${n !== 1 ? 's' : ''} resolved`, 'done')
     } catch (e: any) {
+      flashToast(e.message ?? 'Resolve stale failed', 'error')
       console.error('[CH-Analyzer] Resolve stale failed:', e.message)
     } finally {
       resolvingRef.current = false
@@ -846,14 +849,18 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
       setActiveAlerts(active)
       setHistoryAlerts(history)
       setSelectedIds(new Set())
-    } catch {}
-    finally { setBulkResolving(false) }
+      flashToast(`${keys.length} alert${keys.length !== 1 ? 's' : ''} resolved`, 'done')
+    } catch (e: any) {
+      flashToast(e.message ?? 'Bulk resolve failed', 'error')
+    } finally { setBulkResolving(false) }
   }, [selectedIds, filtered])
 
   const bulkSnoozeSelected = useCallback((hours: number) => {
-    filtered.filter(a => selectedIds.has(a.id) && a.dedup_key).forEach(a => snoozeAlert(a.dedup_key, hours))
+    const items = filtered.filter(a => selectedIds.has(a.id) && a.dedup_key)
+    items.forEach(a => snoozeAlert(a.dedup_key, hours))
     handleSnoozeChange()
     setSelectedIds(new Set())
+    flashToast(`${items.length} alert${items.length !== 1 ? 's' : ''} snoozed for ${hours}h`, 'done')
   }, [selectedIds, filtered, handleSnoozeChange])
 
   const Select = ({ value, onChange, options, label }: {

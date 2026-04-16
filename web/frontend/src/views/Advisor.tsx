@@ -231,12 +231,14 @@ export default function Advisor() {
 
   // Cardinality requires a separate button
   const [cardinalityRun, setCardinalityRun] = useState(false)
+  const [analysisRunAt, setAnalysisRunAt] = useState<Date | null>(null)
 
   const inst = instance || instances[0] || ''
 
   const runAnalysis = useCallback(async () => {
     if (!inst) return
     setHasRun(true)
+    setAnalysisRunAt(new Date())
     // Collapse all sections by default — user expands what they care about
     setCollapsed({
       compression: true, indexMemory: true, queryRegression: true,
@@ -328,6 +330,11 @@ export default function Advisor() {
           <Zap size={16} />
           Run Analysis
         </button>
+        {analysisRunAt && (
+          <span className="text-[11px] text-[var(--dim)]">
+            Run at {analysisRunAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+          </span>
+        )}
       </div>
 
       {/* Summary tiles */}

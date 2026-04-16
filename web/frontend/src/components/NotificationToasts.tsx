@@ -28,6 +28,10 @@ export function NotificationToasts() {
       const notif = (e as CustomEvent<StoredNotif>).detail
       // Prepend; dedupe by id in case of re-renders
       setNotifs(prev => [notif, ...prev.filter(n => n.id !== notif.id)])
+      // Ephemeral toasts auto-dismiss after 3s
+      if (notif.ephemeral) {
+        setTimeout(() => setNotifs(prev => prev.filter(n => n.id !== notif.id)), 3000)
+      }
     }
     window.addEventListener('ch-toast', handler)
     return () => window.removeEventListener('ch-toast', handler)

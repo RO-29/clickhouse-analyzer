@@ -20,6 +20,7 @@ export interface StoredNotif {
   body: string
   sessionId?: string   // AI chat session to navigate to on click
   timestamp: number
+  ephemeral?: boolean  // transient — no audio/storage, auto-dismisses
 }
 
 // ---------------------------------------------------------------------------
@@ -131,6 +132,23 @@ export function notifyDone(label: string, sessionId?: string) {
   storeNotif(notif)
   dispatchToast(notif)
   showBrowserNotif('Analysis complete ✓', label)
+}
+
+/**
+ * Lightweight transient in-app toast.
+ * No audio, no localStorage, no browser notification — just a brief UI flash.
+ * Auto-dismissed by NotificationToasts after 3 seconds.
+ */
+export function flashToast(title: string, kind: ToastKind = 'done', body = '') {
+  const notif: StoredNotif = {
+    id: makeId(),
+    kind,
+    title,
+    body,
+    timestamp: Date.now(),
+    ephemeral: true,
+  }
+  dispatchToast(notif)
 }
 
 /** Analysis failed. */

@@ -1405,6 +1405,15 @@ function EmptyMsg({ msg }: { msg: string }) {
   return <div className="text-sm text-[var(--dim)] text-center py-12">{msg}</div>
 }
 
+function ErrorMsg({ msg }: { msg: string }) {
+  return (
+    <div className="flex items-center gap-3 px-4 py-4 rounded-xl bg-red-500/10 border border-red-500/20 text-sm text-red-400 my-4">
+      <XCircle size={16} className="shrink-0" />
+      <span className="flex-1">{msg}</span>
+    </div>
+  )
+}
+
 function TabButton({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) {
   return (
     <button
@@ -1564,6 +1573,8 @@ export default function Compare() {
   const [settingsData, setSettingsData] = useState<SettingsData | null>(null)
   const [tablesLoading, setTablesLoading] = useState(true)
   const [settingsLoading, setSettingsLoading] = useState(true)
+  const [tablesError, setTablesError] = useState<string | null>(null)
+  const [settingsError, setSettingsError] = useState<string | null>(null)
 
   const [tab, setTab] = useState<'tables' | 'settings' | 'metrics' | 'memory' | 'diff' | 'queries'>('tables')
 
@@ -1574,15 +1585,17 @@ export default function Compare() {
   // Load tables + settings eagerly — needed for node pill status
   useEffect(() => {
     setTablesLoading(true)
+    setTablesError(null)
     api.compare.tables()
       .then(setTablesData)
-      .catch(() => {})
+      .catch((e: any) => setTablesError(e?.message ?? 'Failed to load table data'))
       .finally(() => setTablesLoading(false))
 
     setSettingsLoading(true)
+    setSettingsError(null)
     api.compare.settings()
       .then(setSettingsData)
-      .catch(() => {})
+      .catch((e: any) => setSettingsError(e?.message ?? 'Failed to load settings data'))
       .finally(() => setSettingsLoading(false))
   }, [])
 
@@ -1663,16 +1676,20 @@ export default function Compare() {
       {tab === 'tables' && (
         tablesLoading
           ? <LoadingSkeleton />
-          : tablesData
-            ? <TablesView data={tablesData} instances={instances} onAnalyze={makeElementAnalyzer(d => `Compare table: ${d.table}`)} />
-            : <EmptyMsg msg="Failed to load table data" />
+          : tablesError
+            ? <ErrorMsg msg={tablesError} />
+            : tablesData
+              ? <TablesView data={tablesData} instances={instances} onAnalyze={makeElementAnalyzer(d => `Compare table: ${d.table}`)} />
+              : <EmptyMsg msg="No table data" />
       )}
       {tab === 'settings' && (
         settingsLoading
           ? <LoadingSkeleton />
-          : settingsData
-            ? <SettingsView data={settingsData} baseline={effectiveBaseline} instances={instances} onAnalyze={makeElementAnalyzer(d => `Setting: ${d.setting}`)} />
-            : <EmptyMsg msg="Failed to load settings data" />
+          : settingsError
+            ? <ErrorMsg msg={settingsError} />
+            : settingsData
+              ? <SettingsView data={settingsData} baseline={effectiveBaseline} instances={instances} onAnalyze={makeElementAnalyzer(d => `Setting: ${d.setting}`)} />
+              : <EmptyMsg msg="No settings data" />
       )}
       {tab === 'metrics' && (
         <MetricsView baseline={effectiveBaseline} instances={instances} onAnalyze={makeElementAnalyzer(d => `Metric: ${d.metric}`)} />
@@ -1683,9 +1700,11 @@ export default function Compare() {
       {tab === 'diff' && (
         tablesLoading
           ? <LoadingSkeleton />
-          : tablesData
-            ? <TableDiffView tablesData={tablesData} instances={instances} />
-            : <EmptyMsg msg="Failed to load table data" />
+          : tablesError
+            ? <ErrorMsg msg={tablesError} />
+            : tablesData
+              ? <TableDiffView tablesData={tablesData} instances={instances} />
+              : <EmptyMsg msg="No table data" />
       )}
       {tab === 'queries' && (
         <CrossQueryView from={from} to={to} />

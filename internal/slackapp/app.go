@@ -66,8 +66,11 @@ func (a *App) Run(ctx context.Context) {
 
 	// Run the WebSocket connection in a background goroutine.
 	go func() {
+		a.logger.Info("socket mode connecting to Slack WebSocket")
 		if err := a.socket.RunContext(ctx); err != nil && ctx.Err() == nil {
-			a.logger.Error("socket mode error", "error", err)
+			a.logger.Error("socket mode RunContext failed", "error", err)
+		} else {
+			a.logger.Info("socket mode RunContext exited cleanly")
 		}
 	}()
 
@@ -117,6 +120,15 @@ func (a *App) refreshLoop(ctx context.Context) {
 // dispatch routes a socketmode event to the appropriate handler.
 func (a *App) dispatch(ctx context.Context, evt socketmode.Event) {
 	switch evt.Type {
+	case socketmode.EventTypeConnecting:
+		a.logger.Info("socket mode: connecting to Slack")
+	case socketmode.EventTypeConnected:
+		a.logger.Info("socket mode: connected to Slack")
+	case socketmode.EventTypeConnectionError:
+		a.logger.Error("socket mode: connection error", "data", evt.Data)
+	case socketmode.EventTypeIncomingError:
+		a.logger.Warn("socket mode: incoming error", "data", evt.Data)
+
 	case socketmode.EventTypeSlashCommand:
 		cmd, ok := evt.Data.(slack.SlashCommand)
 		if !ok {

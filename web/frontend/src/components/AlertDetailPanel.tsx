@@ -344,6 +344,7 @@ export function AlertDetailPanel({
   const [tab, setTab] = useState<PanelTab>('details')
   const [suggestions, setSuggestions] = useState<Suggestion | null>(null)
   const [loadingSugg, setLoadingSugg] = useState(false)
+  const [suggError, setSuggError] = useState<string | null>(null)
   const [showAckForm, setShowAckForm] = useState(false)
   const [ackBy, setAckBy] = useState('user')
   const [ackNote, setAckNote] = useState('')
@@ -370,7 +371,7 @@ export function AlertDetailPanel({
   useEffect(() => {
     if (!suggestions && !loadingSugg) {
       setLoadingSugg(true)
-      api.suggestions(alert.category).then(setSuggestions).catch(() => {}).finally(() => setLoadingSugg(false))
+      api.suggestions(alert.category).then(setSuggestions).catch((e: any) => setSuggError(e?.message ?? 'Failed to load suggestions')).finally(() => setLoadingSugg(false))
     }
   }, [alert.category]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -529,6 +530,7 @@ export function AlertDetailPanel({
 
               {/* Suggestions */}
               {loadingSugg && <div className="text-[11px] text-[var(--dim)] italic">Loading suggestions…</div>}
+              {suggError && <div className="text-[11px] text-red-400">Failed to load suggestions: {suggError}</div>}
               {suggestions && suggestions.suggestions.length > 0 && (
                 <div>
                   <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--dim)] mb-2">Suggestions</div>

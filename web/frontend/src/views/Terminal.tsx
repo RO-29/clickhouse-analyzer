@@ -409,6 +409,7 @@ export default function Terminal() {
   const [maxRows, setMaxRows] = useState(1000)
   const [nodeResults, setNodeResults] = useState<Record<string, NodeResult>>({})
   const [running, setRunning] = useState(false)
+  const [execTime, setExecTime] = useState<Date | null>(null)
   const [showHistory, setShowHistory] = useState(false)
   const [history, setHistory] = useState<QueryHistoryEntry[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
@@ -504,6 +505,7 @@ export default function Terminal() {
       }
     }))
 
+    setExecTime(new Date())
     setRunning(false)
   }, [query, allInstances, maxRows])
 
@@ -654,6 +656,12 @@ export default function Terminal() {
 
         {/* Results — split view or single column */}
         {hasResults && (
+          <>
+          {execTime && !running && (
+            <div className="flex items-center gap-2 text-[11px] text-[var(--dim)]">
+              <span>Executed at {execTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+            </div>
+          )}
           <div className={cn('flex gap-4', isSplit ? 'flex-row items-start' : 'flex-col')}>
             {allInstances.map((i, idx) => {
               const nr = nodeResults[i] ?? { result: null, error: null, loading: false }
@@ -669,6 +677,7 @@ export default function Terminal() {
               )
             })}
           </div>
+          </>
         )}
       </div>
 

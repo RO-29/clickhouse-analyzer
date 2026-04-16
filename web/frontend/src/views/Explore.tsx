@@ -90,8 +90,13 @@ function QueryModal({
   onClose: () => void
 }) {
   const { navToTerminal } = useStore()
+  const [copied, setCopied] = useState(false)
 
-  const handleCopy = () => navigator.clipboard.writeText(query).catch(() => {})
+  const handleCopy = () => {
+    navigator.clipboard.writeText(query)
+      .then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500) })
+      .catch(() => {})
+  }
   const handleRun = () => { navToTerminal(query, instance); onClose() }
 
   // Close on Escape
@@ -119,7 +124,7 @@ function QueryModal({
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-[var(--border)] text-[11px] text-[var(--dim)] hover:text-[var(--text)] hover:border-[var(--accent)]/40 transition-colors"
             >
               <Copy size={11} />
-              Copy
+              {copied ? 'Copied!' : 'Copy'}
             </button>
             <button
               onClick={handleRun}
@@ -251,7 +256,14 @@ interface QueryDetailPanelProps {
 
 function QueryDetailPanel({ pattern, timeline, tlLoading, instance, onClose, onDrillHash, onAnalyze, onShowQuery }: QueryDetailPanelProps) {
   const [panelTab, setPanelTab] = useState<'metrics' | 'query'>('metrics')
+  const [sqlCopied, setSqlCopied] = useState(false)
   const hash = String(pattern.normalized_query_hash)
+
+  const handleCopySql = () => {
+    navigator.clipboard.writeText(pattern.sample_query)
+      .then(() => { setSqlCopied(true); setTimeout(() => setSqlCopied(false), 1500) })
+      .catch(() => {})
+  }
 
   // Close on Escape
   useEffect(() => {
@@ -278,7 +290,7 @@ function QueryDetailPanel({ pattern, timeline, tlLoading, instance, onClose, onD
         onClick={onClose}
       />
       {/* Panel */}
-      <div className="fixed right-0 top-0 h-full z-50 flex flex-col bg-[var(--card)] border-l border-[var(--border)] shadow-2xl w-[45vw] min-w-[480px] max-w-full">
+      <div className="fixed right-0 top-0 h-full z-50 flex flex-col bg-[var(--card)] border-l border-[var(--border)] shadow-2xl w-full sm:w-[45vw] sm:min-w-[440px] max-w-full">
 
         {/* ── Header ── */}
         <div className="shrink-0 border-b border-[var(--border)] bg-[var(--surface)]">
@@ -440,10 +452,10 @@ function QueryDetailPanel({ pattern, timeline, tlLoading, instance, onClose, onD
                   <span className="text-[10px] font-semibold uppercase tracking-widest text-[var(--dim)]">SQL</span>
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={() => navigator.clipboard.writeText(pattern.sample_query).catch(() => {})}
+                      onClick={handleCopySql}
                       className="flex items-center gap-1 text-[10px] text-[var(--dim)] hover:text-[var(--text)] transition-colors"
                     >
-                      <Copy size={10} /> Copy
+                      <Copy size={10} /> {sqlCopied ? 'Copied!' : 'Copy'}
                     </button>
                     <button
                       onClick={() => onShowQuery(pattern.sample_query)}
@@ -1299,6 +1311,7 @@ function LiveTab({ instance, onShowQuery }: { instance: string; onShowQuery: (q:
   const [error, setError] = useState<string | null>(null)
   const [killTarget, setKillTarget] = useState<string | null>(null)
   const [killing, setKilling] = useState(false)
+  const [killError, setKillError] = useState<string | null>(null)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const load = useCallback(() => {
@@ -1318,12 +1331,13 @@ function LiveTab({ instance, onShowQuery }: { instance: string; onShowQuery: (q:
   const handleKill = async () => {
     if (!killTarget) return
     setKilling(true)
+    setKillError(null)
     try {
       await api.killQuery(instance, killTarget)
       setKillTarget(null)
       load()
     } catch (e: any) {
-      alert(`Kill failed: ${e.message}`)
+      setKillError(e.message ?? 'Kill failed')
     } finally {
       setKilling(false)
     }
@@ -1417,9 +1431,14 @@ function LiveTab({ instance, onShowQuery }: { instance: string; onShowQuery: (q:
             <p className="text-sm text-[var(--dim)]">
               Send KILL QUERY for <span className="font-mono text-xs text-[var(--fg)]">{killTarget.slice(0, 24)}…</span>
             </p>
+            {killError && (
+              <div className="flex items-center gap-2 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+                <span className="font-semibold">Error:</span> {killError}
+              </div>
+            )}
             <div className="flex gap-2 justify-end">
               <button
-                onClick={() => setKillTarget(null)}
+                onClick={() => { setKillTarget(null); setKillError(null) }}
                 className="px-3 py-1.5 text-sm rounded-lg border border-[var(--border)] text-[var(--dim)] hover:text-[var(--fg)] transition-colors"
               >
                 Cancel
@@ -2580,6 +2599,14 @@ function AntiPatternsTab({ instance, onShowQuery }: { instance: string; onShowQu
 /*  Main Explore Component                                             */
 /* ------------------------------------------------------------------ */
 
+function fmtAgo(d: Date): string {
+  const s = Math.floor((Date.now() - d.getTime()) / 1000)
+  if (s < 5) return 'just now'
+  if (s < 60) return `${s}s ago`
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`
+  return `${Math.floor(s / 3600)}h ago`
+}
+
 export default function Explore({ refreshKey }: { refreshKey?: number }) {
   const { instances, selectedInstance, setSelectedInstance, setView, from, to } = useStore()
 
@@ -2591,11 +2618,29 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
     return t && validTabs.includes(t) ? t : 'patterns'
   })
   const [queryModal, setQueryModal] = useState<string | null>(null)
-  // Drill state: clicking "Samples →" or "FAILS" in Patterns tab navigates to Samples with filter pre-set.
+  // Drill state
   const [drillHash, setDrillHash] = useState<string | undefined>()
   const [drillUser, setDrillUser] = useState<string | undefined>()
   const [drillErrorsOnly, setDrillErrorsOnly] = useState(false)
+  // Manual refresh
+  const [manualTick, setManualTick] = useState(0)
+  const [lastRefreshed, setLastRefreshed] = useState(new Date())
+  const [agoStr, setAgoStr] = useState('just now')
   const inst = selectedInstance || instances[0] || ''
+
+  const effectiveRefreshKey = (refreshKey ?? 0) + manualTick
+
+  // Update "X ago" every 10s
+  useEffect(() => {
+    const id = setInterval(() => setAgoStr(fmtAgo(lastRefreshed)), 10_000)
+    return () => clearInterval(id)
+  }, [lastRefreshed])
+
+  const handleManualRefresh = useCallback(() => {
+    setManualTick(t => t + 1)
+    setLastRefreshed(new Date())
+    setAgoStr('just now')
+  }, [])
 
   const { analyze } = useAIAnalysis(inst)
 
@@ -2649,8 +2694,8 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
 
   return (
     <div className="space-y-0">
-      {/* Header bar: instance selector + AI button */}
-      <div className="flex items-center gap-3 pb-3">
+      {/* Header bar: instance selector + refresh + AI button */}
+      <div className="flex items-center gap-3 pb-3 flex-wrap">
         <div className="flex items-center gap-2 bg-[var(--card)] border border-[var(--border)] rounded-md px-3 py-1.5">
           <span className="text-[10px] font-semibold uppercase tracking-widest text-[var(--dim)]">Instance</span>
           <select
@@ -2663,6 +2708,15 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
             ))}
           </select>
         </div>
+        <button
+          onClick={handleManualRefresh}
+          title="Reload all tab data"
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--hover)] border border-[var(--border)] transition-colors"
+        >
+          <RefreshCw size={11} />
+          Refresh
+        </button>
+        <span className="text-[11px] text-[var(--dim)] hidden sm:block">Updated {agoStr}</span>
         <button
           onClick={() => setView('analyzer')}
           className="ml-auto inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] font-medium text-[var(--accent)] hover:bg-[var(--accent-subtle)] border border-[var(--accent)]/20 transition-colors"
@@ -2703,7 +2757,7 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
           )}
           {tab === 'patterns' && (
             <QueryPatternsTab
-              instance={inst} from={from} to={to} refreshKey={refreshKey}
+              instance={inst} from={from} to={to} refreshKey={effectiveRefreshKey}
               onAnalyze={handleAnalyze} onShowQuery={handleShowQuery}
               onDrillHash={handleDrillHash}
               onDrillFail={handleDrillFail}
@@ -2711,7 +2765,7 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
           )}
           {tab === 'samples' && (
             <SamplesTab
-              instance={inst} from={from} to={to} refreshKey={refreshKey}
+              instance={inst} from={from} to={to} refreshKey={effectiveRefreshKey}
               onAnalyze={handleAnalyze} onShowQuery={handleShowQuery}
               initialHash={drillHash}
               initialUser={drillUser}
@@ -2724,19 +2778,19 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
           )}
           {tab === 'users' && (
             <UsersTab
-              instance={inst} from={from} to={to} refreshKey={refreshKey}
+              instance={inst} from={from} to={to} refreshKey={effectiveRefreshKey}
               onAnalyze={handleAnalyze} onShowQuery={handleShowQuery}
               onDrillUser={handleDrillUser}
             />
           )}
-          {tab === 'failures' && <FailuresTab instance={inst} from={from} to={to} refreshKey={refreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
-          {tab === 'merges' && <MergesTab instance={inst} from={from} to={to} refreshKey={refreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
-          {tab === 'partsage' && <PartsAgeTab instance={inst} refreshKey={refreshKey} />}
-          {tab === 'mvs' && <MVTab instance={inst} from={from} to={to} refreshKey={refreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
-          {tab === 's3' && <S3Tab instance={inst} from={from} to={to} refreshKey={refreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
-          {tab === 'inserts' && <InsertsTab instance={inst} from={from} to={to} refreshKey={refreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
-          {tab === 'metrics' && <SystemMetricsTab instance={inst} from={from} to={to} refreshKey={refreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
-          {tab === 'diskio' && <DiskIOTab instance={inst} from={from} to={to} refreshKey={refreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
+          {tab === 'failures' && <FailuresTab instance={inst} from={from} to={to} refreshKey={effectiveRefreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
+          {tab === 'merges' && <MergesTab instance={inst} from={from} to={to} refreshKey={effectiveRefreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
+          {tab === 'partsage' && <PartsAgeTab instance={inst} refreshKey={effectiveRefreshKey} />}
+          {tab === 'mvs' && <MVTab instance={inst} from={from} to={to} refreshKey={effectiveRefreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
+          {tab === 's3' && <S3Tab instance={inst} from={from} to={to} refreshKey={effectiveRefreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
+          {tab === 'inserts' && <InsertsTab instance={inst} from={from} to={to} refreshKey={effectiveRefreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
+          {tab === 'metrics' && <SystemMetricsTab instance={inst} from={from} to={to} refreshKey={effectiveRefreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
+          {tab === 'diskio' && <DiskIOTab instance={inst} from={from} to={to} refreshKey={effectiveRefreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
         </>
       )}
 

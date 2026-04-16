@@ -647,6 +647,8 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
   // being a dep (which would break the dropdown by re-fetching on every change).
   selectedDbRef.current = selectedDb
 
+  const [loadedAt, setLoadedAt] = useState<Date | null>(null)
+
   const load = useCallback(async () => {
     if (!instance) return
     setLoading(true)
@@ -656,6 +658,7 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
       const dbFilter = selectedDbRef.current !== 'all' ? selectedDbRef.current : undefined
       const data = await api.tableScan(instance, now - rangePreset, now, includeSystem, dbFilter)
       setResult(data)
+      setLoadedAt(new Date())
     } catch (e: any) {
       setError(e.message ?? 'Failed to load')
     } finally {
@@ -818,14 +821,21 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
           </button>
         ))}
 
-        <button
-          onClick={load}
-          disabled={loading}
-          className="ml-auto flex items-center gap-1 px-2 py-1 rounded border border-[var(--border)] text-xs text-[var(--dim)] hover:text-[var(--fg)] hover:bg-[var(--hover)] transition-colors disabled:opacity-50"
-        >
-          <RefreshCw size={10} className={loading ? 'animate-spin' : ''} />
-          {loading ? 'Scanning…' : 'Refresh'}
-        </button>
+        <div className="ml-auto flex items-center gap-2">
+          {loadedAt && !loading && (
+            <span className="text-[10px] text-[var(--dim)] hidden sm:block">
+              Updated {loadedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+            </span>
+          )}
+          <button
+            onClick={load}
+            disabled={loading}
+            className="flex items-center gap-1 px-2 py-1 rounded border border-[var(--border)] text-xs text-[var(--dim)] hover:text-[var(--fg)] hover:bg-[var(--hover)] transition-colors disabled:opacity-50"
+          >
+            <RefreshCw size={10} className={loading ? 'animate-spin' : ''} />
+            {loading ? 'Scanning…' : 'Refresh'}
+          </button>
+        </div>
       </div>
 
       {/* ── Stats bar ── */}
@@ -912,6 +922,14 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
         <div className="flex-1 flex flex-col items-center justify-center gap-2 text-[var(--dim)]">
           <Activity size={20} className="opacity-40" />
           <p className="text-xs">{filter || rowFilter !== 'all' ? 'No tables match your filters' : 'No tables found'}</p>
+          {(filter || rowFilter !== 'all') && (
+            <button
+              onClick={() => { setFilter(''); setRowFilter('all') }}
+              className="text-xs text-[var(--accent)] hover:underline mt-1"
+            >
+              Clear filters
+            </button>
+          )}
         </div>
       )}
 

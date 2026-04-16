@@ -116,6 +116,7 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null)
   const [manualRefreshTick, setManualRefreshTick] = useState(0)
@@ -160,8 +161,8 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
           setAnalyzeInstance(worst.name)
         }
       }
-    } catch {
-      // silently handle
+    } catch (e: any) {
+      if (!cancelled) setLoadError(e?.message ?? 'Failed to load data')
     } finally {
       if (!cancelled) {
         setLoading(false)
@@ -177,6 +178,14 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
   }, [doLoad, refreshKey, manualRefreshTick])
 
   if (loading) return <Skeleton />
+
+  if (loadError && instances.length === 0) return (
+    <div className="flex flex-col items-center gap-4 py-20 text-[var(--dim)]">
+      <svg className="w-10 h-10 opacity-30" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+      <p className="text-sm text-red-400">{loadError}</p>
+      <button onClick={() => setManualRefreshTick(t => t + 1)} className="text-xs text-[var(--accent)] hover:underline">Retry</button>
+    </div>
+  )
 
   /* ---- derived stats ---- */
   const totalInstances = instances.length
@@ -235,20 +244,20 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
         <button
           onClick={() => setManualRefreshTick(t => t + 1)}
           disabled={refreshing}
-          title="Re-fetches data from the database"
+          title="Re-fetch dashboard data from the database (no new collection)"
           className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] font-medium text-[var(--dim)] hover:bg-[var(--hover)] border border-[var(--border)] transition-colors disabled:opacity-50"
         >
           <RefreshCw size={10} className={refreshing ? 'animate-spin' : ''} />
-          Refresh UI
+          Refresh
         </button>
         <button
           onClick={handleForcePoll}
           disabled={forcingPoll}
-          title="Runs all collectors immediately"
+          title="Immediately run all collectors — updates Alerts and Slack/PagerDuty"
           className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] font-medium text-orange-400 hover:bg-orange-500/15 border border-orange-500/25 transition-colors disabled:opacity-50"
         >
           <Zap size={10} className={forcingPoll ? 'animate-pulse' : ''} />
-          {forcingPoll ? 'Polling…' : forcePollMsg || 'Force Poll'}
+          {forcingPoll ? 'Collecting…' : forcePollMsg || 'Collect Now'}
         </button>
         <button
           onClick={() => handleAnalyze({ instances, alerts, avgHealth, critFiring, warnFiring, infoFiring, staleCount, runningQueries, activeMerges })}
@@ -322,7 +331,11 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
             <span />
           </div>
           {instances.length === 0 ? (
-            <div className="px-4 py-6 text-[12px] text-[var(--dim)] text-center">No instances configured</div>
+            <div className="flex flex-col items-center gap-3 px-4 py-12 text-[var(--dim)]">
+              <svg className="w-10 h-10 opacity-25" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" /></svg>
+              <p className="text-sm font-medium">No instances configured</p>
+              <p className="text-xs opacity-60 text-center max-w-xs">Add ClickHouse instance connection strings to your config file to start monitoring</p>
+            </div>
           ) : (
             instances.map(inst => (
               <NodeCard
