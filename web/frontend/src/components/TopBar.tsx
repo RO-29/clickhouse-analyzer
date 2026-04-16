@@ -69,9 +69,12 @@ function ReAuthModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
               setLines(l => [...l, { type: 'url', text: url }])
             } catch {}
           } else if (ev === 'output' && data) {
-            try { setLines(l => [...l, { type: 'output', text: JSON.parse(data) as string }]) } catch {}
+            // Parse immediately inside try/catch — the updater function must NOT
+            // close over `data` because `data` is reset to '' before React runs
+            // the updater, causing JSON.parse('') to throw uncaught outside the catch.
+            try { const text = JSON.parse(data) as string; setLines(l => [...l, { type: 'output', text }]) } catch {}
           } else if (ev === 'error' && data) {
-            try { setLines(l => [...l, { type: 'error', text: JSON.parse(data) as string }]) } catch {}
+            try { const text = JSON.parse(data) as string; setLines(l => [...l, { type: 'error', text }]) } catch {}
           } else if (ev === 'done') {
             setState('done')
             setTimeout(onSuccess, 1000)
