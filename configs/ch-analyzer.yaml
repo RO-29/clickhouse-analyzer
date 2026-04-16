@@ -118,6 +118,9 @@ slack:
   channel_id: "C0XXXXXXXXX"        # Target channel for alerts
   dedup_window: "15m"              # Suppress duplicate alerts within this window
   resolve_messages: true            # Post a follow-up when an alert resolves
+  app_token: "xapp-1-..."           # Socket Mode
+  signing_secret: "abc123..."        # Slack secret from Basic Information
+  dashboard_url: "http://<your app instance>"  #  optional, for links in AI results
 
   digest:
     enabled: true
