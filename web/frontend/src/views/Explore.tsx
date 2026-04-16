@@ -228,6 +228,24 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
     return () => { c = true }
   }, [instance, selectedHash, from, to])
 
+  // Stacked bar overview — must be before any early returns (Rules of Hooks).
+  const overviewChart = useMemo(() => {
+    if (!overview || !overview.timeline?.length) return null
+    const COLORS = ['#3b82f6','#22c55e','#f59e0b','#ef4444','#a855f7','#06b6d4','#f97316','#ec4899']
+    const hashColors: Record<string, string> = {}
+    overview.patterns.forEach((p, i) => {
+      hashColors[p.normalized_query_hash] = COLORS[i % COLORS.length]
+    })
+    const allTs = [...new Set(overview.timeline.map(r => r.ts))].sort()
+    const bars = allTs.map(ts => {
+      const slices = overview.timeline.filter(r => r.ts === ts)
+      const total = slices.reduce((s, r) => s + (Number(r.total_ms) || 0), 0)
+      return { ts, slices, total }
+    })
+    const maxTotal = Math.max(...bars.map(b => b.total), 1)
+    return { bars, maxTotal, hashColors }
+  }, [overview])
+
   if (loading) return <LoadingSkeleton />
   if (error) return <ErrorBox message={error} />
 
@@ -299,25 +317,6 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
       ),
     }] : []),
   ]
-
-  // Stacked bar overview (top-N patterns over time).
-  const overviewChart = useMemo(() => {
-    if (!overview || !overview.timeline?.length) return null
-    const COLORS = ['#3b82f6','#22c55e','#f59e0b','#ef4444','#a855f7','#06b6d4','#f97316','#ec4899']
-    const hashColors: Record<string, string> = {}
-    overview.patterns.forEach((p, i) => {
-      hashColors[p.normalized_query_hash] = COLORS[i % COLORS.length]
-    })
-    const allTs = [...new Set(overview.timeline.map(r => r.ts))].sort()
-    // Build stacked bars per timestamp.
-    const bars = allTs.map(ts => {
-      const slices = overview.timeline.filter(r => r.ts === ts)
-      const total = slices.reduce((s, r) => s + (Number(r.total_ms) || 0), 0)
-      return { ts, slices, total }
-    })
-    const maxTotal = Math.max(...bars.map(b => b.total), 1)
-    return { bars, maxTotal, hashColors }
-  }, [overview])
 
   return (
     <div className="space-y-4">
