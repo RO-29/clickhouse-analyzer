@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { Play, History, X, Loader2, Download, BarChart2, ScatterChart, PieChart, LineChart, LayoutGrid, Plus, Columns2 } from 'lucide-react'
+import { Play, History, X, Loader2, Download, BarChart2, ScatterChart, PieChart, LineChart, LayoutGrid, Plus, Columns2, ChevronDown } from 'lucide-react'
 import { Line, Bar, Doughnut, Scatter } from 'react-chartjs-2'
 import {
   Chart as ChartJS,
@@ -260,19 +260,26 @@ function StatementPane({ stmt, index, total }: StatementPaneProps) {
   const opts = useMemo(() => chartOptions(chartInfo?.type ?? chartMode), [chartInfo, chartMode])
 
   return (
-    <Card>
-      {/* Pane header */}
-      <div className="flex items-center gap-2 mb-3 flex-wrap">
-        {total > 1 && (
-          <span className="text-xs font-medium text-[var(--accent)] bg-[var(--accent)]/10 rounded px-2 py-0.5">
-            Statement {index + 1} of {total}
-          </span>
-        )}
-        {total > 1 && (
-          <span className="text-xs font-mono text-[var(--dim)] truncate max-w-xs" title={stmt.sql}>
-            {stmt.sql.length > 60 ? stmt.sql.slice(0, 60) + '…' : stmt.sql}
-          </span>
-        )}
+    <Card className="overflow-hidden !p-0">
+      {/* Statement section header — only shown when multiple stmts */}
+      {total > 1 && (
+        <div className="flex items-center gap-3 border-b border-[var(--border)] bg-[var(--surface)] px-3 py-2">
+          <div className="flex items-center gap-2 shrink-0">
+            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[var(--accent)] text-[10px] font-bold text-white leading-none">
+              {index + 1}
+            </span>
+            <span className="text-[11px] font-semibold text-[var(--dim)] uppercase tracking-wider">
+              Statement {index + 1} / {total}
+            </span>
+          </div>
+          <code className="flex-1 truncate text-[11px] font-mono text-[var(--fg)] opacity-70" title={stmt.sql}>
+            {stmt.sql.length > 80 ? stmt.sql.slice(0, 80) + '…' : stmt.sql}
+          </code>
+        </div>
+      )}
+
+      {/* Pane controls */}
+      <div className="flex items-center gap-2 px-3 py-2 flex-wrap">
         <div className="flex gap-1">
           {(['table', 'chart'] as const).map(t => (
             <button key={t} onClick={() => setTab(t)}
@@ -308,9 +315,11 @@ function StatementPane({ stmt, index, total }: StatementPaneProps) {
       </div>
 
       {tab === 'table' ? (
-        <DataTable columns={tableCols} data={stmt.rows} maxHeight="340px" emptyText="No results" />
+        <div className="px-3 pb-3">
+          <DataTable columns={tableCols} data={stmt.rows} maxHeight="340px" emptyText="No results" />
+        </div>
       ) : chartInfo ? (
-        <div>
+        <div className="px-3 pb-3">
           <div className="h-64">
             {(chartInfo.type === 'line' || chartInfo.type === 'area') && <Line data={chartInfo.data} options={opts as any} />}
             {(chartInfo.type === 'bar' || chartInfo.type === 'stacked') && <Bar data={chartInfo.data} options={opts as any} />}
@@ -404,6 +413,8 @@ export default function Terminal() {
   const [history, setHistory] = useState<QueryHistoryEntry[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
   const [schema, setSchema] = useState<SchemaItem[]>([])
+  const [showCompare, setShowCompare] = useState(false)
+  const compareRef = useRef<HTMLDivElement>(null)
   const editorRef = useRef<SqlEditorHandle>(null)
 
   const allInstances = useMemo(() => [inst, ...splitInstances].filter(Boolean), [inst, splitInstances])
@@ -524,6 +535,18 @@ export default function Terminal() {
     setNodeResults(prev => { const next = { ...prev }; delete next[node]; return next })
   }, [])
 
+  // Close compare dropdown when clicking outside
+  useEffect(() => {
+    if (!showCompare) return
+    const handler = (e: MouseEvent) => {
+      if (compareRef.current && !compareRef.current.contains(e.target as Node)) {
+        setShowCompare(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [showCompare])
+
   const hasResults = Object.keys(nodeResults).length > 0
   const isSplit = allInstances.length > 1
 
@@ -552,8 +575,9 @@ export default function Terminal() {
 
           {/* Add another node */}
           {instances.length > 1 && (
-            <div className="relative group">
+            <div className="relative" ref={compareRef}>
               <button
+                onClick={() => setShowCompare(v => !v)}
                 className={cn('inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors border',
                   isSplit
                     ? 'border-[var(--accent)]/40 text-[var(--accent)] bg-[var(--accent)]/5'
@@ -562,19 +586,22 @@ export default function Terminal() {
               >
                 {isSplit ? <Columns2 size={13} /> : <Plus size={13} />}
                 <span className="hidden sm:inline">{isSplit ? 'Split' : 'Compare'}</span>
+                <ChevronDown size={11} className={cn('transition-transform', showCompare ? 'rotate-180' : '')} />
               </button>
-              {/* Dropdown on hover */}
-              <div className="absolute left-0 top-full mt-1 z-20 hidden group-hover:block min-w-max rounded-md border border-[var(--border)] bg-[var(--card)] shadow-lg py-1">
-                {instances.filter(i => i !== inst && !splitInstances.includes(i)).map(i => (
-                  <button key={i} onClick={() => addSplitNode(i)}
-                    className="block w-full text-left px-3 py-1.5 text-xs font-mono hover:bg-[var(--hover)] text-[var(--fg)]">
-                    {i}
-                  </button>
-                ))}
-                {instances.filter(i => i !== inst && !splitInstances.includes(i)).length === 0 && (
-                  <div className="px-3 py-1.5 text-xs text-[var(--dim)]">All nodes added</div>
-                )}
-              </div>
+              {/* Click-based dropdown */}
+              {showCompare && (
+                <div className="absolute left-0 top-full mt-1 z-20 min-w-max rounded-md border border-[var(--border)] bg-[var(--card)] shadow-lg py-1">
+                  {instances.filter(i => i !== inst && !splitInstances.includes(i)).map(i => (
+                    <button key={i} onClick={() => { addSplitNode(i); setShowCompare(false) }}
+                      className="block w-full text-left px-3 py-1.5 text-xs font-mono hover:bg-[var(--hover)] text-[var(--fg)]">
+                      {i}
+                    </button>
+                  ))}
+                  {instances.filter(i => i !== inst && !splitInstances.includes(i)).length === 0 && (
+                    <div className="px-3 py-1.5 text-xs text-[var(--dim)]">All nodes added</div>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>

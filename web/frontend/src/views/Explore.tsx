@@ -2203,67 +2203,100 @@ function SevBadge({ s }: { s: string }) {
   )
 }
 
-function APGroupCard({
-  group,
-  extraCols,
-  onRunQuery,
-}: {
-  group: any
-  extraCols: Array<{ key: string; label: string; format?: (v: any) => React.ReactNode }>
-  onRunQuery: (sql: string) => void
-}) {
+// Query anti-pattern row: hash, sample_query, exec_count, avg_ms, avg_memory,
+// avg_read_rows, avg_result_rows, avg_read_bytes, scan_ratio, error_rate_pct,
+// error_count, cache_hit_pct
+function QueryAPCard({ group, onRunQuery }: { group: any; onRunQuery: (q: string) => void }) {
   const [open, setOpen] = useState(false)
   const hasIssues = group.count > 0
 
+  const metricCols = (() => {
+    switch (group.type) {
+      case 'high_memory':   return [{ key: 'avg_memory',     label: 'Avg Memory',   format: (v: any) => fmtBytes(Number(v)) }]
+      case 'full_scan':     return [{ key: 'scan_ratio',     label: 'Scan Ratio',   format: (v: any) => `${fmtCompact(Number(v))}×` }, { key: 'avg_read_rows', label: 'Read Rows', format: (v: any) => fmtCompact(Number(v)) }]
+      case 'high_frequency':return [{ key: 'exec_count',     label: 'Execs/day',    format: (v: any) => fmtCompact(Number(v)) }]
+      case 'high_error_rate':return [{ key: 'error_rate_pct', label: 'Error Rate',  format: (v: any) => `${Number(v).toFixed(1)}%` }, { key: 'error_count', label: 'Errors', format: (v: any) => fmtCompact(Number(v)) }]
+      case 'low_mark_cache':return [{ key: 'cache_hit_pct',  label: 'Cache Hit %',  format: (v: any) => `${Number(v).toFixed(1)}%` }]
+      case 'no_limit':
+      case 'select_star':   return [{ key: 'avg_read_bytes', label: 'Avg Read',     format: (v: any) => fmtBytes(Number(v)) }, { key: 'avg_read_rows', label: 'Read Rows', format: (v: any) => fmtCompact(Number(v)) }]
+      default:              return [{ key: 'exec_count',     label: 'Execs',        format: (v: any) => fmtCompact(Number(v)) }]
+    }
+  })()
+
   return (
-    <div className={cn(
-      'rounded-xl border overflow-hidden',
-      hasIssues
-        ? group.severity === 'critical' ? 'border-red-500/30' : 'border-yellow-500/30'
-        : 'border-[var(--border)]',
-    )}>
-      <button
-        onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-[var(--hover)] transition-colors"
-      >
+    <div className={cn('rounded-xl border overflow-hidden', hasIssues ? group.severity === 'critical' ? 'border-red-500/30' : 'border-yellow-500/30' : 'border-[var(--border)]')}>
+      <button onClick={() => setOpen(o => !o)} className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-[var(--hover)] transition-colors">
         {open ? <ChevronDown size={14} className="text-[var(--dim)] shrink-0" /> : <ChevronRight size={14} className="text-[var(--dim)] shrink-0" />}
         <span className="font-medium text-sm flex-1">{group.title}</span>
         <SevBadge s={group.severity} />
-        <span className={cn(
-          'text-xs font-semibold ml-2 px-2 py-0.5 rounded-full',
-          hasIssues
-            ? group.severity === 'critical' ? 'bg-red-500/15 text-red-400' : 'bg-yellow-500/15 text-yellow-400'
-            : 'bg-green-500/15 text-green-400',
-        )}>
-          {group.count} {group.count === 1 ? 'issue' : 'issues'}
+        <span className={cn('text-xs font-semibold ml-2 px-2 py-0.5 rounded-full', hasIssues ? group.severity === 'critical' ? 'bg-red-500/15 text-red-400' : 'bg-yellow-500/15 text-yellow-400' : 'bg-green-500/15 text-green-400')}>
+          {group.count} pattern{group.count !== 1 ? 's' : ''}
         </span>
       </button>
-
       {open && (
         <div className="px-4 pb-4 space-y-3 border-t border-[var(--border)]">
           <p className="text-xs text-[var(--dim)] pt-3 leading-relaxed">{group.description}</p>
           {group.count === 0
             ? <div className="text-xs text-green-400 bg-green-500/10 rounded-lg px-3 py-2 border border-green-500/20">No issues detected</div>
-            : (
-              <DataTable
+            : <DataTable
                 columns={[
-                  { key: 'user', label: 'User/Table', format: (v: any, row: any) => (
-                    <span className="font-mono text-xs">{row.user ?? row.database ? `${row.database}.${row.table}` : v ?? '—'}</span>
+                  { key: 'avg_ms', label: 'Avg Ms', format: (v: any) => fmtDuration(Number(v)) },
+                  ...metricCols,
+                  { key: 'sample_query', label: 'Sample Query', format: (v: any) => (
+                    <button onClick={() => onRunQuery(String(v ?? ''))} className="font-mono text-xs text-left text-[var(--accent)] hover:underline truncate block max-w-sm" title={String(v ?? '')}>
+                      {String(v ?? '').slice(0, 80)}{String(v ?? '').length > 80 ? '…' : ''}
+                    </button>
                   )},
-                  { key: 'detail', label: 'Detail', format: (v: any) => <span className="text-xs text-[var(--dim)] truncate block max-w-xs" title={v}>{v || '—'}</span> },
-                  ...extraCols,
-                  {
-                    key: 'fix_hint',
-                    label: '',
-                    format: (v: any) => v
-                      ? <button onClick={() => onRunQuery(v)} className="text-xs text-[var(--accent)] hover:underline font-mono truncate block max-w-xs text-left" title={v}>Run →</button>
-                      : null,
-                  },
                 ]}
-                data={group.tables ?? group.queries ?? []}
+                data={group.queries ?? []}
                 maxHeight="280px"
               />
-            )
+          }
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Table anti-pattern row: database, table, engine, detail, metric, metric_label,
+// size_bytes, size_human, fix_hint
+function TableAPCard({ group, onRunQuery }: { group: any; onRunQuery: (q: string) => void }) {
+  const [open, setOpen] = useState(false)
+  const hasIssues = group.count > 0
+  const metricLabel = group.tables?.[0]?.metric_label ?? 'value'
+
+  return (
+    <div className={cn('rounded-xl border overflow-hidden', hasIssues ? group.severity === 'critical' ? 'border-red-500/30' : 'border-yellow-500/30' : 'border-[var(--border)]')}>
+      <button onClick={() => setOpen(o => !o)} className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-[var(--hover)] transition-colors">
+        {open ? <ChevronDown size={14} className="text-[var(--dim)] shrink-0" /> : <ChevronRight size={14} className="text-[var(--dim)] shrink-0" />}
+        <span className="font-medium text-sm flex-1">{group.title}</span>
+        <SevBadge s={group.severity} />
+        <span className={cn('text-xs font-semibold ml-2 px-2 py-0.5 rounded-full', hasIssues ? group.severity === 'critical' ? 'bg-red-500/15 text-red-400' : 'bg-yellow-500/15 text-yellow-400' : 'bg-green-500/15 text-green-400')}>
+          {group.count} table{group.count !== 1 ? 's' : ''}
+        </span>
+      </button>
+      {open && (
+        <div className="px-4 pb-4 space-y-3 border-t border-[var(--border)]">
+          <p className="text-xs text-[var(--dim)] pt-3 leading-relaxed">{group.description}</p>
+          {group.count === 0
+            ? <div className="text-xs text-green-400 bg-green-500/10 rounded-lg px-3 py-2 border border-green-500/20">No issues detected</div>
+            : <DataTable
+                columns={[
+                  { key: 'database', label: 'Table', format: (_v: any, row: any) => (
+                    <span className="font-mono text-xs font-medium">{row.database}.{row.table}</span>
+                  )},
+                  { key: 'detail', label: 'Detail', format: (v: any) => <span className="text-xs text-[var(--dim)] truncate block max-w-xs" title={v}>{v || '—'}</span> },
+                  { key: 'metric', label: metricLabel, format: (v: any, row: any) => (
+                    <span className="tabular-nums text-xs">{row.size_human && row.metric_label === 'GB' ? row.size_human : fmtNum(Number(v))}</span>
+                  )},
+                  { key: 'size_human', label: 'Size', format: (v: any) => <span className="text-xs">{v || '—'}</span> },
+                  { key: 'fix_hint', label: '', format: (v: any) => v
+                    ? <button onClick={() => onRunQuery(v)} className="text-xs text-[var(--accent)] hover:underline font-mono truncate block max-w-xs text-left" title={v}>Run fix →</button>
+                    : null },
+                ]}
+                data={group.tables ?? []}
+                maxHeight="280px"
+              />
           }
         </div>
       )}
@@ -2302,25 +2335,6 @@ function AntiPatternsTab({ instance, onShowQuery }: { instance: string; onShowQu
   const tIssues = tableAP?.filter(g => g.count > 0).length ?? 0
   const qCrit = queryAP?.filter(g => g.count > 0 && g.severity === 'critical').length ?? 0
   const tCrit = tableAP?.filter(g => g.count > 0 && g.severity === 'critical').length ?? 0
-
-  const qExtraCols = (group: any): Array<{ key: string; label: string; format?: (v: any) => React.ReactNode }> => {
-    switch (group.type) {
-      case 'high_memory': return [{ key: 'metric', label: 'Avg Memory', format: (v: any) => fmtBytes(v) }]
-      case 'high_frequency': return [{ key: 'metric', label: 'Queries/h', format: (v: any) => fmtCompact(v) }]
-      default: return [{ key: 'metric', label: 'Count', format: (v: any) => fmtCompact(v) }]
-    }
-  }
-
-  const tExtraCols = (group: any): Array<{ key: string; label: string; format?: (v: any) => React.ReactNode }> => {
-    switch (group.type) {
-      case 'no_ttl_large':
-      case 'no_partition':
-      case 'large_granularity':
-        return [{ key: 'size_human', label: 'Size' }, { key: 'metric', label: group.tables?.[0]?.metric_label ?? 'Value', format: (v: any) => fmtNum(v) }]
-      default:
-        return [{ key: 'metric', label: group.tables?.[0]?.metric_label ?? 'Value', format: (v: any) => fmtNum(v) }]
-    }
-  }
 
   if (!loaded) {
     return (
@@ -2383,7 +2397,7 @@ function AntiPatternsTab({ instance, onShowQuery }: { instance: string; onShowQu
                 return (sev[a.severity as keyof typeof sev] ?? 3) - (sev[b.severity as keyof typeof sev] ?? 3)
               })
               .map(group => (
-                <APGroupCard key={group.type} group={group} extraCols={qExtraCols(group)} onRunQuery={onShowQuery} />
+                <QueryAPCard key={group.type} group={group} onRunQuery={onShowQuery} />
               ))
             }
           </div>
@@ -2406,7 +2420,7 @@ function AntiPatternsTab({ instance, onShowQuery }: { instance: string; onShowQu
                 return (sev[a.severity as keyof typeof sev] ?? 3) - (sev[b.severity as keyof typeof sev] ?? 3)
               })
               .map(group => (
-                <APGroupCard key={group.type} group={group} extraCols={tExtraCols(group)} onRunQuery={onShowQuery} />
+                <TableAPCard key={group.type} group={group} onRunQuery={onShowQuery} />
               ))
             }
           </div>
