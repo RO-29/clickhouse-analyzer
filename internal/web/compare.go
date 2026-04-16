@@ -957,6 +957,141 @@ func (s *Server) handleCacheStats(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------------------------------------------------------------------------
+// Compare Query Patterns
+// ---------------------------------------------------------------------------
+
+// handleCompareQueryPatterns fetches the top query patterns from each instance
+// in parallel and merges them by normalized_query_hash so the UI can show
+// side-by-side execution statistics across nodes.
+func (s *Server) handleCompareQueryPatterns(w http.ResponseWriter, r *http.Request) {
+	fromParam := r.URL.Query().Get("from")
+	toParam := r.URL.Query().Get("to")
+	now := time.Now()
+	var fromTime, toTime string
+	if fromParam == "" {
+		fromTime = now.Add(-1 * time.Hour).Format("2006-01-02 15:04:05")
+	} else {
+		t := time.Unix(parseInt64(fromParam), 0)
+		fromTime = t.Format("2006-01-02 15:04:05")
+	}
+	if toParam == "" {
+		toTime = now.Format("2006-01-02 15:04:05")
+	} else {
+		t := time.Unix(parseInt64(toParam), 0)
+		toTime = t.Format("2006-01-02 15:04:05")
+	}
+
+	type patternRow struct {
+		Hash        string  `json:"hash"`
+		Label       string  `json:"label"`
+		Kind        string  `json:"kind"`
+		Cnt         float64 `json:"cnt"`
+		TotalMs     float64 `json:"total_ms"`
+		AvgMs       float64 `json:"avg_ms"`
+		MaxMs       float64 `json:"max_ms"`
+		P95Ms       float64 `json:"p95_ms"`
+		AvgReadRows float64 `json:"avg_read_rows"`
+		Failures    float64 `json:"failures"`
+		User        string  `json:"user"`
+	}
+
+	type instanceResult struct {
+		Instance string       `json:"instance"`
+		Patterns []patternRow `json:"patterns"`
+		Error    string       `json:"error,omitempty"`
+	}
+
+	names := s.manager.Names()
+	results := make([]instanceResult, len(names))
+
+	var wg sync.WaitGroup
+	for i, name := range names {
+		wg.Add(1)
+		go func(idx int, instName string) {
+			defer wg.Done()
+			results[idx] = instanceResult{Instance: instName}
+
+			client := s.manager.Get(instName)
+			if client == nil {
+				results[idx].Error = "not found"
+				return
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+
+			sql := fmt.Sprintf(`SELECT
+				normalized_query_hash AS hash,
+				any(substring(query_text, 1, 100)) AS label,
+				any(query_kind) AS kind,
+				count() AS cnt,
+				sum(query_duration_ms) AS total_ms,
+				avg(query_duration_ms) AS avg_ms,
+				max(query_duration_ms) AS max_ms,
+				quantile(0.95)(query_duration_ms) AS p95_ms,
+				avg(read_rows) AS avg_read_rows,
+				countIf(is_exception = 1) AS failures,
+				any(user) AS user
+			FROM ch_analyzer.query_samples
+			WHERE event_time >= '%s' AND event_time <= '%s'
+			GROUP BY hash
+			ORDER BY total_ms DESC
+			LIMIT 30`, fromTime, toTime)
+
+			rows, err := client.Query(ctx, sql)
+			if err != nil {
+				// Fallback to system.query_log.
+				sql = fmt.Sprintf(`SELECT
+					normalized_query_hash AS hash,
+					any(substring(query, 1, 100)) AS label,
+					any(query_kind) AS kind,
+					count() AS cnt,
+					sum(query_duration_ms) AS total_ms,
+					avg(query_duration_ms) AS avg_ms,
+					max(query_duration_ms) AS max_ms,
+					quantile(0.95)(query_duration_ms) AS p95_ms,
+					avg(read_rows) AS avg_read_rows,
+					countIf(type = 'ExceptionWhileProcessing') AS failures,
+					any(user) AS user
+				FROM system.query_log
+				WHERE event_time >= '%s' AND event_time <= '%s'
+				  AND is_initial_query = 1
+				  AND type IN ('QueryFinish', 'ExceptionWhileProcessing')
+				GROUP BY hash
+				ORDER BY total_ms DESC
+				LIMIT 30`, fromTime, toTime)
+				rows, err = client.Query(ctx, sql)
+				if err != nil {
+					results[idx].Error = err.Error()
+					return
+				}
+			}
+
+			patterns := make([]patternRow, 0, len(rows))
+			for _, row := range rows {
+				patterns = append(patterns, patternRow{
+					Hash:        toString(row["hash"]),
+					Label:       toString(row["label"]),
+					Kind:        toString(row["kind"]),
+					Cnt:         toFloat64(row["cnt"]),
+					TotalMs:     toFloat64(row["total_ms"]),
+					AvgMs:       toFloat64(row["avg_ms"]),
+					MaxMs:       toFloat64(row["max_ms"]),
+					P95Ms:       toFloat64(row["p95_ms"]),
+					AvgReadRows: toFloat64(row["avg_read_rows"]),
+					Failures:    toFloat64(row["failures"]),
+					User:        toString(row["user"]),
+				})
+			}
+			results[idx].Patterns = patterns
+		}(i, name)
+	}
+	wg.Wait()
+
+	writeJSON(w, http.StatusOK, results)
+}
+
+// ---------------------------------------------------------------------------
 // Value conversion helpers
 // ---------------------------------------------------------------------------
 

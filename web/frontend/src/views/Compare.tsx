@@ -11,9 +11,10 @@ import { Check, AlertTriangle, XCircle, Sparkles, Search, Loader2 } from 'lucide
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
-import { fmtBytes, fmtNum, cn } from '../lib/utils'
+import { fmtBytes, fmtNum, fmtDuration, cn } from '../lib/utils'
 import { Card } from '../components/Card'
 import { DataTable } from '../components/DataTable'
+import type { CompareQueryPatternsResult } from '../types/api'
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, ChartTooltip)
 
@@ -1426,10 +1427,136 @@ function TabButton({ active, label, onClick }: { active: boolean; label: string;
 }
 
 /* ------------------------------------------------------------------ */
+/*  Cross-Instance Query Patterns View                                */
+/* ------------------------------------------------------------------ */
+
+function CrossQueryView({ from, to }: { from: number; to: number }) {
+  const [data, setData] = useState<CompareQueryPatternsResult[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [sortBy, setSortBy] = useState<'total_ms' | 'cnt' | 'avg_ms'>('total_ms')
+
+  useEffect(() => {
+    let c = false
+    setLoading(true)
+    api.compare.queryPatterns(from, to)
+      .then(d => { if (!c) setData(d) })
+      .catch(e => { if (!c) setError(e.message) })
+      .finally(() => { if (!c) setLoading(false) })
+    return () => { c = true }
+  }, [from, to])
+
+  if (loading) return <LoadingSkeleton />
+  if (error) return <div className="text-sm text-red-400 p-4">{error}</div>
+
+  // Merge all patterns by hash — build a map: hash → { label, kind, byInstance }
+  const merged = new Map<string, { label: string; kind: string; byInst: Record<string, any> }>()
+  for (const inst of data) {
+    for (const p of (inst.patterns ?? [])) {
+      if (!merged.has(p.hash)) {
+        merged.set(p.hash, { label: p.label, kind: p.kind, byInst: {} })
+      }
+      merged.get(p.hash)!.byInst[inst.instance] = p
+    }
+  }
+
+  const instances = data.map(d => d.instance)
+  const rows = [...merged.entries()].map(([hash, v]) => ({ hash, ...v }))
+  const sorted = [...rows].sort((a, b) => {
+    const getVal = (r: typeof a) => {
+      const vals = Object.values(r.byInst).map((p: any) => Number(p[sortBy]) || 0)
+      return vals.reduce((s, v) => s + v, 0)
+    }
+    return getVal(b) - getVal(a)
+  })
+
+  const COLORS = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#a855f7', '#06b6d4']
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-3">
+        <span className="text-xs text-[var(--dim)]">{sorted.length} patterns across {instances.length} instances</span>
+        <div className="flex items-center gap-1.5 ml-auto">
+          <label className="text-xs text-[var(--dim)]">Sort</label>
+          <select
+            value={sortBy}
+            onChange={e => setSortBy(e.target.value as any)}
+            className="rounded border border-[var(--border)] bg-[var(--card)] px-2 py-1 text-xs focus:outline-none"
+          >
+            <option value="total_ms">Total Time</option>
+            <option value="cnt">Executions</option>
+            <option value="avg_ms">Avg Duration</option>
+          </select>
+        </div>
+      </div>
+
+      <Card>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-[var(--border)]">
+                <th className="text-left py-2 px-3 text-xs font-medium text-[var(--dim)] uppercase tracking-wider">Hash</th>
+                <th className="text-left py-2 px-3 text-xs font-medium text-[var(--dim)] uppercase tracking-wider">Query</th>
+                {instances.map((inst, i) => (
+                  <th
+                    key={inst}
+                    className="text-right py-2 px-3 text-xs font-medium uppercase tracking-wider"
+                    style={{ color: COLORS[i % COLORS.length] }}
+                  >
+                    {inst}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((row, i) => (
+                <tr key={i} className="border-b border-[var(--border)]/50 hover:bg-[var(--hover)] transition-colors">
+                  <td className="py-2 px-3 font-mono text-xs text-[var(--accent)]">
+                    {row.hash.slice(0, 12)}
+                  </td>
+                  <td className="py-2 px-3 max-w-xs">
+                    <div className="text-xs text-[var(--dim)] font-mono truncate">{String(row.label).slice(0, 60)}</div>
+                    <div className="text-xs text-[var(--dim)] mt-0.5 opacity-60">{row.kind}</div>
+                  </td>
+                  {instances.map((inst, j) => {
+                    const p = row.byInst[inst]
+                    if (!p) return (
+                      <td key={inst} className="py-2 px-3 text-right text-xs text-[var(--dim)] opacity-40">—</td>
+                    )
+                    return (
+                      <td key={inst} className="py-2 px-3 text-right">
+                        <div className="text-xs font-semibold" style={{ color: COLORS[j % COLORS.length] }}>
+                          {sortBy === 'total_ms' ? fmtDuration(p.total_ms) :
+                           sortBy === 'cnt' ? fmtNum(p.cnt) :
+                           fmtDuration(p.avg_ms)}
+                        </div>
+                        <div className="text-xs text-[var(--dim)] mt-0.5">
+                          {fmtNum(p.cnt)} execs · {fmtDuration(p.avg_ms)} avg
+                        </div>
+                        {p.failures > 0 && (
+                          <div className="text-xs text-red-400 mt-0.5">{p.failures} fails</div>
+                        )}
+                      </td>
+                    )
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {sorted.length === 0 && (
+            <div className="text-sm text-[var(--dim)] text-center py-8">No query pattern data found</div>
+          )}
+        </div>
+      </Card>
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
 /*  Main Compare                                                      */
 /* ------------------------------------------------------------------ */
 export default function Compare() {
-  const { instances: storeInstances, selectedInstance } = useStore()
+  const { instances: storeInstances, selectedInstance, from, to } = useStore()
   const { analyze } = useAIAnalysis(selectedInstance)
   const handleAnalyze = useCallback((data: Record<string, any>) => {
     analyze('Instance Comparison', data, { contextType: 'tab', tab: 'compare' })
@@ -1443,7 +1570,7 @@ export default function Compare() {
   const [tablesLoading, setTablesLoading] = useState(true)
   const [settingsLoading, setSettingsLoading] = useState(true)
 
-  const [tab, setTab] = useState<'tables' | 'settings' | 'metrics' | 'memory' | 'diff'>('tables')
+  const [tab, setTab] = useState<'tables' | 'settings' | 'metrics' | 'memory' | 'diff' | 'queries'>('tables')
 
   const [baseline, setBaseline] = useState<string>(() => {
     try { return localStorage.getItem('compare-baseline') ?? '' } catch { return '' }
@@ -1508,6 +1635,7 @@ export default function Compare() {
           <TabButton active={tab === 'metrics'} label="Metrics" onClick={() => setTab('metrics')} />
           <TabButton active={tab === 'memory'} label="Memory" onClick={() => setTab('memory')} />
           <TabButton active={tab === 'diff'} label="Diff" onClick={() => setTab('diff')} />
+          <TabButton active={tab === 'queries'} label="Queries" onClick={() => setTab('queries')} />
         </div>
         <button
           onClick={() => handleAnalyze({ baseline: effectiveBaseline, instances, tab, tablesData, settingsData })}
@@ -1519,7 +1647,7 @@ export default function Compare() {
       </div>
 
       {/* ---- Node pills (baseline selector) — only for Settings/Metrics/Memory tabs ---- */}
-      {tab !== 'tables' && tab !== 'diff' && (
+      {tab !== 'tables' && tab !== 'diff' && tab !== 'queries' && (
         <div>
           <div className="text-xs text-[var(--dim)] mb-2">Click any node to set as comparison baseline</div>
           <div className="flex flex-wrap gap-3">
@@ -1563,6 +1691,9 @@ export default function Compare() {
           : tablesData
             ? <TableDiffView tablesData={tablesData} instances={instances} />
             : <EmptyMsg msg="Failed to load table data" />
+      )}
+      {tab === 'queries' && (
+        <CrossQueryView from={from} to={to} />
       )}
     </div>
   )

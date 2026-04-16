@@ -156,6 +156,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/compare/query-stats", s.handleCompareQueryStats)
 	mux.HandleFunc("GET /api/compare/settings", s.handleCompareSettings)
 	mux.HandleFunc("GET /api/compare/metrics", s.handleCompareMetrics)
+	mux.HandleFunc("GET /api/compare/query-patterns", s.handleCompareQueryPatterns)
 	mux.HandleFunc("GET /api/instances/{name}/table-memory", s.handleTableMemory)
 	mux.HandleFunc("GET /api/instances/{name}/cache-stats", s.handleCacheStats)
 
@@ -188,7 +189,12 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Historical analysis endpoints (from history.go).
 	mux.HandleFunc("GET /api/instances/{name}/health-check", s.handleHealthCheck)
 	mux.HandleFunc("GET /api/instances/{name}/query-patterns", s.handleQueryPatterns)
+	mux.HandleFunc("GET /api/instances/{name}/query-patterns-v2", s.handleQueryPatternsV2)
 	mux.HandleFunc("GET /api/instances/{name}/query-pattern-timeline", s.handleQueryPatternTimeline)
+	mux.HandleFunc("GET /api/instances/{name}/query-samples", s.handleQuerySamples)
+	mux.HandleFunc("GET /api/instances/{name}/query-pattern-overview", s.handleQueryPatternOverview)
+	mux.HandleFunc("GET /api/instances/{name}/query-users", s.handleQueryUsers)
+	mux.HandleFunc("POST /api/instances/{name}/kill-query", s.handleKillQuery)
 	mux.HandleFunc("GET /api/instances/{name}/history/failures", s.handleHistoryFailures)
 	mux.HandleFunc("GET /api/instances/{name}/history/merges", s.handleHistoryMerges)
 	mux.HandleFunc("GET /api/instances/{name}/history/mvs", s.handleHistoryMVs)
@@ -395,6 +401,49 @@ func (s *Server) handleQueries(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, rows)
+}
+
+// POST /api/instances/{name}/kill-query — kill a running query by query_id.
+func (s *Server) handleKillQuery(w http.ResponseWriter, r *http.Request) {
+	instance := r.PathValue("name")
+	client := s.manager.Get(instance)
+	if client == nil {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	var body struct {
+		QueryID string `json:"query_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.QueryID == "" {
+		writeErr(w, http.StatusBadRequest, "query_id required")
+		return
+	}
+
+	// Sanitise: query IDs are UUIDs (hex + dashes). Reject anything else.
+	for _, c := range body.QueryID {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') || c == '-') {
+			writeErr(w, http.StatusBadRequest, "invalid query_id format")
+			return
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	sql := fmt.Sprintf("KILL QUERY WHERE query_id = '%s' ASYNC", body.QueryID)
+	_, err := client.QuerySingleValue(ctx, sql)
+	if err != nil {
+		if strings.Contains(err.Error(), "ACCESS_DENIED") || strings.Contains(err.Error(), "privilege") {
+			writeErr(w, http.StatusForbidden, "KILL QUERY privilege required")
+			return
+		}
+		slog.Warn("kill query", "err", err, "instance", instance, "query_id", body.QueryID)
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "killed", "query_id": body.QueryID})
 }
 
 // GET /api/instances/{name}/tables — table sizes, parts, health.

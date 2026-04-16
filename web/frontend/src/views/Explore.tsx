@@ -1,5 +1,5 @@
-import { useState, useEffect, useMemo, useCallback, type ChangeEvent } from 'react'
-import { Sparkles, X, Copy, Play, Maximize2 } from 'lucide-react'
+import { useState, useEffect, useMemo, useCallback, useRef, type ChangeEvent } from 'react'
+import { Sparkles, X, Copy, Play, Maximize2, Skull, RefreshCw, ChevronDown, ChevronRight } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
@@ -9,6 +9,10 @@ import { HistoryChart } from '../components/HistoryChart'
 import { DataTable } from '../components/DataTable'
 import type {
   QueryPattern,
+  QueryPatternV2,
+  QuerySample,
+  QueryUser,
+  PatternOverviewResponse,
   HistoryFailure,
   HistoryMerge,
   HistoryInsert,
@@ -21,6 +25,9 @@ import type { AnalyzeOptions } from '../hooks/useAIAnalysis'
 
 type Tab =
   | 'patterns'
+  | 'samples'
+  | 'live'
+  | 'users'
   | 'failures'
   | 'merges'
   | 'mvs'
@@ -32,6 +39,9 @@ type Tab =
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'patterns', label: 'Query Patterns' },
+  { key: 'samples', label: 'Samples' },
+  { key: 'live', label: 'Live Queries' },
+  { key: 'users', label: 'Users' },
   { key: 'failures', label: 'Failures' },
   { key: 'merges', label: 'Merges & Parts' },
   { key: 'partsage', label: 'Parts Age' },
@@ -164,25 +174,48 @@ function AnalyzeTabBtn({
 /*  Query Patterns Tab                                                 */
 /* ------------------------------------------------------------------ */
 
-function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQuery }: TabProps) {
-  const [patterns, setPatterns] = useState<QueryPattern[]>([])
+const SORT_OPTIONS = [
+  { value: 'total_ms', label: 'Total Time' },
+  { value: 'cnt', label: 'Executions' },
+  { value: 'avg_ms', label: 'Avg Duration' },
+  { value: 'max_ms', label: 'Max Duration' },
+  { value: 'p95_ms', label: 'P95' },
+  { value: 'failures', label: 'Failures' },
+]
+
+interface QueryPatternsTabProps extends TabProps {
+  onDrillHash?: (hash: string, user?: string) => void
+}
+
+function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQuery, onDrillHash }: QueryPatternsTabProps) {
+  const [patterns, setPatterns] = useState<QueryPatternV2[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [selectedHash, setSelectedHash] = useState<string | null>(null)
   const [timeline, setTimeline] = useState<Record<string, any>[]>([])
   const [tlLoading, setTlLoading] = useState(false)
+  const [sortBy, setSortBy] = useState<string>('total_ms')
+  const [overview, setOverview] = useState<PatternOverviewResponse | null>(null)
 
   useEffect(() => {
     let c = false
     setLoading(true)
     setError(null)
     setSelectedHash(null)
-    api.history.queryPatterns(instance, from, to)
-      .then(d => { if (!c) setPatterns(d) })
+    Promise.all([
+      api.history.queryPatternsV2(instance, from, to, 50, sortBy),
+      api.history.queryPatternOverview(instance, from, to, 8).catch(() => null),
+    ])
+      .then(([d, ov]) => {
+        if (!c) {
+          setPatterns(d)
+          setOverview(ov)
+        }
+      })
       .catch(e => { if (!c) setError(e.message) })
       .finally(() => { if (!c) setLoading(false) })
     return () => { c = true }
-  }, [instance, from, to, refreshKey])
+  }, [instance, from, to, refreshKey, sortBy])
 
   useEffect(() => {
     if (!selectedHash) return
@@ -198,15 +231,38 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
   if (loading) return <LoadingSkeleton />
   if (error) return <ErrorBox message={error} />
 
-  const columns = [
-    { key: 'normalized_query_hash', label: 'Hash', format: (v: any) => String(v).slice(0, 12) },
-    { key: 'cnt', label: 'Count', format: (v: any) => fmtNum(v) },
+  // Compute max total_ms for bar widths.
+  const maxTotalMs = patterns.reduce((m, p) => Math.max(m, p.total_ms || 0), 1)
+
+  const columns: any[] = [
+    {
+      key: 'normalized_query_hash',
+      label: 'Hash',
+      format: (v: any) => (
+        <span className="font-mono text-xs text-[var(--accent)]">{String(v).slice(0, 12)}</span>
+      ),
+    },
+    { key: 'cnt', label: 'Execs', format: (v: any) => fmtNum(v) },
     { key: 'kind', label: 'Kind' },
+    {
+      key: 'total_ms',
+      label: 'Total Time',
+      format: (v: any, row: any) => (
+        <span className="flex items-center gap-2 min-w-[100px]">
+          <span className="tabular-nums">{fmtDuration(v)}</span>
+          <span
+            className="h-1.5 rounded-full bg-[var(--accent)] opacity-70 shrink-0"
+            style={{ width: `${Math.max(4, ((row.total_ms || 0) / maxTotalMs) * 64)}px` }}
+          />
+        </span>
+      ),
+    },
     { key: 'avg_ms', label: 'Avg ms', format: (v: any) => fmtDuration(v) },
-    { key: 'max_ms', label: 'Max ms', format: (v: any) => fmtDuration(v) },
     { key: 'p95_ms', label: 'P95 ms', format: (v: any) => fmtDuration(v) },
-    { key: 'avg_memory', label: 'Avg Memory', format: (v: any) => fmtBytes(v) },
-    { key: 'failures', label: 'Failures', format: (v: any) => fmtNum(v) },
+    { key: 'avg_memory', label: 'Avg Mem', format: (v: any) => fmtBytes(v) },
+    { key: 'failures', label: 'Fails', format: (v: any) => (
+      <span className={Number(v) > 0 ? 'text-red-400 font-semibold' : ''}>{fmtNum(v)}</span>
+    )},
     {
       key: 'sample_query',
       label: 'Sample Query',
@@ -215,7 +271,7 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
         return (
           <span className="flex items-center gap-1.5 group/q min-w-0">
             <span className="text-[var(--dim)] text-xs font-mono truncate">
-              {q.length > 70 ? q.slice(0, 70) + '…' : q}
+              {q.length > 60 ? q.slice(0, 60) + '…' : q}
             </span>
             {q && (
               <button
@@ -230,22 +286,95 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
         )
       },
     },
+    ...(onDrillHash ? [{
+      key: '_drill',
+      label: '',
+      format: (_v: any, row: any) => (
+        <button
+          onClick={(e: any) => { e.stopPropagation(); onDrillHash(String(row.normalized_query_hash)) }}
+          className="text-xs text-[var(--accent)] hover:underline whitespace-nowrap"
+        >
+          Samples →
+        </button>
+      ),
+    }] : []),
   ]
+
+  // Stacked bar overview (top-N patterns over time).
+  const overviewChart = useMemo(() => {
+    if (!overview || !overview.timeline?.length) return null
+    const COLORS = ['#3b82f6','#22c55e','#f59e0b','#ef4444','#a855f7','#06b6d4','#f97316','#ec4899']
+    const hashColors: Record<string, string> = {}
+    overview.patterns.forEach((p, i) => {
+      hashColors[p.normalized_query_hash] = COLORS[i % COLORS.length]
+    })
+    const allTs = [...new Set(overview.timeline.map(r => r.ts))].sort()
+    // Build stacked bars per timestamp.
+    const bars = allTs.map(ts => {
+      const slices = overview.timeline.filter(r => r.ts === ts)
+      const total = slices.reduce((s, r) => s + (Number(r.total_ms) || 0), 0)
+      return { ts, slices, total }
+    })
+    const maxTotal = Math.max(...bars.map(b => b.total), 1)
+    return { bars, maxTotal, hashColors }
+  }, [overview])
 
   return (
     <div className="space-y-4">
+      {/* Stacked bar overview */}
+      {overviewChart && overviewChart.bars.length > 0 && (
+        <Card>
+          <div className="text-xs font-medium text-[var(--dim)] uppercase tracking-wider mb-3">
+            Query Load by Pattern (Total CPU ms)
+          </div>
+          <div className="flex items-end gap-px h-20 overflow-hidden">
+            {overviewChart.bars.map((bar, i) => (
+              <div key={i} className="flex-1 flex flex-col justify-end" title={bar.ts}>
+                {bar.slices.map((s, j) => {
+                  const pct = (Number(s.total_ms) / overviewChart.maxTotal) * 100
+                  const color = overviewChart.hashColors[String(s.normalized_query_hash)] ?? '#6b7280'
+                  return <div key={j} style={{ height: `${pct}%`, background: color }} className="min-h-[1px]" />
+                })}
+              </div>
+            ))}
+          </div>
+          <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2">
+            {overview!.patterns.map((p, i) => {
+              const color = overviewChart.hashColors[p.normalized_query_hash] ?? '#6b7280'
+              return (
+                <span key={i} className="flex items-center gap-1 text-xs text-[var(--dim)]">
+                  <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: color }} />
+                  <span className="font-mono">{String(p.normalized_query_hash).slice(0, 10)}</span>
+                  <span className="opacity-60 truncate max-w-[120px]">{String(p.label).slice(0, 30)}</span>
+                </span>
+              )
+            })}
+          </div>
+        </Card>
+      )}
+
       <Card>
-        <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
           <span className="text-xs text-[var(--dim)] uppercase tracking-wider font-medium">
             {patterns.length} patterns
           </span>
-          <AnalyzeTabBtn
-            label="Query Patterns"
-            data={{ patterns }}
-            tab="patterns"
-            onAnalyze={onAnalyze}
-            disabled={patterns.length === 0}
-          />
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-[var(--dim)]">Sort by</label>
+            <select
+              value={sortBy}
+              onChange={e => setSortBy(e.target.value)}
+              className="rounded border border-[var(--border)] bg-[var(--card)] px-2 py-1 text-xs text-[var(--fg)] focus:outline-none"
+            >
+              {SORT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+            <AnalyzeTabBtn
+              label="Query Patterns"
+              data={{ patterns }}
+              tab="patterns"
+              onAnalyze={onAnalyze}
+              disabled={patterns.length === 0}
+            />
+          </div>
         </div>
         <DataTable
           columns={columns}
@@ -281,6 +410,400 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
           }
         </div>
       )}
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/*  Samples Tab                                                        */
+/* ------------------------------------------------------------------ */
+
+interface SamplesTabProps extends TabProps {
+  initialHash?: string
+  initialUser?: string
+  onClearDrill?: () => void
+}
+
+function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, initialUser, onClearDrill }: SamplesTabProps) {
+  const [samples, setSamples] = useState<QuerySample[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [hashFilter, setHashFilter] = useState(initialHash ?? '')
+  const [userFilter, setUserFilter] = useState(initialUser ?? '')
+  const [kindFilter, setKindFilter] = useState('')
+  const [minMs, setMinMs] = useState('')
+  const [expanded, setExpanded] = useState<Set<number>>(new Set())
+
+  // When initial drill context changes, update filters.
+  useEffect(() => { setHashFilter(initialHash ?? '') }, [initialHash])
+  useEffect(() => { setUserFilter(initialUser ?? '') }, [initialUser])
+
+  useEffect(() => {
+    let c = false
+    setLoading(true)
+    setError(null)
+    api.history.querySamples(instance, from, to, {
+      hash: hashFilter || undefined,
+      user: userFilter || undefined,
+      kind: kindFilter || undefined,
+      minMs: minMs || undefined,
+      limit: 200,
+    })
+      .then(d => { if (!c) setSamples(d) })
+      .catch(e => { if (!c) setError(e.message) })
+      .finally(() => { if (!c) setLoading(false) })
+    return () => { c = true }
+  }, [instance, from, to, refreshKey, hashFilter, userFilter, kindFilter, minMs])
+
+  const toggleExpand = (i: number) => {
+    setExpanded(prev => {
+      const next = new Set(prev)
+      next.has(i) ? next.delete(i) : next.add(i)
+      return next
+    })
+  }
+
+  const durationColor = (ms: number) => {
+    if (ms > 30000) return 'text-red-400'
+    if (ms > 5000) return 'text-orange-400'
+    if (ms > 1000) return 'text-yellow-400'
+    return 'text-[var(--fg)]'
+  }
+
+  return (
+    <div className="space-y-3">
+      {/* Filters */}
+      <Card>
+        <div className="flex flex-wrap gap-2 items-end">
+          {(hashFilter || userFilter) && (
+            <div className="flex items-center gap-1.5 px-2 py-1 rounded-full bg-[var(--accent)]/15 border border-[var(--accent)]/30 text-xs text-[var(--accent)]">
+              {hashFilter && <span>hash: {hashFilter.slice(0, 12)}</span>}
+              {userFilter && <span>user: {userFilter}</span>}
+              <button
+                onClick={() => { setHashFilter(''); setUserFilter(''); onClearDrill?.() }}
+                className="ml-1 hover:text-[var(--fg)]"
+              >
+                <X size={10} />
+              </button>
+            </div>
+          )}
+          <div className="flex items-center gap-1">
+            <label className="text-xs text-[var(--dim)]">User</label>
+            <input
+              value={userFilter}
+              onChange={e => setUserFilter(e.target.value)}
+              className="rounded border border-[var(--border)] bg-[var(--card)] px-2 py-1 text-xs w-28 focus:outline-none"
+              placeholder="filter user…"
+            />
+          </div>
+          <div className="flex items-center gap-1">
+            <label className="text-xs text-[var(--dim)]">Kind</label>
+            <select
+              value={kindFilter}
+              onChange={e => setKindFilter(e.target.value)}
+              className="rounded border border-[var(--border)] bg-[var(--card)] px-2 py-1 text-xs focus:outline-none"
+            >
+              <option value="">All</option>
+              <option value="Select">Select</option>
+              <option value="Insert">Insert</option>
+            </select>
+          </div>
+          <div className="flex items-center gap-1">
+            <label className="text-xs text-[var(--dim)]">Min ms</label>
+            <input
+              value={minMs}
+              onChange={e => setMinMs(e.target.value.replace(/\D/g, ''))}
+              className="rounded border border-[var(--border)] bg-[var(--card)] px-2 py-1 text-xs w-20 focus:outline-none"
+              placeholder="0"
+            />
+          </div>
+          <span className="ml-auto text-xs text-[var(--dim)]">{samples.length} rows</span>
+        </div>
+      </Card>
+
+      {loading && <LoadingSkeleton />}
+      {!loading && error && <ErrorBox message={error} />}
+      {!loading && !error && (
+        <div className="space-y-1">
+          {samples.length === 0 && (
+            <div className="text-sm text-[var(--dim)] text-center py-10">No samples found</div>
+          )}
+          {samples.map((s, i) => {
+            const isOpen = expanded.has(i)
+            return (
+              <div key={i} className="rounded-lg border border-[var(--border)] bg-[var(--card)] overflow-hidden">
+                <button
+                  onClick={() => toggleExpand(i)}
+                  className="w-full flex items-center gap-3 px-3 py-2 hover:bg-[var(--hover)] transition-colors text-left"
+                >
+                  {isOpen ? <ChevronDown size={13} className="shrink-0 text-[var(--dim)]" /> : <ChevronRight size={13} className="shrink-0 text-[var(--dim)]" />}
+                  <span className="text-xs text-[var(--dim)] tabular-nums w-36 shrink-0">
+                    {String(s.event_time).slice(0, 19)}
+                  </span>
+                  <span className={cn('text-xs font-semibold tabular-nums w-20 shrink-0', durationColor(s.query_duration_ms))}>
+                    {fmtDuration(s.query_duration_ms)}
+                  </span>
+                  <span className="text-xs text-[var(--dim)] w-20 shrink-0">{s.user}</span>
+                  <span className="text-xs px-1.5 py-0.5 rounded bg-[var(--surface)] text-[var(--dim)] w-16 text-center shrink-0">
+                    {s.query_kind || '—'}
+                  </span>
+                  {s.is_exception === 1 && (
+                    <span className="text-xs px-1.5 py-0.5 rounded bg-red-500/15 text-red-400 border border-red-500/20 shrink-0">
+                      error
+                    </span>
+                  )}
+                  <span className="text-xs text-[var(--dim)] font-mono truncate">
+                    {String(s.query_text ?? '').slice(0, 80)}
+                  </span>
+                </button>
+                {isOpen && (
+                  <div className="border-t border-[var(--border)] bg-[var(--surface)] px-4 py-3 space-y-3">
+                    {/* Stats row */}
+                    <div className="flex flex-wrap gap-4 text-xs">
+                      <span><span className="text-[var(--dim)]">Read rows:</span> {fmtNum(s.read_rows)}</span>
+                      <span><span className="text-[var(--dim)]">Read bytes:</span> {fmtBytes(s.read_bytes)}</span>
+                      <span><span className="text-[var(--dim)]">Memory:</span> {fmtBytes(s.memory_usage)}</span>
+                      <span><span className="text-[var(--dim)]">Result rows:</span> {fmtNum(s.result_rows)}</span>
+                      <span><span className="text-[var(--dim)]">Client:</span> {s.client_name || '—'}</span>
+                      <span><span className="text-[var(--dim)]">Hash:</span>
+                        <span className="font-mono ml-1">{String(s.normalized_query_hash).slice(0, 16)}</span>
+                      </span>
+                    </div>
+                    {/* Query text */}
+                    <div className="relative">
+                      <pre className="text-xs font-mono text-[var(--fg)] whitespace-pre-wrap break-all leading-relaxed max-h-48 overflow-y-auto bg-[var(--card)] border border-[var(--border)] rounded p-2">
+                        {s.query_text}
+                      </pre>
+                      <button
+                        onClick={() => onShowQuery(s.query_text)}
+                        className="absolute top-1.5 right-1.5 p-1 rounded text-[var(--dim)] hover:text-[var(--accent)] bg-[var(--card)]"
+                        title="Full query"
+                      >
+                        <Maximize2 size={11} />
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/*  Live Queries Tab                                                   */
+/* ------------------------------------------------------------------ */
+
+function LiveTab({ instance, onShowQuery }: { instance: string; onShowQuery: (q: string) => void }) {
+  const [rows, setRows] = useState<Record<string, any>[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [killTarget, setKillTarget] = useState<string | null>(null)
+  const [killing, setKilling] = useState(false)
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const load = useCallback(() => {
+    api.queries(instance)
+      .then(d => { setRows(Array.isArray(d) ? d : []); setError(null) })
+      .catch(e => setError(e.message))
+      .finally(() => setLoading(false))
+  }, [instance])
+
+  useEffect(() => {
+    setLoading(true)
+    load()
+    intervalRef.current = setInterval(load, 5000)
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current) }
+  }, [load])
+
+  const handleKill = async () => {
+    if (!killTarget) return
+    setKilling(true)
+    try {
+      await api.killQuery(instance, killTarget)
+      setKillTarget(null)
+      load()
+    } catch (e: any) {
+      alert(`Kill failed: ${e.message}`)
+    } finally {
+      setKilling(false)
+    }
+  }
+
+  const elapsed = (v: any) => {
+    const s = Number(v) || 0
+    if (s >= 3600) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`
+    if (s >= 60) return `${Math.floor(s / 60)}m ${Math.floor(s % 60)}s`
+    return `${s.toFixed(1)}s`
+  }
+
+  const elapsedColor = (v: any) => {
+    const s = Number(v) || 0
+    if (s > 300) return 'text-red-400 font-semibold'
+    if (s > 60) return 'text-orange-400'
+    if (s > 10) return 'text-yellow-400'
+    return 'text-[var(--fg)]'
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <span className="text-xs text-[var(--dim)]">Auto-refreshes every 5s • {rows.length} running</span>
+        <button onClick={load} className="flex items-center gap-1 text-xs text-[var(--dim)] hover:text-[var(--fg)] transition-colors">
+          <RefreshCw size={12} />
+          Refresh
+        </button>
+      </div>
+
+      {loading && <LoadingSkeleton />}
+      {!loading && error && <ErrorBox message={error} />}
+      {!loading && !error && rows.length === 0 && (
+        <Card>
+          <div className="text-sm text-[var(--dim)] text-center py-8">No running queries</div>
+        </Card>
+      )}
+      {!loading && !error && rows.length > 0 && (
+        <div className="space-y-1">
+          {rows.map((r, i) => {
+            const qid = String(r.query_id ?? '')
+            const q = String(r.query_short ?? r.query ?? '')
+            return (
+              <div key={i} className="flex items-center gap-2 px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--card)] hover:bg-[var(--hover)] transition-colors group">
+                <span className={cn('text-xs tabular-nums w-14 shrink-0', elapsedColor(r.elapsed))}>
+                  {elapsed(r.elapsed)}
+                </span>
+                <span className="text-xs text-[var(--dim)] w-24 shrink-0 truncate">{r.user}</span>
+                <span className="text-xs font-mono text-[var(--fg)] truncate flex-1">{q.slice(0, 100)}</span>
+                <span className="text-xs text-[var(--dim)] w-20 text-right shrink-0">{r.memory ?? r.memory_usage ?? ''}</span>
+                <button
+                  onClick={() => onShowQuery(q)}
+                  className="shrink-0 p-1 rounded text-[var(--dim)] hover:text-[var(--accent)] opacity-0 group-hover:opacity-100 transition-all"
+                  title="View query"
+                >
+                  <Maximize2 size={12} />
+                </button>
+                <button
+                  onClick={() => setKillTarget(qid)}
+                  className="shrink-0 p-1 rounded text-[var(--dim)] hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"
+                  title="Kill query"
+                >
+                  <Skull size={12} />
+                </button>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Kill confirm dialog */}
+      {killTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="w-full max-w-sm bg-[var(--card)] border border-[var(--border)] rounded-xl shadow-2xl p-5 space-y-4">
+            <div className="text-sm font-semibold text-[var(--fg)]">Kill Query?</div>
+            <p className="text-sm text-[var(--dim)]">
+              Send KILL QUERY for <span className="font-mono text-xs text-[var(--fg)]">{killTarget.slice(0, 24)}…</span>
+            </p>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setKillTarget(null)}
+                className="px-3 py-1.5 text-sm rounded-lg border border-[var(--border)] text-[var(--dim)] hover:text-[var(--fg)] transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleKill}
+                disabled={killing}
+                className="px-3 py-1.5 text-sm rounded-lg bg-red-500 text-white hover:bg-red-600 transition-colors disabled:opacity-50"
+              >
+                {killing ? 'Killing…' : 'Kill Query'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/*  Users Tab                                                          */
+/* ------------------------------------------------------------------ */
+
+interface UsersTabProps extends TabProps {
+  onDrillUser?: (user: string) => void
+}
+
+function UsersTab({ instance, from, to, refreshKey, onDrillUser }: UsersTabProps) {
+  const [users, setUsers] = useState<QueryUser[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let c = false
+    setLoading(true)
+    setError(null)
+    api.history.queryUsers(instance, from, to)
+      .then(d => { if (!c) setUsers(d) })
+      .catch(e => { if (!c) setError(e.message) })
+      .finally(() => { if (!c) setLoading(false) })
+    return () => { c = true }
+  }, [instance, from, to, refreshKey])
+
+  if (loading) return <LoadingSkeleton />
+  if (error) return <ErrorBox message={error} />
+
+  const maxTotalMs = users.reduce((m, u) => Math.max(m, u.total_ms || 0), 1)
+
+  return (
+    <div className="space-y-3">
+      <Card>
+        <div className="text-xs text-[var(--dim)] uppercase tracking-wider font-medium mb-3">
+          {users.length} users — sorted by total CPU time
+        </div>
+        {users.length === 0 && (
+          <div className="text-sm text-[var(--dim)] text-center py-8">No data in range</div>
+        )}
+        <div className="space-y-1.5">
+          {users.map((u, i) => {
+            const barW = Math.max(4, (u.total_ms / maxTotalMs) * 180)
+            return (
+              <div
+                key={i}
+                onClick={() => onDrillUser?.(u.user)}
+                className={cn(
+                  'flex items-center gap-3 px-3 py-2 rounded-lg border border-[var(--border)] hover:bg-[var(--hover)] transition-colors',
+                  onDrillUser && 'cursor-pointer',
+                )}
+              >
+                <span className="text-sm font-medium w-32 shrink-0 truncate">{u.user || '(unknown)'}</span>
+                <div className="flex-1 flex items-center gap-2">
+                  <div
+                    className="h-2 rounded-full bg-[var(--accent)] opacity-80"
+                    style={{ width: `${barW}px` }}
+                  />
+                  <span className="text-xs tabular-nums text-[var(--dim)]">{fmtDuration(u.total_ms)}</span>
+                </div>
+                <div className="flex gap-4 text-xs text-[var(--dim)] shrink-0">
+                  <span><span className="text-[var(--fg)]">{fmtNum(u.cnt)}</span> execs</span>
+                  <span>avg <span className="text-[var(--fg)]">{fmtDuration(u.avg_ms)}</span></span>
+                  <span>p95 <span className="text-[var(--fg)]">{fmtDuration(u.p95_ms)}</span></span>
+                  {u.failures > 0 && (
+                    <span className="text-red-400">{fmtNum(u.failures)} fails</span>
+                  )}
+                </div>
+                {onDrillUser && (
+                  <span className="text-xs text-[var(--accent)] opacity-0 group-hover:opacity-100 shrink-0">
+                    →
+                  </span>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </Card>
     </div>
   )
 }
@@ -991,6 +1514,9 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
   const { instances, selectedInstance, setSelectedInstance, setView, from, to } = useStore()
   const [tab, setTab] = useState<Tab>('patterns')
   const [queryModal, setQueryModal] = useState<string | null>(null)
+  // Drill state: clicking "Samples →" in Patterns tab or a row in Users tab navigates to Samples with filter pre-set.
+  const [drillHash, setDrillHash] = useState<string | undefined>()
+  const [drillUser, setDrillUser] = useState<string | undefined>()
   const inst = selectedInstance || instances[0] || ''
 
   const { analyze } = useAIAnalysis(inst)
@@ -1008,6 +1534,23 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
   )
 
   const handleShowQuery = useCallback((query: string) => setQueryModal(query), [])
+
+  const handleDrillHash = useCallback((hash: string) => {
+    setDrillHash(hash)
+    setDrillUser(undefined)
+    setTab('samples')
+  }, [])
+
+  const handleDrillUser = useCallback((user: string) => {
+    setDrillUser(user)
+    setDrillHash(undefined)
+    setTab('samples')
+  }, [])
+
+  const handleClearDrill = useCallback(() => {
+    setDrillHash(undefined)
+    setDrillUser(undefined)
+  }, [])
 
   return (
     <div className="space-y-4">
@@ -1057,7 +1600,32 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
         </div>
       ) : (
         <>
-          {tab === 'patterns' && <QueryPatternsTab instance={inst} from={from} to={to} refreshKey={refreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
+          {tab === 'patterns' && (
+            <QueryPatternsTab
+              instance={inst} from={from} to={to} refreshKey={refreshKey}
+              onAnalyze={handleAnalyze} onShowQuery={handleShowQuery}
+              onDrillHash={handleDrillHash}
+            />
+          )}
+          {tab === 'samples' && (
+            <SamplesTab
+              instance={inst} from={from} to={to} refreshKey={refreshKey}
+              onAnalyze={handleAnalyze} onShowQuery={handleShowQuery}
+              initialHash={drillHash}
+              initialUser={drillUser}
+              onClearDrill={handleClearDrill}
+            />
+          )}
+          {tab === 'live' && (
+            <LiveTab instance={inst} onShowQuery={handleShowQuery} />
+          )}
+          {tab === 'users' && (
+            <UsersTab
+              instance={inst} from={from} to={to} refreshKey={refreshKey}
+              onAnalyze={handleAnalyze} onShowQuery={handleShowQuery}
+              onDrillUser={handleDrillUser}
+            />
+          )}
           {tab === 'failures' && <FailuresTab instance={inst} from={from} to={to} refreshKey={refreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
           {tab === 'merges' && <MergesTab instance={inst} from={from} to={to} refreshKey={refreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
           {tab === 'partsage' && <PartsAgeTab instance={inst} refreshKey={refreshKey} />}

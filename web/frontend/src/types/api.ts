@@ -79,6 +79,89 @@ export interface QueryPattern {
   failures: number; user: string; client: string; sample_query: string
 }
 
+export interface QueryPatternV2 {
+  normalized_query_hash: string
+  cnt: number
+  kind: string
+  total_ms: number
+  avg_ms: number
+  max_ms: number
+  p95_ms: number
+  avg_read_rows: number
+  avg_read_bytes: number
+  avg_memory: number
+  max_memory: number
+  failures: number
+  user: string
+  client: string
+  sample_query: string
+}
+
+export interface QuerySample {
+  event_time: string
+  user: string
+  query_kind: string
+  normalized_query_hash: string
+  query_text: string
+  query_duration_ms: number
+  read_rows: number
+  read_bytes: number
+  memory_usage: number
+  result_rows: number
+  is_exception: number
+  exception_code: number
+  client_name: string
+  interface: string
+}
+
+export interface QueryUser {
+  user: string
+  cnt: number
+  total_ms: number
+  avg_ms: number
+  max_ms: number
+  p95_ms: number
+  total_read_bytes: number
+  total_memory: number
+  failures: number
+  selects: number
+  inserts: number
+}
+
+export interface PatternOverviewResponse {
+  patterns: Array<{
+    normalized_query_hash: string
+    total_ms: number
+    label: string
+  }>
+  timeline: Array<{
+    ts: string
+    normalized_query_hash: string
+    total_ms: number
+    cnt: number
+  }>
+}
+
+export interface CompareQueryPattern {
+  hash: string
+  label: string
+  kind: string
+  cnt: number
+  total_ms: number
+  avg_ms: number
+  max_ms: number
+  p95_ms: number
+  avg_read_rows: number
+  failures: number
+  user: string
+}
+
+export interface CompareQueryPatternsResult {
+  instance: string
+  patterns: CompareQueryPattern[]
+  error?: string
+}
+
 export interface QueryResult {
   columns: any[]
   types?: string[]

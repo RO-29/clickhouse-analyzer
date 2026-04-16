@@ -6,6 +6,11 @@ import type {
   AlertStats,
   PartsAgeEntry,
   QueryPattern,
+  QueryPatternV2,
+  QuerySample,
+  QueryUser,
+  PatternOverviewResponse,
+  CompareQueryPatternsResult,
   QueryResult,
   QueryHistoryEntry,
   HistoryMerge,
@@ -102,9 +107,25 @@ export const api = {
       get<HistoryAsyncMetric[]>(`/api/instances/${inst}/history/disk-io?from=${from}&to=${to}`),
     queryPatterns: (inst: string, from: number, to: number, limit = 50) =>
       get<QueryPattern[]>(`/api/instances/${inst}/query-patterns?from=${from}&to=${to}&limit=${limit}`),
+    queryPatternsV2: (inst: string, from: number, to: number, limit = 50, sortBy = 'total_ms') =>
+      get<QueryPatternV2[]>(`/api/instances/${inst}/query-patterns-v2?from=${from}&to=${to}&limit=${limit}&sort_by=${sortBy}`),
     queryPatternTimeline: (inst: string, hash: string, from: number, to: number) =>
       get<Record<string, any>[]>(`/api/instances/${inst}/query-pattern-timeline?hash=${hash}&from=${from}&to=${to}`),
+    querySamples: (inst: string, from: number, to: number, opts?: { hash?: string; user?: string; kind?: string; minMs?: string; limit?: number }) => {
+      const p = new URLSearchParams({ from: String(from), to: String(to), limit: String(opts?.limit ?? 100) })
+      if (opts?.hash) p.set('hash', opts.hash)
+      if (opts?.user) p.set('user', opts.user)
+      if (opts?.kind) p.set('kind', opts.kind)
+      if (opts?.minMs) p.set('min_ms', opts.minMs)
+      return get<QuerySample[]>(`/api/instances/${inst}/query-samples?${p}`)
+    },
+    queryPatternOverview: (inst: string, from: number, to: number, topN = 8) =>
+      get<PatternOverviewResponse>(`/api/instances/${inst}/query-pattern-overview?from=${from}&to=${to}&top_n=${topN}`),
+    queryUsers: (inst: string, from: number, to: number) =>
+      get<QueryUser[]>(`/api/instances/${inst}/query-users?from=${from}&to=${to}`),
   },
+  killQuery: (inst: string, queryId: string) =>
+    post<{ status: string; query_id: string }>(`/api/instances/${inst}/kill-query`, { query_id: queryId }),
   logs: (level?: string, search?: string, limit = 500) => {
     const params = new URLSearchParams({ limit: String(limit) })
     if (level) params.set('level', level)
@@ -122,6 +143,13 @@ export const api = {
     settings: () => get<any>('/api/compare/settings'),
     metrics: () => get<any>('/api/compare/metrics'),
     queryStats: () => get<any>('/api/compare/query-stats'),
+    queryPatterns: (from?: number, to?: number) => {
+      const p = new URLSearchParams()
+      if (from) p.set('from', String(from))
+      if (to) p.set('to', String(to))
+      const qs = p.toString()
+      return get<CompareQueryPatternsResult[]>(`/api/compare/query-patterns${qs ? '?' + qs : ''}`)
+    },
   },
   tableMemory: (inst: string) => get<any[]>(`/api/instances/${inst}/table-memory`),
   cacheStats: (inst: string) => get<any>(`/api/instances/${inst}/cache-stats`),

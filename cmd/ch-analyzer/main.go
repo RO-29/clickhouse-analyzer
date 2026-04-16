@@ -414,6 +414,7 @@ func buildCollectors(cfg *config.Config) []collector.Collector {
 	result = append(result, &collector.PartsAgeCollector{})
 	result = append(result, &collector.SlowQueryFingerprintCollector{})
 	result = append(result, &collector.KeeperCollector{})
+	result = append(result, &collector.QuerySamplesCollector{})
 
 	if cfg.K8s.Enabled {
 		result = append(result, &collector.K8sCollector{

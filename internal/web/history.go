@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/rohitjain/ch-analyzer/internal/chclient"
 )
 
 // ---------------------------------------------------------------------------
@@ -872,8 +874,411 @@ func (s *Server) handleHistoryDiskIO(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------------------------------------------------------------------------
+// 11. Query Samples (individual executions)
+// ---------------------------------------------------------------------------
+
+func (s *Server) handleQuerySamples(w http.ResponseWriter, r *http.Request) {
+	instance := r.PathValue("name")
+	client := s.manager.Get(instance)
+	if client == nil {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	fromTime, toTime := parseFromTo(r)
+	limit := parseIntParam(r, "limit", 100)
+	hash := r.URL.Query().Get("hash")       // filter by normalized_query_hash
+	user := r.URL.Query().Get("user")       // filter by user
+	kind := r.URL.Query().Get("kind")       // filter by query_kind
+	minMs := r.URL.Query().Get("min_ms")    // filter by min duration
+
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+
+	// Try ch_analyzer.query_samples first (fast).
+	samples, err := s.queryFromSamples(ctx, client, fromTime, toTime, hash, user, kind, minMs, limit)
+	if err != nil || samples == nil {
+		// Fall back to system.query_log.
+		samples, err = s.queryFromQueryLog(ctx, client, fromTime, toTime, hash, user, kind, minMs, limit)
+		if err != nil {
+			slog.Warn("query samples fallback failed", "err", err, "instance", instance)
+			writeJSON(w, http.StatusOK, []map[string]interface{}{})
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusOK, samples)
+}
+
+func (s *Server) queryFromSamples(ctx context.Context, client *chclient.Client,
+	fromTime, toTime, hash, user, kind, minMs string, limit int) ([]map[string]interface{}, error) {
+
+	// Check table exists first.
+	rows, err := client.Query(ctx, "SELECT count() as cnt FROM ch_analyzer.query_samples LIMIT 1")
+	if err != nil || len(rows) == 0 {
+		return nil, err
+	}
+
+	var filters []string
+	filters = append(filters,
+		fmt.Sprintf("event_time >= '%s' AND event_time <= '%s'", fromTime, toTime))
+	if hash != "" {
+		filters = append(filters, fmt.Sprintf("normalized_query_hash = %s", sqlSafeUInt(hash)))
+	}
+	if user != "" {
+		filters = append(filters, fmt.Sprintf("user = '%s'", sqlSafeStr(user)))
+	}
+	if kind != "" {
+		filters = append(filters, fmt.Sprintf("query_kind = '%s'", sqlSafeStr(kind)))
+	}
+	if minMs != "" {
+		filters = append(filters, fmt.Sprintf("query_duration_ms >= %s", sqlSafeUInt(minMs)))
+	}
+
+	sql := fmt.Sprintf(`SELECT
+		event_time,
+		user,
+		query_kind,
+		normalized_query_hash,
+		substring(query_text, 1, 500) AS query_text,
+		query_duration_ms,
+		read_rows,
+		read_bytes,
+		memory_usage,
+		result_rows,
+		is_exception,
+		exception_code,
+		client_name,
+		interface
+	FROM ch_analyzer.query_samples
+	WHERE %s
+	ORDER BY event_time DESC
+	LIMIT %d`, strings.Join(filters, " AND "), limit)
+
+	return client.Query(ctx, sql)
+}
+
+func (s *Server) queryFromQueryLog(ctx context.Context, client *chclient.Client,
+	fromTime, toTime, hash, user, kind, minMs string, limit int) ([]map[string]interface{}, error) {
+
+	var filters []string
+	filters = append(filters,
+		fmt.Sprintf("event_time >= '%s' AND event_time <= '%s'", fromTime, toTime),
+		"is_initial_query = 1",
+		"type IN ('QueryFinish', 'ExceptionWhileProcessing')")
+	if hash != "" {
+		filters = append(filters, fmt.Sprintf("normalized_query_hash = %s", sqlSafeUInt(hash)))
+	}
+	if user != "" {
+		filters = append(filters, fmt.Sprintf("user = '%s'", sqlSafeStr(user)))
+	}
+	if kind != "" {
+		filters = append(filters, fmt.Sprintf("query_kind = '%s'", sqlSafeStr(kind)))
+	}
+	if minMs != "" {
+		filters = append(filters, fmt.Sprintf("query_duration_ms >= %s", sqlSafeUInt(minMs)))
+	}
+
+	sql := fmt.Sprintf(`SELECT
+		event_time,
+		user,
+		query_kind,
+		normalized_query_hash,
+		substring(query, 1, 500) AS query_text,
+		query_duration_ms,
+		read_rows,
+		read_bytes,
+		memory_usage,
+		result_rows,
+		if(type = 'ExceptionWhileProcessing', 1, 0) AS is_exception,
+		exception_code,
+		client_name,
+		interface
+	FROM system.query_log
+	WHERE %s
+	ORDER BY event_time DESC
+	LIMIT %d`, strings.Join(filters, " AND "), limit)
+
+	return client.Query(ctx, sql)
+}
+
+// ---------------------------------------------------------------------------
+// 12. Query Pattern Overview (stacked bar chart data)
+// ---------------------------------------------------------------------------
+
+func (s *Server) handleQueryPatternOverview(w http.ResponseWriter, r *http.Request) {
+	instance := r.PathValue("name")
+	client := s.manager.Get(instance)
+	if client == nil {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	fromTime, toTime := parseFromTo(r)
+	bucket := bucketSeconds(r)
+	topN := parseIntParam(r, "top_n", 8)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+
+	// Get top N patterns by total_ms in this time range.
+	topSQL := fmt.Sprintf(`SELECT
+		normalized_query_hash,
+		sum(query_duration_ms) AS total_ms,
+		any(substring(query_text, 1, 80)) AS label
+	FROM ch_analyzer.query_samples
+	WHERE event_time >= '%s' AND event_time <= '%s'
+	GROUP BY normalized_query_hash
+	ORDER BY total_ms DESC
+	LIMIT %d`, fromTime, toTime, topN)
+
+	topRows, err := client.Query(ctx, topSQL)
+	if err != nil {
+		// Fall back to system.query_log.
+		topSQL = fmt.Sprintf(`SELECT
+			normalized_query_hash,
+			sum(query_duration_ms) AS total_ms,
+			any(substring(query, 1, 80)) AS label
+		FROM system.query_log
+		WHERE event_time >= '%s' AND event_time <= '%s'
+		  AND is_initial_query = 1
+		  AND type IN ('QueryFinish', 'ExceptionWhileProcessing')
+		GROUP BY normalized_query_hash
+		ORDER BY total_ms DESC
+		LIMIT %d`, fromTime, toTime, topN)
+		topRows, err = client.Query(ctx, topSQL)
+		if err != nil {
+			writeJSON(w, http.StatusOK, map[string]interface{}{"patterns": []interface{}{}, "timeline": []interface{}{}})
+			return
+		}
+	}
+
+	if len(topRows) == 0 {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"patterns": topRows, "timeline": []interface{}{}})
+		return
+	}
+
+	// Build list of hashes for the timeline query.
+	hashes := make([]string, 0, len(topRows))
+	for _, row := range topRows {
+		hashes = append(hashes, toString(row["normalized_query_hash"]))
+	}
+	hashList := strings.Join(hashes, ", ")
+
+	// Get time-bucketed data for those top patterns.
+	timeSQL := fmt.Sprintf(`SELECT
+		toStartOfInterval(event_time, INTERVAL %d SECOND) AS ts,
+		normalized_query_hash,
+		sum(query_duration_ms) AS total_ms,
+		count() AS cnt
+	FROM ch_analyzer.query_samples
+	WHERE event_time >= '%s' AND event_time <= '%s'
+	  AND normalized_query_hash IN (%s)
+	GROUP BY ts, normalized_query_hash
+	ORDER BY ts`, bucket, fromTime, toTime, hashList)
+
+	timeRows, err := client.Query(ctx, timeSQL)
+	if err != nil {
+		// Fall back to system.query_log.
+		timeSQL = fmt.Sprintf(`SELECT
+			toStartOfInterval(event_time, INTERVAL %d SECOND) AS ts,
+			normalized_query_hash,
+			sum(query_duration_ms) AS total_ms,
+			count() AS cnt
+		FROM system.query_log
+		WHERE event_time >= '%s' AND event_time <= '%s'
+		  AND is_initial_query = 1
+		  AND type IN ('QueryFinish', 'ExceptionWhileProcessing')
+		  AND normalized_query_hash IN (%s)
+		GROUP BY ts, normalized_query_hash
+		ORDER BY ts`, bucket, fromTime, toTime, hashList)
+		timeRows, _ = client.Query(ctx, timeSQL)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"patterns": topRows,
+		"timeline": timeRows,
+	})
+}
+
+// ---------------------------------------------------------------------------
+// 13. Query Users (per-user aggregation)
+// ---------------------------------------------------------------------------
+
+func (s *Server) handleQueryUsers(w http.ResponseWriter, r *http.Request) {
+	instance := r.PathValue("name")
+	client := s.manager.Get(instance)
+	if client == nil {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	fromTime, toTime := parseFromTo(r)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	sql := fmt.Sprintf(`SELECT
+		user,
+		count() AS cnt,
+		sum(query_duration_ms) AS total_ms,
+		avg(query_duration_ms) AS avg_ms,
+		max(query_duration_ms) AS max_ms,
+		quantile(0.95)(query_duration_ms) AS p95_ms,
+		sum(read_bytes) AS total_read_bytes,
+		sum(memory_usage) AS total_memory,
+		countIf(is_exception = 1) AS failures,
+		countIf(query_kind = 'Select') AS selects,
+		countIf(query_kind = 'Insert') AS inserts
+	FROM ch_analyzer.query_samples
+	WHERE event_time >= '%s' AND event_time <= '%s'
+	GROUP BY user
+	ORDER BY total_ms DESC
+	LIMIT 50`, fromTime, toTime)
+
+	rows, err := client.Query(ctx, sql)
+	if err != nil {
+		// Fall back to system.query_log.
+		sql = fmt.Sprintf(`SELECT
+			user,
+			count() AS cnt,
+			sum(query_duration_ms) AS total_ms,
+			avg(query_duration_ms) AS avg_ms,
+			max(query_duration_ms) AS max_ms,
+			quantile(0.95)(query_duration_ms) AS p95_ms,
+			sum(read_bytes) AS total_read_bytes,
+			sum(memory_usage) AS total_memory,
+			countIf(type = 'ExceptionWhileProcessing') AS failures,
+			countIf(query_kind = 'Select') AS selects,
+			countIf(query_kind = 'Insert') AS inserts
+		FROM system.query_log
+		WHERE event_time >= '%s' AND event_time <= '%s'
+		  AND is_initial_query = 1
+		  AND type IN ('QueryFinish', 'ExceptionWhileProcessing')
+		GROUP BY user
+		ORDER BY total_ms DESC
+		LIMIT 50`, fromTime, toTime)
+		rows, err = client.Query(ctx, sql)
+		if err != nil {
+			slog.Warn("query users", "err", err, "instance", instance)
+			writeJSON(w, http.StatusOK, []interface{}{})
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusOK, rows)
+}
+
+// ---------------------------------------------------------------------------
+// 14. Enhanced Query Patterns (total_ms, sort_by, is_initial_query)
+// ---------------------------------------------------------------------------
+
+// handleQueryPatternsV2 is the enhanced version. The old handleQueryPatterns
+// is kept for backwards compatibility; this one is registered at a new path.
+func (s *Server) handleQueryPatternsV2(w http.ResponseWriter, r *http.Request) {
+	instance := r.PathValue("name")
+	client := s.manager.Get(instance)
+	if client == nil {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	fromTime, toTime := parseFromTo(r)
+	limit := parseIntParam(r, "limit", 50)
+	sortBy := r.URL.Query().Get("sort_by") // total_ms | cnt | avg_ms | max_ms | p95_ms | failures
+
+	validSorts := map[string]bool{
+		"total_ms": true, "cnt": true, "avg_ms": true,
+		"max_ms": true, "p95_ms": true, "failures": true,
+	}
+	if !validSorts[sortBy] {
+		sortBy = "total_ms"
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+
+	// Try ch_analyzer.query_samples first.
+	sql := fmt.Sprintf(`SELECT
+		normalized_query_hash,
+		count() AS cnt,
+		any(query_kind) AS kind,
+		sum(query_duration_ms) AS total_ms,
+		avg(query_duration_ms) AS avg_ms,
+		max(query_duration_ms) AS max_ms,
+		quantile(0.95)(query_duration_ms) AS p95_ms,
+		avg(read_rows) AS avg_read_rows,
+		avg(read_bytes) AS avg_read_bytes,
+		avg(memory_usage) AS avg_memory,
+		max(memory_usage) AS max_memory,
+		countIf(is_exception = 1) AS failures,
+		any(user) AS user,
+		any(client_name) AS client,
+		any(substring(query_text, 1, 300)) AS sample_query
+	FROM ch_analyzer.query_samples
+	WHERE event_time >= '%s' AND event_time <= '%s'
+	GROUP BY normalized_query_hash
+	ORDER BY %s DESC
+	LIMIT %d`, fromTime, toTime, sortBy, limit)
+
+	rows, err := client.Query(ctx, sql)
+	if err != nil {
+		// Fall back to system.query_log.
+		sql = fmt.Sprintf(`SELECT
+			normalized_query_hash,
+			count() AS cnt,
+			any(query_kind) AS kind,
+			sum(query_duration_ms) AS total_ms,
+			avg(query_duration_ms) AS avg_ms,
+			max(query_duration_ms) AS max_ms,
+			quantile(0.95)(query_duration_ms) AS p95_ms,
+			avg(read_rows) AS avg_read_rows,
+			avg(read_bytes) AS avg_read_bytes,
+			avg(memory_usage) AS avg_memory,
+			max(memory_usage) AS max_memory,
+			countIf(type = 'ExceptionWhileProcessing') AS failures,
+			any(user) AS user,
+			any(client_name) AS client,
+			any(substring(query, 1, 300)) AS sample_query
+		FROM system.query_log
+		WHERE event_time >= '%s' AND event_time <= '%s'
+		  AND is_initial_query = 1
+		  AND type IN ('QueryFinish', 'ExceptionWhileProcessing')
+		GROUP BY normalized_query_hash
+		ORDER BY %s DESC
+		LIMIT %d`, fromTime, toTime, sortBy, limit)
+		rows, err = client.Query(ctx, sql)
+		if err != nil {
+			slog.Warn("query patterns v2", "err", err, "instance", instance)
+			writeJSON(w, http.StatusOK, []interface{}{})
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusOK, rows)
+}
+
+// ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+// sqlSafeStr sanitises a string for embedding in a SQL single-quoted literal.
+func sqlSafeStr(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(s)
+}
+
+// sqlSafeUInt sanitises a numeric string (allows only digits).
+func sqlSafeUInt(s string) string {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return "0"
+		}
+	}
+	if s == "" {
+		return "0"
+	}
+	return s
+}
 
 // toFloat64 coerces a ClickHouse JSON value to float64.
 func toFloat64(v interface{}) float64 {
