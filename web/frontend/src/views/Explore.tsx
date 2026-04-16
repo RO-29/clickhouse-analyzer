@@ -1116,6 +1116,17 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
                         ))}
                       </div>
                     )}
+                    {/* Exception message */}
+                    {s.is_exception === 1 && s.exception && (
+                      <div>
+                        <div className="text-[11px] font-semibold text-red-400 mb-1">
+                          Error {s.exception_code}
+                        </div>
+                        <pre className="text-xs font-mono text-red-300/80 whitespace-pre-wrap break-all leading-relaxed bg-red-500/5 border border-red-500/15 rounded p-2 max-h-28 overflow-y-auto">
+                          {s.exception}
+                        </pre>
+                      </div>
+                    )}
                     {/* Query text */}
                     <div className="relative">
                       <pre className="text-xs font-mono text-[var(--fg)] whitespace-pre-wrap break-all leading-relaxed max-h-48 overflow-y-auto bg-[var(--card)] border border-[var(--border)] rounded p-2">
@@ -2467,26 +2478,33 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
 
   const handleShowQuery = useCallback((query: string) => setQueryModal(query), [])
 
+  const switchTab = useCallback((t: Tab) => {
+    setTab(t)
+    const url = new URL(window.location.href)
+    url.searchParams.set('tab', t)
+    window.history.replaceState(null, '', url.toString())
+  }, [])
+
   const handleDrillHash = useCallback((hash: string) => {
     setDrillHash(hash)
     setDrillUser(undefined)
     setDrillErrorsOnly(false)
-    setTab('samples')
-  }, [])
+    switchTab('samples')
+  }, [switchTab])
 
   const handleDrillFail = useCallback((hash: string) => {
     setDrillHash(hash)
     setDrillUser(undefined)
     setDrillErrorsOnly(true)
-    setTab('samples')
-  }, [])
+    switchTab('samples')
+  }, [switchTab])
 
   const handleDrillUser = useCallback((user: string) => {
     setDrillUser(user)
     setDrillHash(undefined)
     setDrillErrorsOnly(false)
-    setTab('samples')
-  }, [])
+    switchTab('samples')
+  }, [switchTab])
 
   const handleClearDrill = useCallback(() => {
     setDrillHash(undefined)
@@ -2522,7 +2540,7 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
         {TABS.map(t => (
           <button
             key={t.key}
-            onClick={() => setTab(t.key)}
+            onClick={() => switchTab(t.key)}
             className={cn(
               'px-3 py-2 text-sm whitespace-nowrap rounded-t-md transition-colors',
               tab === t.key

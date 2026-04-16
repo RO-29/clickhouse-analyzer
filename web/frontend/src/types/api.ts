@@ -110,6 +110,7 @@ export interface QuerySample {
   result_rows: number
   is_exception: number
   exception_code: number
+  exception?: string
   client_name: string
   interface: string
   tables_accessed?: string

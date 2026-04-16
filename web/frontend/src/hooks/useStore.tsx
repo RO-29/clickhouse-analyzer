@@ -59,6 +59,16 @@ const StoreContext = createContext<Store | null>(null)
 
 const defaultRange = presetToRange('1h')
 
+// Merge URL params without adding a new browser history entry.
+function patchURL(patches: Record<string, string | null>) {
+  const url = new URL(window.location.href)
+  for (const [k, v] of Object.entries(patches)) {
+    if (v === null || v === '') url.searchParams.delete(k)
+    else url.searchParams.set(k, v)
+  }
+  window.history.replaceState(null, '', url.toString())
+}
+
 export function StoreProvider({ children }: { children: ReactNode }) {
   const [view, setViewState] = useState<View>(() => {
     const params = new URLSearchParams(window.location.search)
@@ -66,7 +76,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const valid: View[] = ['overview','detail','alerts','explore','compare','advisor','terminal','logs','chlogs','analyzer','scanner','cost','maintenance']
     return v && valid.includes(v) ? v : 'overview'
   })
-  const [selectedInstance, setSelectedInstance] = useState('')
+  const [selectedInstance, setSelectedInstanceRaw] = useState(() => {
+    const params = new URLSearchParams(window.location.search)
+    return params.get('instance') ?? ''
+  })
   const [instances, setInstances] = useState<string[]>([])
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
@@ -77,15 +90,29 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   })
   const setView = useCallback((v: View) => {
     setViewState(v)
+    // pushState for view changes so the back button navigates between views.
     const url = new URL(window.location.href)
     url.searchParams.set('view', v)
+    // Drop tab when switching views — it only makes sense within Explore.
+    if (v !== 'explore') url.searchParams.delete('tab')
     window.history.pushState(null, '', url.toString())
   }, [])
 
   const [refreshInterval, setRefreshInterval] = useState(300)
-  const [rangePreset, setRangePresetRaw] = useState('1h')
-  const [from, setFrom] = useState(defaultRange[0])
-  const [to, setTo] = useState(defaultRange[1])
+  const [rangePreset, setRangePresetRaw] = useState(() => {
+    const p = new URLSearchParams(window.location.search)
+    return p.get('from') ? 'custom' : '1h'
+  })
+  const [from, setFrom] = useState(() => {
+    const p = new URLSearchParams(window.location.search)
+    const f = Number(p.get('from'))
+    return f > 0 ? f : defaultRange[0]
+  })
+  const [to, setTo] = useState(() => {
+    const p = new URLSearchParams(window.location.search)
+    const t = Number(p.get('to'))
+    return t > 0 ? t : defaultRange[1]
+  })
   const [terminalQuery, setTerminalQuery] = useState('')
   const [terminalInstance, setTerminalInstance] = useState('')
   const [tableDetail, setTableDetail] = useState<{ instance: string; database: string; table: string } | null>(null)
@@ -139,17 +166,26 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
+  const setSelectedInstance = useCallback((name: string) => {
+    setSelectedInstanceRaw(name)
+    patchURL({ instance: name || null })
+  }, [])
+
   const setRangePreset = useCallback((preset: string) => {
     setRangePresetRaw(preset)
     const [f, t] = presetToRange(preset)
     setFrom(f)
     setTo(t)
+    // Always write absolute timestamps — shared URL shows the exact window
+    // that was active when the link was generated (not a shifting "last Nh").
+    patchURL({ from: String(f), to: String(t) })
   }, [])
 
   const setCustomRange = useCallback((f: number, t: number) => {
     setRangePresetRaw('custom')
     setFrom(f)
     setTo(t)
+    patchURL({ from: String(f), to: String(t) })
   }, [])
 
   const getTimeRange = useCallback(() => {
@@ -157,9 +193,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, [from, to])
 
   const navToDetail = useCallback((instance: string) => {
-    setSelectedInstance(instance)
+    setSelectedInstanceRaw(instance)
+    patchURL({ instance: instance || null })
     setView('detail')
-  }, [])
+  }, [setView])
 
   const navToAlerts = useCallback((filters?: { severity?: string; instance?: string }) => {
     setAlertPreset(filters ?? null)
@@ -183,14 +220,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const setInstanceCompat = useCallback((name: string | null) => {
-    setSelectedInstance(name ?? '')
+    setSelectedInstanceRaw(name ?? '')
+    patchURL({ instance: name ?? null })
   }, [])
 
   const store: Store = {
     view, setView: setView as (v: View) => void,
     selectedInstance,
     instance: selectedInstance,
-    setSelectedInstance,
+    setSelectedInstance: setSelectedInstance,
     setInstance: setInstanceCompat,
     instances, setInstances,
     sidebarCollapsed, setSidebarCollapsed,
