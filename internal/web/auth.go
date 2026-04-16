@@ -218,13 +218,26 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// URLs get their own event type for special client rendering.
+		// Claude sometimes prints "If the browser didn't open, visit: https://..."
+		// so we check each whitespace-delimited token for a URL, not just line prefix.
+		var extractedURL string
 		if strings.HasPrefix(line, "https://") || strings.HasPrefix(line, "http://") {
+			extractedURL = line
+		} else {
+			for _, tok := range strings.Fields(line) {
+				if strings.HasPrefix(tok, "https://") || strings.HasPrefix(tok, "http://") {
+					extractedURL = tok
+					break
+				}
+			}
+		}
+		if extractedURL != "" {
 			select {
 			case <-urlSent:
 			default:
 				close(urlSent)
 			}
-			sendEvent("url", jsonStr(line))
+			sendEvent("url", jsonStr(extractedURL))
 		} else {
 			sendEvent("output", jsonStr(line))
 		}
