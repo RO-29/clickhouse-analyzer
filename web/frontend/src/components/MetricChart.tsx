@@ -1,26 +1,15 @@
 import { useEffect, useState } from 'react'
-import { Line } from 'react-chartjs-2'
 import {
-  Chart as ChartJS,
-  CategoryScale,
-  LinearScale,
-  PointElement,
-  LineElement,
-  Tooltip,
-  Legend,
-  Filler,
-  type ChartOptions,
-} from 'chart.js'
+  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
+} from 'recharts'
 import { api } from '../lib/api'
 import { useStore } from '../hooks/useStore'
 import { fmtBytes, fmtPercent, fmtNum } from '../lib/utils'
 import type { MetricPoint } from '../types/api'
 
-ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend, Filler)
-
 const DEFAULT_COLORS = [
-  '#3b82f6', '#22c55e', '#eab308', '#ef4444', '#a855f7',
-  '#06b6d4', '#f97316', '#ec4899',
+  '#7c3aed', '#22c55e', '#eab308', '#ef4444', '#06b6d4',
+  '#f97316', '#ec4899', '#a855f7',
 ]
 
 interface MetricDef {
@@ -37,13 +26,34 @@ interface MetricChartProps {
   yFormat?: 'bytes' | 'percent' | 'number' | 'ms'
 }
 
+const MS_DAY = 86_400_000
+
+function ChartTooltip({ active, payload, label, formatValue }: any) {
+  if (!active || !payload?.length) return null
+  const d = new Date(label * 1000)
+  const timeStr = d.toLocaleString('en-GB', {
+    day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
+  })
+  return (
+    <div className="bg-[var(--card)] border border-[var(--border)] rounded-lg shadow-xl px-3 py-2 text-[11px] min-w-[120px]">
+      <div className="text-[var(--dim)] mb-1.5">{timeStr}</div>
+      {payload.map((entry: any) => (
+        <div key={entry.dataKey} className="flex items-center gap-2 mb-0.5">
+          <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: entry.color }} />
+          {payload.length > 1 && <span className="text-[var(--dim)] truncate max-w-[100px]">{entry.name}:</span>}
+          <span className="font-medium text-[var(--text)]">{formatValue(entry.value ?? 0)}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export function MetricChart({ instance, title, metrics, height = 160, yFormat = 'number' }: MetricChartProps) {
   const { getTimeRange } = useStore()
   const { from, to } = getTimeRange()
   const [series, setSeries] = useState<{ label: string; color: string; points: MetricPoint[] }[]>([])
   const [loading, setLoading] = useState(true)
 
-  // Normalize metrics to MetricDef[]
   const defs: MetricDef[] = metrics.map((m, i) => {
     if (typeof m === 'string') return { name: m, label: m.split('.').pop()!, color: DEFAULT_COLORS[i % DEFAULT_COLORS.length] }
     return m
@@ -86,90 +96,96 @@ export function MetricChart({ instance, title, metrics, height = 160, yFormat = 
   const spanMs = points0.length >= 2
     ? Math.abs(points0[points0.length - 1].ts - points0[0].ts) * 1000
     : 0
-  const MS_DAY = 86_400_000
 
-  const labels = points0.map(p => {
-    const d = new Date(p.ts * 1000)
-    if (spanMs > 7 * MS_DAY) {
-      return d.toLocaleDateString('en-GB', { month: 'short', day: 'numeric' })
-    } else if (spanMs > MS_DAY) {
-      return (
-        d.toLocaleDateString('en-GB', { month: 'short', day: 'numeric' }) +
-        ' ' +
-        d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
-      )
-    }
+  const formatTs = (ts: number) => {
+    const d = new Date(ts * 1000)
+    if (spanMs > 7 * MS_DAY) return d.toLocaleDateString('en-GB', { month: 'short', day: 'numeric' })
+    if (spanMs > MS_DAY) return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
     return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+  }
+
+  // Pivot series into recharts row format: { ts, label0: val, label1: val, ... }
+  const chartData = points0.map((p, i) => {
+    const row: Record<string, any> = { ts: p.ts }
+    series.forEach(s => { row[s.label] = s.points[i]?.value ?? null })
+    return row
   })
 
-  const data = {
-    labels,
-    datasets: series.map(s => ({
-      label: s.label,
-      data: s.points.map(p => p.value),
-      borderColor: s.color,
-      backgroundColor: s.color + '1a',
-      borderWidth: 1.5,
-      pointRadius: 0,
-      tension: 0.3,
-      fill: series.length === 1,
-    })),
-  }
-
-  const options: ChartOptions<'line'> = {
-    responsive: true,
-    maintainAspectRatio: false,
-    interaction: { mode: 'index', intersect: false },
-    plugins: {
-      legend: {
-        display: series.length > 1,
-        position: 'bottom',
-        labels: { boxWidth: 12, padding: 8, color: '#9ca3af', font: { size: 11 } },
-      },
-      tooltip: {
-        callbacks: {
-          label: ctx => `${ctx.dataset.label}: ${formatValue(ctx.parsed.y)}`,
-        },
-      },
-    },
-    scales: {
-      x: {
-        ticks: { maxTicksLimit: 8, color: '#6b7280', font: { size: 10 } },
-        grid: { color: 'rgba(255,255,255,0.04)' },
-      },
-      y: {
-        ticks: {
-          callback: v => formatValue(Number(v)),
-          color: '#6b7280',
-          font: { size: 10 },
-        },
-        grid: { color: 'rgba(255,255,255,0.04)' },
-        min: yFormat === 'percent' ? 0 : undefined,
-        max: yFormat === 'percent' ? 100 : undefined,
-      },
-    },
-  }
+  const empty = chartData.length === 0
 
   return (
-    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl overflow-hidden">
-      <div className="px-5 pt-4 pb-2 text-xs font-semibold uppercase tracking-wider text-[var(--dim)]">
+    <div className="bg-[var(--card)] border border-[var(--border)] rounded-lg overflow-hidden">
+      <div className="px-4 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-widest text-[var(--dim)]">
         {title}
       </div>
-      <div className="px-5 pb-4">
+      <div className="px-2 pb-3">
         {loading ? (
-          <div style={{ height }} className="flex items-center justify-center text-[var(--dim)] text-sm">
-            Loading...
+          <div style={{ height }} className="flex items-center justify-center text-[var(--dim)] text-xs">
+            Loading…
           </div>
-        ) : series.length === 0 || series[0].points.length === 0 ? (
-          <div style={{ height }} className="flex items-center justify-center text-[var(--dim)] text-sm">
+        ) : empty ? (
+          <div style={{ height }} className="flex items-center justify-center text-[var(--dim)] text-xs">
             No data
           </div>
         ) : (
-          <div style={{ height }}>
-            <Line data={data} options={options} />
-          </div>
+          <ResponsiveContainer width="100%" height={height}>
+            <AreaChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+              <defs>
+                {series.map((s, i) => (
+                  <linearGradient key={s.label} id={`mc-grad-${i}`} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={s.color} stopOpacity={0.25} />
+                    <stop offset="100%" stopColor={s.color} stopOpacity={0} />
+                  </linearGradient>
+                ))}
+              </defs>
+              <CartesianGrid vertical={false} stroke="var(--chart-grid)" strokeDasharray="0" />
+              <XAxis
+                dataKey="ts"
+                tickFormatter={formatTs}
+                tick={{ fontSize: 10, fill: '#64748b' }}
+                axisLine={false}
+                tickLine={false}
+                minTickGap={48}
+              />
+              <YAxis
+                tickFormatter={v => formatValue(Number(v))}
+                tick={{ fontSize: 10, fill: '#64748b' }}
+                axisLine={false}
+                tickLine={false}
+                width={44}
+                domain={yFormat === 'percent' ? [0, 100] : ['auto', 'auto']}
+              />
+              <Tooltip
+                content={(props: any) => <ChartTooltip {...props} formatValue={formatValue} />}
+                cursor={{ stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1 }}
+              />
+              {series.map((s, i) => (
+                <Area
+                  key={s.label}
+                  type="monotone"
+                  dataKey={s.label}
+                  stroke={s.color}
+                  strokeWidth={1.5}
+                  fill={series.length === 1 ? `url(#mc-grad-${i})` : 'transparent'}
+                  dot={false}
+                  activeDot={{ r: 3, strokeWidth: 0, fill: s.color }}
+                  connectNulls
+                />
+              ))}
+            </AreaChart>
+          </ResponsiveContainer>
         )}
       </div>
+      {series.length > 1 && !empty && !loading && (
+        <div className="flex flex-wrap gap-3 px-4 pb-3">
+          {series.map(s => (
+            <div key={s.label} className="flex items-center gap-1.5 text-[10px] text-[var(--dim)]">
+              <span className="w-2 h-px block" style={{ backgroundColor: s.color, height: '2px' }} />
+              {s.label}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

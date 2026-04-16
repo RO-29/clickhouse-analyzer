@@ -1,16 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef, type ChangeEvent } from 'react'
 import { Sparkles, X, Copy, Play, Maximize2, Skull, RefreshCw, ChevronDown, ChevronRight, Wrench } from 'lucide-react'
-import {
-  Chart as ChartJS,
-  CategoryScale,
-  LinearScale,
-  BarElement,
-  ArcElement,
-  DoughnutController,
-  Tooltip,
-  Legend,
-} from 'chart.js'
-import { Bar, Doughnut } from 'react-chartjs-2'
+import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, Cell, PieChart, Pie, Legend } from 'recharts'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
@@ -19,7 +9,6 @@ import { Card } from '../components/Card'
 import { HistoryChart } from '../components/HistoryChart'
 import { DataTable } from '../components/DataTable'
 
-ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, DoughnutController, Tooltip, Legend)
 import type {
   QueryPattern,
   QueryPatternV2,
@@ -358,47 +347,26 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
   const errorRate = totalExecs > 0 ? (totalFails / totalExecs) * 100 : 0
   const maxTotalMs = patterns.reduce((m, p) => Math.max(m, p.total_ms || 0), 1)
 
-  // ── Chart.js stacked bar data for overview ─────────────────────────────────
-  const COLORS = ['#3b82f6','#22c55e','#f59e0b','#ef4444','#a855f7','#06b6d4','#f97316','#ec4899']
-  const stackedChartData = (() => {
-    if (!overview || !overview.timeline?.length || !overview.patterns?.length) return null
+  // ── Recharts stacked bar data for overview ─────────────────────────────────
+  const COLORS = ['#7c3aed','#22c55e','#f59e0b','#ef4444','#3b82f6','#06b6d4','#f97316','#ec4899']
+  const { stackedChartData, patternKeys } = (() => {
+    if (!overview || !overview.timeline?.length || !overview.patterns?.length) return { stackedChartData: null, patternKeys: [] }
     const allTs = [...new Set(overview.timeline.map(r => r.ts))].sort()
     const fmtTs = (ts: string) => {
       const d = new Date(ts)
       return isNaN(d.getTime()) ? ts : d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
     }
-    return {
-      labels: allTs.map(fmtTs),
-      datasets: overview.patterns.map((p, i) => ({
-        label: String(p.normalized_query_hash).slice(0, 10),
-        data: allTs.map(ts => {
-          const row = overview.timeline.find(r => r.ts === ts && String(r.normalized_query_hash) === String(p.normalized_query_hash))
-          return row ? Number(row.total_ms) || 0 : 0
-        }),
-        backgroundColor: COLORS[i % COLORS.length] + 'cc',
-        borderColor: COLORS[i % COLORS.length],
-        borderWidth: 0,
-        stack: 'load',
-      })),
-    }
+    const keys = overview.patterns.map(p => String(p.normalized_query_hash).slice(0, 10))
+    const data = allTs.map(ts => {
+      const row: Record<string, any> = { ts: fmtTs(ts) }
+      overview.patterns.forEach((p, i) => {
+        const rec = overview.timeline.find(r => r.ts === ts && String(r.normalized_query_hash) === String(p.normalized_query_hash))
+        row[keys[i]] = rec ? Number(rec.total_ms) || 0 : 0
+      })
+      return row
+    })
+    return { stackedChartData: data, patternKeys: keys }
   })()
-
-  const stackedOpts = {
-    responsive: true, maintainAspectRatio: false, animation: { duration: 200 },
-    interaction: { mode: 'index' as const, intersect: false },
-    plugins: {
-      legend: { position: 'bottom' as const, labels: { color: '#9ca3af', font: { size: 10 }, boxWidth: 10, padding: 8 } },
-      tooltip: {
-        backgroundColor: 'rgba(15,20,30,0.95)', borderColor: 'rgba(255,255,255,0.08)', borderWidth: 1,
-        titleColor: '#f3f4f6', bodyColor: '#9ca3af', padding: 10, cornerRadius: 8,
-        callbacks: { label: (ctx: any) => ` ${ctx.dataset.label}: ${fmtDuration(ctx.parsed.y)}` },
-      },
-    },
-    scales: {
-      x: { stacked: true, ticks: { maxTicksLimit: 10, color: '#6b7280', font: { size: 10 } }, grid: { display: false }, border: { display: false } },
-      y: { stacked: true, ticks: { callback: (v: any) => fmtDuration(Number(v)), color: '#6b7280', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.04)' }, border: { display: false } },
-    },
-  }
 
   // ── table columns ──────────────────────────────────────────────────────────
   const columns: any[] = [
@@ -531,14 +499,26 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
         </div>
       )}
 
-      {/* Chart.js stacked bar overview */}
+      {/* Recharts stacked bar overview */}
       {stackedChartData && (
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4">
           <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--dim)] mb-3">
             CPU Load by Query Pattern
           </div>
           <div style={{ height: 130 }}>
-            <Bar data={stackedChartData} options={stackedOpts as any} />
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={stackedChartData} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
+                <XAxis dataKey="ts" tick={{ fill: '#64748b', fontSize: 10 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
+                <YAxis tick={{ fill: '#64748b', fontSize: 10 }} tickFormatter={(v) => fmtDuration(Number(v))} axisLine={false} tickLine={false} width={42} />
+                <Tooltip
+                  contentStyle={{ background: '#0f1420', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, fontSize: 11 }}
+                  formatter={(v: any, name: any) => [fmtDuration(Number(v)), name]}
+                />
+                {patternKeys.map((k, i) => (
+                  <Bar key={k} dataKey={k} stackId="a" fill={COLORS[i % COLORS.length] + 'cc'} />
+                ))}
+              </BarChart>
+            </ResponsiveContainer>
           </div>
         </div>
       )}
@@ -1309,7 +1289,7 @@ interface UsersTabProps extends TabProps {
   onDrillUser?: (user: string) => void
 }
 
-const USER_COLORS = ['#3b82f6','#22c55e','#f59e0b','#ef4444','#a855f7','#06b6d4','#f97316','#ec4899']
+const USER_COLORS = ['#7c3aed','#22c55e','#f59e0b','#ef4444','#3b82f6','#06b6d4','#f97316','#ec4899']
 
 function UsersTab({ instance, from, to, refreshKey, onDrillUser }: UsersTabProps) {
   const [users, setUsers] = useState<QueryUser[]>([])
@@ -1328,16 +1308,13 @@ function UsersTab({ instance, from, to, refreshKey, onDrillUser }: UsersTabProps
   }, [instance, from, to, refreshKey])
 
   // ALL hooks BEFORE any early return (Rules of Hooks)
-  const donutData = useMemo(() => {
+  const pieData = useMemo(() => {
     if (users.length === 0) return null
     const top = users.slice(0, 7)
     const otherMs = users.slice(7).reduce((s, u) => s + (u.total_ms || 0), 0)
-    const labels = [...top.map(u => u.user || '(unknown)'), ...(otherMs > 0 ? ['other'] : [])]
-    const vals = [...top.map(u => u.total_ms || 0), ...(otherMs > 0 ? [otherMs] : [])]
-    return {
-      labels,
-      datasets: [{ data: vals, backgroundColor: USER_COLORS.map(c => c + 'cc'), borderColor: USER_COLORS, borderWidth: 1 }],
-    }
+    const entries = [...top.map((u, i) => ({ name: u.user || '(unknown)', value: u.total_ms || 0, color: USER_COLORS[i % USER_COLORS.length] })),
+      ...(otherMs > 0 ? [{ name: 'other', value: otherMs, color: '#475569' }] : [])]
+    return entries
   }, [users])
 
   if (loading) return <LoadingSkeleton />
@@ -1346,23 +1323,6 @@ function UsersTab({ instance, from, to, refreshKey, onDrillUser }: UsersTabProps
   const maxTotalMs = users.reduce((m, u) => Math.max(m, u.total_ms || 0), 1)
   const grandTotal = users.reduce((s, u) => s + (u.total_ms || 0), 0)
   const topUser = users[0]
-
-  const donutOpts = {
-    responsive: true, maintainAspectRatio: false, animation: { duration: 300 },
-    plugins: {
-      legend: { position: 'right' as const, labels: { color: '#9ca3af', font: { size: 11 }, padding: 10, boxWidth: 10 } },
-      tooltip: {
-        backgroundColor: 'rgba(15,20,30,0.95)', borderColor: 'rgba(255,255,255,0.08)', borderWidth: 1,
-        titleColor: '#f3f4f6', bodyColor: '#9ca3af', padding: 10, cornerRadius: 8,
-        callbacks: {
-          label: (ctx: any) => {
-            const pct = grandTotal > 0 ? ((ctx.parsed / grandTotal) * 100).toFixed(1) : '0'
-            return ` ${fmtDuration(ctx.parsed)} (${pct}%)`
-          },
-        },
-      },
-    },
-  }
 
   return (
     <div className="space-y-4">
@@ -1431,12 +1391,26 @@ function UsersTab({ instance, from, to, refreshKey, onDrillUser }: UsersTabProps
           )}
         </Card>
 
-        {/* Donut chart */}
-        {donutData && (
+        {/* Pie chart */}
+        {pieData && (
           <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 flex flex-col">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--dim)] mb-3">CPU Share</div>
             <div className="flex-1" style={{ minHeight: 180 }}>
-              <Doughnut data={donutData} options={donutOpts as any} />
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius="55%" outerRadius="80%">
+                    {pieData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+                  </Pie>
+                  <Tooltip
+                    contentStyle={{ background: '#0f1420', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, fontSize: 11 }}
+                    formatter={(v: any, name: any) => {
+                      const pct = grandTotal > 0 ? ((Number(v) / grandTotal) * 100).toFixed(1) : '0'
+                      return [`${fmtDuration(Number(v))} (${pct}%)`, name]
+                    }}
+                  />
+                  <Legend iconSize={8} wrapperStyle={{ fontSize: 10, color: '#9ca3af' }} />
+                </PieChart>
+              </ResponsiveContainer>
             </div>
           </div>
         )}

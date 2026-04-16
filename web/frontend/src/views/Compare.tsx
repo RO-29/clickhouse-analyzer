@@ -1,12 +1,5 @@
 import { useEffect, useState, useMemo, useCallback } from 'react'
-import {
-  Chart as ChartJS,
-  CategoryScale,
-  LinearScale,
-  BarElement,
-  Tooltip as ChartTooltip,
-} from 'chart.js'
-import { Bar } from 'react-chartjs-2'
+import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip as RTooltip, Cell } from 'recharts'
 import { Check, AlertTriangle, XCircle, Sparkles, Search, Loader2 } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
@@ -15,8 +8,6 @@ import { fmtBytes, fmtNum, fmtDuration, cn } from '../lib/utils'
 import { Card } from '../components/Card'
 import { DataTable } from '../components/DataTable'
 import type { CompareQueryPatternsResult } from '../types/api'
-
-ChartJS.register(CategoryScale, LinearScale, BarElement, ChartTooltip)
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                             */
@@ -1189,7 +1180,7 @@ function SettingsView({
 /*  Metrics view — % deviation from baseline                         */
 /* ------------------------------------------------------------------ */
 const BAR_COLORS = [
-  '#3b82f6', '#22c55e', '#eab308', '#ef4444', '#a855f7', '#14b8a6', '#f97316', '#ec4899',
+  '#7c3aed', '#22c55e', '#eab308', '#ef4444', '#3b82f6', '#14b8a6', '#f97316', '#ec4899',
 ]
 
 function MetricsView({ baseline, instances, onAnalyze }: { baseline: string; instances: string[]; onAnalyze: (data: Record<string, any>) => void }) {
@@ -1273,24 +1264,28 @@ function MetricsView({ baseline, instances, onAnalyze }: { baseline: string; ins
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {data.metrics.map((m, idx) => {
-          const vals = orderedInsts.map((i) => m.values?.[i] ?? 0)
           const isBytesUnit = m.unit === 'bytes'
-          const chartData = {
-            labels: orderedInsts,
-            datasets: [{ label: m.name, data: vals, backgroundColor: orderedInsts.map((_, i) => BAR_COLORS[i % BAR_COLORS.length]) }],
-          }
-          const chartOpts = {
-            responsive: true, maintainAspectRatio: false, indexAxis: 'y' as const,
-            plugins: { tooltip: { callbacks: { label: (ctx: any) => isBytesUnit ? fmtBytes(ctx.parsed.x) : fmtNum(ctx.parsed.x) } } },
-            scales: {
-              x: { ticks: { callback: (v: any) => isBytesUnit ? fmtBytes(Number(v)) : fmtNum(Number(v)), color: '#6b7280', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.04)' } },
-              y: { ticks: { color: '#6b7280', font: { size: 11 } }, grid: { display: false } },
-            },
-          }
+          const chartData = orderedInsts.map((inst, i) => ({
+            name: inst,
+            value: m.values?.[inst] ?? 0,
+            color: BAR_COLORS[i % BAR_COLORS.length],
+          }))
           return (
             <Card key={idx} title={m.name}>
-              <div style={{ height: Math.max(60, orderedInsts.length * 32) }}>
-                <Bar data={chartData} options={chartOpts} />
+              <div style={{ height: Math.max(80, orderedInsts.length * 36) }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={chartData} layout="vertical" margin={{ top: 4, right: 12, bottom: 4, left: 4 }}>
+                    <XAxis type="number" tick={{ fill: '#64748b', fontSize: 10 }} tickFormatter={(v) => isBytesUnit ? fmtBytes(Number(v)) : fmtNum(Number(v))} axisLine={false} tickLine={false} />
+                    <YAxis type="category" dataKey="name" tick={{ fill: '#94a3b8', fontSize: 11 }} width={80} axisLine={false} tickLine={false} />
+                    <RTooltip
+                      contentStyle={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 11 }}
+                      formatter={(v: any) => [isBytesUnit ? fmtBytes(Number(v)) : fmtNum(Number(v)), m.name]}
+                    />
+                    <Bar dataKey="value" radius={[0, 3, 3, 0]}>
+                      {chartData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
               </div>
             </Card>
           )

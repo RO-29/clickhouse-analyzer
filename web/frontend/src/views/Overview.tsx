@@ -4,43 +4,27 @@ import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
 import { fmtNum, fmtTime, scoreColor } from '../lib/utils'
-import { Card } from '../components/Card'
+import { Card, Section } from '../components/Card'
 import { Badge } from '../components/Badge'
 import { NodeCard } from '../components/NodeCard'
 import { DataTable } from '../components/DataTable'
 import type { Instance, Alert, AlertStats, HealthResponse } from '../types/api'
 
-/* ------------------------------------------------------------------ */
-/*  Loading skeleton                                                  */
-/* ------------------------------------------------------------------ */
+/* ── Loading skeleton ──────────────────────────────────────────────────── */
 function Skeleton() {
   return (
-    <div className="space-y-6 animate-pulse">
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+    <div className="space-y-4 animate-pulse">
+      <div className="grid grid-cols-4 sm:grid-cols-7 gap-2">
         {[...Array(7)].map((_, i) => (
-          <Card key={i}>
-            <div className="h-8 bg-[var(--hover)] rounded w-1/2 mb-2" />
-            <div className="h-3 bg-[var(--hover)] rounded w-2/3" />
-          </Card>
+          <div key={i} className="h-14 bg-[var(--card)] rounded-lg border border-[var(--border)]" />
         ))}
       </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        {[...Array(4)].map((_, i) => (
-          <Card key={i}>
-            <div className="h-24 bg-[var(--hover)] rounded" />
-          </Card>
-        ))}
-      </div>
+      <div className="h-32 bg-[var(--card)] rounded-lg border border-[var(--border)]" />
     </div>
   )
 }
 
-/* ------------------------------------------------------------------ */
-/*  Overview view                                                     */
-/* ------------------------------------------------------------------ */
-/* ------------------------------------------------------------------ */
-/*  Alert Activity Strip — 24h summary, loads independently          */
-/* ------------------------------------------------------------------ */
+/* ── Alert Activity Strip ──────────────────────────────────────────────── */
 function AlertActivityStrip({ onViewHistory }: { onViewHistory: () => void }) {
   const [stats, setStats] = useState<AlertStats | null>(null)
   useEffect(() => {
@@ -59,35 +43,66 @@ function AlertActivityStrip({ onViewHistory }: { onViewHistory: () => void }) {
   return (
     <button
       onClick={onViewHistory}
-      className="w-full text-left rounded-lg border border-[var(--border)] bg-[var(--card)] hover:bg-[var(--hover)] transition-colors px-4 py-2.5 flex items-center gap-4 flex-wrap"
+      className="w-full text-left rounded-lg border border-[var(--border)] bg-[var(--card)] hover:border-[var(--accent)]/40 transition-colors px-4 py-2.5 flex items-center gap-4 flex-wrap"
     >
-      <span className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider">24h alert activity</span>
-      <span className="flex items-center gap-1.5 text-sm">
+      <span className="text-[10px] font-semibold text-[var(--dim)] uppercase tracking-widest">24h alert activity</span>
+      <span className="flex items-center gap-1.5 text-[12px]">
         <span className="font-semibold">{stats.total_fired}</span>
-        <span className="text-[var(--text-muted)]">fired</span>
+        <span className="text-[var(--dim)]">fired</span>
       </span>
       {stats.currently_firing > 0 && (
-        <span className="flex items-center gap-1.5 text-sm text-[#ef4444]">
+        <span className="flex items-center gap-1.5 text-[12px] text-[#ef4444]">
           <span className="w-1.5 h-1.5 rounded-full bg-[#ef4444] animate-pulse" />
           <span className="font-semibold">{stats.currently_firing}</span>
-          <span className="text-[#ef4444]/70">firing</span>
+          <span className="opacity-70">firing now</span>
         </span>
       )}
-      <span className="flex items-center gap-1.5 text-sm text-[#22c55e]">
+      <span className="flex items-center gap-1.5 text-[12px] text-[#22c55e]">
         <span className="font-semibold">{stats.resolved}</span>
-        <span className="text-[var(--text-muted)]">resolved</span>
+        <span className="text-[var(--dim)]">resolved</span>
       </span>
-      {dur && <span className="text-sm text-[var(--text-muted)]">{dur}</span>}
+      {dur && <span className="text-[12px] text-[var(--dim)]">{dur}</span>}
       {stats.top_categories[0] && (
-        <span className="text-sm text-[var(--text-muted)]">
+        <span className="text-[12px] text-[var(--dim)]">
           top: <span className="text-[var(--text)]">{stats.top_categories[0].category}</span>
         </span>
       )}
-      <span className="ml-auto text-xs text-[var(--accent)]">View history →</span>
+      <span className="ml-auto text-[11px] text-[var(--accent)]">View history →</span>
     </button>
   )
 }
 
+/* ── Metric chip ─────────────────────────────────────────────────────── */
+function MetricChip({
+  label, value, valueColor, onClick, active,
+}: {
+  label: string
+  value: string | number
+  valueColor?: string
+  onClick?: () => void
+  active?: boolean
+}) {
+  return (
+    <div
+      className={`bg-[var(--card)] border rounded-lg px-4 py-3 flex flex-col justify-between ${
+        onClick ? 'cursor-pointer hover:border-[var(--accent)]/40 transition-colors' : ''
+      } ${active ? 'border-[var(--accent)]/40' : 'border-[var(--border)]'}`}
+      onClick={onClick}
+    >
+      <div
+        className="text-xl font-bold tabular-nums leading-tight"
+        style={{ color: valueColor }}
+      >
+        {value}
+      </div>
+      <div className="text-[10px] font-semibold uppercase tracking-widest text-[var(--dim)] mt-1">
+        {label}
+      </div>
+    </div>
+  )
+}
+
+/* ── Overview ────────────────────────────────────────────────────────── */
 export default function Overview({ refreshKey }: { refreshKey?: number }) {
   const { setView, setInstance, setInstances, navToAlerts } = useStore()
   const [analyzeInstance, setAnalyzeInstance] = useState('')
@@ -104,6 +119,8 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
   const [manualRefreshTick, setManualRefreshTick] = useState(0)
   const [forcingPoll, setForcingPoll] = useState(false)
   const [forcePollMsg, setForcePollMsg] = useState('')
+  const [healthData, setHealthData] = useState<HealthResponse | null>(null)
+  const isFirstLoad = useRef(true)
 
   const handleForcePoll = useCallback(async () => {
     setForcingPoll(true)
@@ -111,7 +128,6 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
     try {
       await api.forcePoll()
       setForcePollMsg('Polling now…')
-      // auto-refresh UI after a short delay so results appear
       setTimeout(() => setManualRefreshTick(t => t + 1), 3000)
       setTimeout(() => setForcePollMsg(''), 5000)
     } catch {
@@ -121,27 +137,21 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
       setForcingPoll(false)
     }
   }, [])
-  const isFirstLoad = useRef(true)
-  const [healthData, setHealthData] = useState<HealthResponse | null>(null)
 
-  const doLoad = useCallback(async (isManual = false) => {
+  const doLoad = useCallback(async () => {
     let cancelled = false
-    if (isFirstLoad.current) {
-      setLoading(true)
-    } else {
-      setRefreshing(true)
-    }
+    if (isFirstLoad.current) setLoading(true)
+    else setRefreshing(true)
     try {
       const [inst, alrt] = await Promise.all([
         api.overview(),
         api.alerts.active(),
       ])
-      // Health is optional — older deploys may not have it
       api.health().then(h => { if (!cancelled) setHealthData(h) }).catch(() => {})
       if (!cancelled) {
         setLocalInstances(inst)
         setAlerts(alrt)
-        setInstances(inst.map((i) => i.name))
+        setInstances(inst.map(i => i.name))
         setLastRefreshed(new Date())
         if (inst.length > 0) {
           const worst = [...inst].sort((a, b) => a.health_score - b.health_score)[0]
@@ -172,11 +182,11 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
   const now = Date.now() / 1000
   const isFresh = (a: Alert) => !a.resolved && (now - (a.updated_at ?? a.created_at)) <= staleHours * 3600
   const freshAlerts = alerts.filter(isFresh)
-  const staleCount = alerts.filter((a) => !a.resolved && (now - (a.updated_at ?? a.created_at)) > staleHours * 3600).length
+  const staleCount = alerts.filter(a => !a.resolved && (now - (a.updated_at ?? a.created_at)) > staleHours * 3600).length
 
-  const critFiring = freshAlerts.filter((a) => a.severity === 'critical').length
-  const warnFiring = freshAlerts.filter((a) => a.severity === 'warn').length
-  const infoFiring = freshAlerts.filter((a) => a.severity !== 'critical' && a.severity !== 'warn').length
+  const critFiring = freshAlerts.filter(a => a.severity === 'critical').length
+  const warnFiring = freshAlerts.filter(a => a.severity === 'warn').length
+  const infoFiring = freshAlerts.filter(a => a.severity !== 'critical' && a.severity !== 'warn').length
 
   const staleByInstance = new Map<string, number>()
   for (const a of alerts) {
@@ -197,7 +207,7 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
   }
 
   const alertCols = [
-    { key: 'severity', label: 'Sev', format: (v: any) => <Badge severity={v} /> },
+    { key: 'severity', label: 'Sev', format: (v: any) => <Badge severity={v} dot /> },
     { key: 'instance', label: 'Instance' },
     { key: 'category', label: 'Category' },
     { key: 'title', label: 'Title' },
@@ -205,164 +215,136 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
   ]
 
   return (
-    <div className="space-y-6">
-      {/* ---- Header: current state label + refresh ---- */}
-      <div className="flex items-center gap-3">
+    <div className="space-y-0">
+      {/* ── Header row ── */}
+      <div className="flex items-center gap-3 pb-4">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold text-[var(--text)]">Overview</span>
-          <span className="text-xs px-1.5 py-0.5 rounded bg-[var(--hover)] text-[var(--dim)] border border-[var(--border)]">current state</span>
+          <span className="text-[11px] px-1.5 py-0.5 rounded bg-[var(--surface)] text-[var(--dim)] border border-[var(--border)]">current state</span>
           {lastRefreshed && (
-            <span className="text-xs text-[var(--dim)]">as of {lastRefreshed.toLocaleTimeString()}</span>
+            <span className="text-[11px] text-[var(--dim)]">as of {lastRefreshed.toLocaleTimeString()}</span>
           )}
         </div>
         <div className="flex-1" />
         {refreshing && (
-          <div className="flex items-center gap-1.5 text-xs text-[var(--dim)]">
-            <RefreshCw size={11} className="animate-spin" />
-            Refreshing…
+          <div className="flex items-center gap-1.5 text-[11px] text-[var(--dim)]">
+            <RefreshCw size={10} className="animate-spin" /> Refreshing…
           </div>
         )}
         <button
           onClick={() => setManualRefreshTick(t => t + 1)}
           disabled={refreshing}
-          title="Re-fetches data from the database. Does NOT run collectors."
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-[var(--dim)] hover:bg-[var(--hover)] border border-[var(--border)] transition-colors disabled:opacity-50"
+          title="Re-fetches data from the database"
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] font-medium text-[var(--dim)] hover:bg-[var(--hover)] border border-[var(--border)] transition-colors disabled:opacity-50"
         >
-          <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
+          <RefreshCw size={10} className={refreshing ? 'animate-spin' : ''} />
           Refresh UI
         </button>
         <button
           onClick={handleForcePoll}
           disabled={forcingPoll}
-          title="Runs all collectors immediately and updates Alerts + Slack. Use this to see results right now without waiting for the next poll cycle."
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-orange-400 hover:bg-orange-500/15 border border-orange-500/25 transition-colors disabled:opacity-50"
+          title="Runs all collectors immediately"
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] font-medium text-orange-400 hover:bg-orange-500/15 border border-orange-500/25 transition-colors disabled:opacity-50"
         >
-          <Zap size={11} className={forcingPoll ? 'animate-pulse' : ''} />
+          <Zap size={10} className={forcingPoll ? 'animate-pulse' : ''} />
           {forcingPoll ? 'Polling…' : forcePollMsg || 'Force Poll'}
         </button>
         <button
           onClick={() => handleAnalyze({ instances, alerts, avgHealth, critFiring, warnFiring, infoFiring, staleCount, runningQueries, activeMerges })}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-purple-400 hover:bg-purple-500/15 border border-purple-500/20 transition-colors"
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] font-medium text-[var(--accent)] hover:bg-[var(--accent-subtle)] border border-[var(--accent)]/20 transition-colors"
         >
-          <Sparkles size={11} />
+          <Sparkles size={10} />
           Analyze
         </button>
       </div>
 
-      {/* ---- Stat cards ---- */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
-        {/* Summary: instances, health, queries, merges */}
-        <Card>
-          <div className="text-2xl font-bold">{totalInstances}</div>
-          <div className="text-xs text-[var(--dim)] mt-1 uppercase tracking-wider">Instances</div>
-        </Card>
-        <Card>
-          <div className="text-2xl font-bold" style={{ color: scoreColor(avgHealth) }}>{avgHealth}</div>
-          <div className="text-xs text-[var(--dim)] mt-1 uppercase tracking-wider">Avg Health</div>
-        </Card>
-        <Card>
-          <div className="text-2xl font-bold">{fmtNum(runningQueries)}</div>
-          <div className="text-xs text-[var(--dim)] mt-1 uppercase tracking-wider">Running Queries</div>
-        </Card>
-        <Card>
-          <div className="text-2xl font-bold">{fmtNum(activeMerges)}</div>
-          <div className="text-xs text-[var(--dim)] mt-1 uppercase tracking-wider">Active Merges</div>
-        </Card>
-
-        {/* Alert severity cards — clickable */}
-        <button
-          onClick={() => critFiring > 0 && navToAlerts({ severity: 'critical' })}
-          disabled={critFiring === 0}
-          className="text-left disabled:cursor-default"
-        >
-          <Card className={critFiring > 0 ? 'hover:border-red-500/40 transition-colors cursor-pointer' : ''}>
-            <div className={`text-2xl font-bold ${critFiring > 0 ? 'text-red-400' : 'text-[var(--dim)]'}`}>{critFiring}</div>
-            <div className="text-xs text-[var(--dim)] mt-1 uppercase tracking-wider">Critical</div>
-          </Card>
-        </button>
-        <button
-          onClick={() => warnFiring > 0 && navToAlerts({ severity: 'warn' })}
-          disabled={warnFiring === 0}
-          className="text-left disabled:cursor-default"
-        >
-          <Card className={warnFiring > 0 ? 'hover:border-yellow-500/40 transition-colors cursor-pointer' : ''}>
-            <div className={`text-2xl font-bold ${warnFiring > 0 ? 'text-yellow-400' : 'text-[var(--dim)]'}`}>{warnFiring}</div>
-            <div className="text-xs text-[var(--dim)] mt-1 uppercase tracking-wider">Warning</div>
-          </Card>
-        </button>
-        <button
-          onClick={() => infoFiring > 0 && navToAlerts({ severity: 'info' })}
-          disabled={infoFiring === 0}
-          className="text-left disabled:cursor-default"
-        >
-          <Card className={infoFiring > 0 ? 'hover:border-blue-500/40 transition-colors cursor-pointer' : ''}>
-            <div className={`text-2xl font-bold ${infoFiring > 0 ? 'text-blue-400' : 'text-[var(--dim)]'}`}>{infoFiring}</div>
-            <div className="text-xs text-[var(--dim)] mt-1 uppercase tracking-wider">
-              Info{staleCount > 0 ? <span className="ml-1 text-[var(--dim)] normal-case font-normal">+{staleCount} stale</span> : null}
-            </div>
-          </Card>
-        </button>
+      {/* ── Metric strip ── */}
+      <div className="grid grid-cols-4 sm:grid-cols-7 gap-2">
+        <MetricChip label="Instances" value={totalInstances} />
+        <MetricChip label="Avg Health" value={avgHealth} valueColor={scoreColor(avgHealth)} />
+        <MetricChip label="Running Queries" value={fmtNum(runningQueries)} />
+        <MetricChip label="Active Merges" value={fmtNum(activeMerges)} />
+        <MetricChip
+          label="Critical"
+          value={critFiring}
+          valueColor={critFiring > 0 ? '#ef4444' : undefined}
+          onClick={() => critFiring > 0 ? navToAlerts({ severity: 'critical' }) : undefined}
+          active={critFiring > 0}
+        />
+        <MetricChip
+          label="Warning"
+          value={warnFiring}
+          valueColor={warnFiring > 0 ? '#eab308' : undefined}
+          onClick={() => warnFiring > 0 ? navToAlerts({ severity: 'warn' }) : undefined}
+          active={warnFiring > 0}
+        />
+        <MetricChip
+          label={staleCount > 0 ? `Info (+${staleCount} stale)` : 'Info'}
+          value={infoFiring}
+          valueColor={infoFiring > 0 ? '#60a5fa' : undefined}
+          onClick={() => infoFiring > 0 ? navToAlerts({ severity: 'info' }) : undefined}
+          active={infoFiring > 0}
+        />
       </div>
 
-      {/* ---- 24h Alert Activity strip ---- */}
-      <AlertActivityStrip onViewHistory={() => setView('history')} />
-
-      {/* ---- Instance node cards ---- */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        {instances.map((inst) => (
-          <NodeCard
-            key={inst.name}
-            instance={inst}
-            onClick={() => goToInstance(inst.name)}
-            staleAlerts={staleByInstance.get(inst.name) ?? 0}
-            onResolved={() => setManualRefreshTick(t => t + 1)}
-          />
-        ))}
+      {/* ── 24h Alert Activity ── */}
+      <div className="pt-3">
+        <AlertActivityStrip onViewHistory={() => setView('history')} />
       </div>
 
-      {/* ---- Active alerts table (fresh only) ---- */}
-      {freshAlerts.length > 0 && (
-        <Card title={`Active Alerts · ${freshAlerts.length}${staleCount > 0 ? ` (${staleCount} stale hidden)` : ''}`}>
-          <DataTable columns={alertCols} data={freshAlerts} pageSize={50} />
-        </Card>
-      )}
-
-      {/* ---- System Health (optional, hidden if /health unavailable) ---- */}
-      {healthData && (
-        <Card title="System Health">
-          <div className="flex flex-wrap items-center gap-4">
-            <div className="flex items-center gap-2">
-              <span
-                className="w-2 h-2 rounded-full shrink-0"
-                style={{ backgroundColor: healthData.status === 'ok' ? '#22c55e' : '#eab308' }}
-              />
-              <span className="text-sm font-medium capitalize">{healthData.status}</span>
-            </div>
-            <div className="text-xs text-[var(--dim)]">v{healthData.version}</div>
-            <div className="text-xs text-[var(--dim)]">up {healthData.uptime}</div>
-            {healthData.instances && healthData.instances.length > 0 && (
-              <div className="flex items-center gap-3 ml-2">
-                {healthData.instances.map(inst => (
-                  <div key={inst.name} className="flex items-center gap-1.5 text-xs">
-                    <span
-                      className="w-1.5 h-1.5 rounded-full"
-                      style={{
-                        backgroundColor:
-                          inst.status === 'ok' ? '#22c55e'
-                          : inst.status === 'degraded' ? '#eab308'
-                          : '#ef4444',
-                      }}
-                    />
-                    <span className="text-[var(--text)]">{inst.name}</span>
-                    {inst.last_poll_at && (
-                      <span className="text-[var(--dim)]">· {new Date(inst.last_poll_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}</span>
-                    )}
-                  </div>
-                ))}
-              </div>
+      {/* ── Instances section ── */}
+      <Section
+        title={`Instances · ${totalInstances}`}
+        defaultOpen
+        actions={
+          <span className="text-[10px] text-[var(--dim)] mr-1">
+            {healthData && (
+              <span className={`inline-flex items-center gap-1 ${healthData.status === 'ok' ? 'text-green-400' : 'text-yellow-400'}`}>
+                <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ backgroundColor: healthData.status === 'ok' ? '#22c55e' : '#eab308' }} />
+                v{healthData.version} · up {healthData.uptime}
+              </span>
             )}
+          </span>
+        }
+      >
+        <div className="rounded-lg border border-[var(--border)] overflow-hidden">
+          {/* Table header */}
+          <div className="grid bg-[var(--surface)] border-b border-[var(--border)] px-4 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-[var(--dim)]"
+            style={{ gridTemplateColumns: '16px 1fr 48px 280px 80px 100px 24px' }}
+          >
+            <span />
+            <span>Instance</span>
+            <span className="text-right">Health</span>
+            <span className="hidden sm:block text-right pr-8">CPU / MEM / Queries / Merges</span>
+            <span className="hidden md:block">Areas</span>
+            <span className="text-right">Alerts</span>
+            <span />
           </div>
-        </Card>
+          {instances.length === 0 ? (
+            <div className="px-4 py-6 text-[12px] text-[var(--dim)] text-center">No instances configured</div>
+          ) : (
+            instances.map(inst => (
+              <NodeCard
+                key={inst.name}
+                instance={inst}
+                onClick={() => goToInstance(inst.name)}
+                staleAlerts={staleByInstance.get(inst.name) ?? 0}
+                onResolved={() => setManualRefreshTick(t => t + 1)}
+              />
+            ))
+          )}
+        </div>
+      </Section>
+
+      {/* ── Active alerts ── */}
+      {freshAlerts.length > 0 && (
+        <Section
+          title={`Active Alerts · ${freshAlerts.length}${staleCount > 0 ? ` (${staleCount} stale hidden)` : ''}`}
+          defaultOpen={freshAlerts.length <= 20}
+        >
+          <Card noPad>
+            <DataTable columns={alertCols} data={freshAlerts} pageSize={50} />
+          </Card>
+        </Section>
       )}
     </div>
   )

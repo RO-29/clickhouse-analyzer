@@ -7,69 +7,84 @@
 
 @layer base {
   [data-theme="dark"] {
-    --bg: #0a0a0f;
-    --card: #12121a;
-    --surface: #1a1a26;
-    --border: #2a2a3a;
-    --text: #e4e4ef;
-    --fg: #e4e4ef;
-    --dim: #8888a0;
-    --hover: #1e1e2e;
-    --accent: #3b82f6;
-    --accent-hover: #2563eb;
+    --bg: #0b1120;
+    --card: #111827;
+    --surface: #1a2235;
+    --border: #1e2d40;
+    --text: #e2e8f0;
+    --fg: #e2e8f0;
+    --dim: #94a3b8;
+    --text-muted: #94a3b8;
+    --hover: #162030;
+    --accent: #7c3aed;
+    --accent-hover: #6d28d9;
+    --accent-subtle: rgba(124, 58, 237, 0.12);
     --green: #22c55e;
     --yellow: #eab308;
     --red: #ef4444;
-    --code-bg: #0d0d14;
+    --code-bg: #0d1420;
     /* SQL syntax colours */
-    --syn-kw: #60a5fa;
+    --syn-kw: #a78bfa;
     --syn-fn: #22d3ee;
     --syn-str: #fbbf24;
     --syn-num: #34d399;
-    --syn-cmt: #8888a0;
-    --syn-op: #9ca3af;
+    --syn-cmt: #64748b;
+    --syn-op: #94a3b8;
     /* Editor */
-    --editor-bg: #1e1e2e;
-    --editor-gutter: #16162a;
-    --editor-border: #2a2a3a;
+    --editor-bg: #111827;
+    --editor-gutter: #0f172a;
+    --editor-border: #1e2d40;
     --editor-gutter-fg: rgba(255,255,255,0.2);
     --editor-active: rgba(255,255,255,0.03);
-    --editor-cursor: #60a5fa;
+    --editor-cursor: #a78bfa;
+    /* Chart */
+    --chart-grid: rgba(255,255,255,0.04);
+    --chart-tick: #475569;
+    --chart-tooltip-bg: #0f172a;
+    --chart-tooltip-border: #1e2d40;
   }
 
   [data-theme="light"] {
-    --bg: #f5f5f7;
+    --bg: #f1f5f9;
     --card: #ffffff;
-    --surface: #f8f8fc;
-    --border: #e2e2e8;
-    --text: #1a1a2e;
-    --fg: #1a1a2e;
-    --dim: #5c5c72;
-    --hover: #f0f0f6;
-    --accent: #3b82f6;
-    --accent-hover: #2563eb;
+    --surface: #f8fafc;
+    --border: #e2e8f0;
+    --text: #0f172a;
+    --fg: #0f172a;
+    --dim: #64748b;
+    --text-muted: #64748b;
+    --hover: #eef2f7;
+    --accent: #7c3aed;
+    --accent-hover: #6d28d9;
+    --accent-subtle: rgba(124, 58, 237, 0.08);
     --green: #16a34a;
     --yellow: #ca8a04;
     --red: #dc2626;
-    --code-bg: #f0f0f4;
-    /* SQL syntax colours — darker for light bg */
-    --syn-kw: #1d4ed8;
+    --code-bg: #f1f5f9;
+    /* SQL syntax colours */
+    --syn-kw: #7c3aed;
     --syn-fn: #0e7490;
     --syn-str: #b45309;
     --syn-num: #047857;
-    --syn-cmt: #6b7280;
-    --syn-op: #374151;
+    --syn-cmt: #94a3b8;
+    --syn-op: #64748b;
     /* Editor */
     --editor-bg: #ffffff;
-    --editor-gutter: #f3f4f6;
-    --editor-border: #e2e2e8;
-    --editor-gutter-fg: #9ca3af;
-    --editor-active: rgba(59,130,246,0.04);
-    --editor-cursor: #3b82f6;
+    --editor-gutter: #f1f5f9;
+    --editor-border: #e2e8f0;
+    --editor-gutter-fg: #94a3b8;
+    --editor-active: rgba(124,58,237,0.04);
+    --editor-cursor: #7c3aed;
+    /* Chart */
+    --chart-grid: rgba(0,0,0,0.06);
+    --chart-tick: #94a3b8;
+    --chart-tooltip-bg: #ffffff;
+    --chart-tooltip-border: #e2e8f0;
   }
 
   html {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 13px;
   }
 
   body {
@@ -78,7 +93,7 @@
   }
 
   /* Scrollbar styling */
-  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
   ::-webkit-scrollbar-thumb:hover { background: var(--dim); }

@@ -8,22 +8,48 @@ import { cn, scoreColor } from '../lib/utils'
 import { api } from '../lib/api'
 import type { Instance } from '../types/api'
 
-const NAV_ITEMS: { view: View; label: string; icon: typeof LayoutDashboard }[] = [
-  { view: 'discover', label: 'Feature Guide', icon: Compass },
-  { view: 'overview', label: 'Overview', icon: LayoutDashboard },
-  { view: 'alerts', label: 'Alerts', icon: Bell },
-  { view: 'history', label: 'Alert History', icon: BellDot },
-  { view: 'explore', label: 'Explore', icon: Search },
-  { view: 'compare', label: 'Compare', icon: GitCompareArrows },
-  { view: 'advisor', label: 'Advisor', icon: Lightbulb },
-  { view: 'terminal', label: 'Terminal', icon: TerminalSquare },
-  { view: 'scanner', label: 'Table Scanner', icon: ScanSearch },
-  { view: 'analyzer', label: 'AI Analyzer', icon: Sparkles },
-  { view: 'cost', label: 'Cost Explorer', icon: DollarSign },
-  { view: 'maintenance', label: 'Maintenance', icon: Shield },
-  { view: 'runcheck', label: 'Run Checks', icon: PlayCircle },
-  { view: 'logs', label: 'App Logs', icon: FileText },
-  { view: 'chlogs', label: 'CH Logs', icon: Database },
+interface NavItem { view: View; label: string; icon: typeof LayoutDashboard }
+
+const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
+  {
+    label: 'Monitoring',
+    items: [
+      { view: 'overview', label: 'Overview', icon: LayoutDashboard },
+      { view: 'alerts', label: 'Alerts', icon: Bell },
+      { view: 'history', label: 'Alert History', icon: BellDot },
+    ],
+  },
+  {
+    label: 'Query Analytics',
+    items: [
+      { view: 'explore', label: 'Explore', icon: Search },
+      { view: 'compare', label: 'Compare', icon: GitCompareArrows },
+      { view: 'advisor', label: 'Advisor', icon: Lightbulb },
+      { view: 'scanner', label: 'Table Scanner', icon: ScanSearch },
+    ],
+  },
+  {
+    label: 'Operations',
+    items: [
+      { view: 'terminal', label: 'Terminal', icon: TerminalSquare },
+      { view: 'runcheck', label: 'Run Checks', icon: PlayCircle },
+      { view: 'maintenance', label: 'Maintenance', icon: Shield },
+    ],
+  },
+  {
+    label: 'AI',
+    items: [
+      { view: 'analyzer', label: 'AI Analyzer', icon: Sparkles },
+    ],
+  },
+  {
+    label: 'Logs & Cost',
+    items: [
+      { view: 'cost', label: 'Cost Explorer', icon: DollarSign },
+      { view: 'logs', label: 'App Logs', icon: FileText },
+      { view: 'chlogs', label: 'CH Logs', icon: Database },
+    ],
+  },
 ]
 
 const REFRESH_OPTIONS = [
@@ -62,10 +88,8 @@ export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
     }
   }, [])
 
-  // Initial load
   useEffect(() => { fetchInstances() }, [fetchInstances])
 
-  // Always auto-refresh health scores every 60s (independent of global refresh setting)
   useEffect(() => {
     const id = setInterval(fetchInstances, 60_000)
     return () => clearInterval(id)
@@ -86,162 +110,211 @@ export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
 
   return (
     <>
-      {/* Mobile backdrop overlay */}
       {mobileOpen && (
         <div
-          className="fixed inset-0 z-30 bg-black/50 md:hidden"
+          className="fixed inset-0 z-30 bg-black/60 md:hidden"
           onClick={onMobileClose}
         />
       )}
-    <aside
-      className={cn(
-        'fixed top-0 left-0 h-full bg-[var(--card)] border-r border-[var(--border)] flex flex-col z-40 transition-all duration-200',
-        // Mobile: always full-width sidebar, slides in/out
-        'w-[220px]',
-        mobileOpen ? 'translate-x-0' : '-translate-x-full',
-        // Desktop: collapse/expand, always visible
-        collapsed ? 'md:w-14 md:translate-x-0' : 'md:w-[220px] md:translate-x-0',
-      )}
-    >
-      {/* Logo + collapse toggle */}
-      <div className={cn('flex items-center gap-2 px-4 h-14 shrink-0 border-b border-[var(--border)]', collapsed && 'justify-center px-0')}>
-        <Database size={20} className="text-[var(--accent)] shrink-0" />
-        {!collapsed && <span className="font-semibold text-sm tracking-tight flex-1">CH Analyzer</span>}
-        <button
-          onClick={() => setSidebarCollapsed(!collapsed)}
-          className={cn(
-            'rounded-lg p-1.5 text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)] transition-colors shrink-0',
-            collapsed && 'mt-0',
+      <aside
+        className={cn(
+          'fixed top-0 left-0 h-full bg-[var(--card)] border-r border-[var(--border)] flex flex-col z-40 transition-all duration-200',
+          'w-[220px]',
+          mobileOpen ? 'translate-x-0' : '-translate-x-full',
+          collapsed ? 'md:w-14 md:translate-x-0' : 'md:w-[220px] md:translate-x-0',
+        )}
+      >
+        {/* Logo + collapse toggle */}
+        <div className={cn(
+          'flex items-center gap-2.5 px-4 h-12 shrink-0 border-b border-[var(--border)]',
+          collapsed && 'justify-center px-0',
+        )}>
+          <Database size={18} className="text-[var(--accent)] shrink-0" />
+          {!collapsed && (
+            <span className="font-semibold text-[13px] tracking-tight flex-1 text-[var(--text)]">
+              CH Analyzer
+            </span>
           )}
-          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-        >
-          {collapsed ? <ChevronsRight size={15} /> : <ChevronsLeft size={15} />}
-        </button>
-      </div>
-
-      {/* Nav */}
-      <nav className="flex-1 py-2 overflow-y-auto">
-        <div className="space-y-0.5 px-2">
-          {NAV_ITEMS.map(item => {
-            const Icon = item.icon
-            const active = view === item.view
-            return (
-              <a
-                key={item.view}
-                href={`?view=${item.view}`}
-                onClick={(e) => { e.preventDefault(); handleNavClick(item.view) }}
-                className={cn(
-                  'w-full flex items-center gap-2.5 rounded-lg text-sm transition-colors no-underline',
-                  collapsed ? 'justify-center px-0 py-2.5' : 'px-3 py-2',
-                  active
-                    ? 'bg-[var(--accent)]/15 text-[var(--accent)]'
-                    : 'text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)]',
-                )}
-                title={collapsed ? item.label : undefined}
-              >
-                <span className="relative shrink-0">
-                  <Icon size={18} />
-                  {item.view === 'analyzer' && hasActiveAnalysis && (
-                    <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-orange-400 animate-pulse" />
-                  )}
-                </span>
-                {!collapsed && <span>{item.label}</span>}
-              </a>
-            )
-          })}
+          <button
+            onClick={() => setSidebarCollapsed(!collapsed)}
+            className={cn(
+              'rounded-md p-1.5 text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)] transition-colors shrink-0',
+            )}
+            title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          >
+            {collapsed ? <ChevronsRight size={14} /> : <ChevronsLeft size={14} />}
+          </button>
         </div>
 
-        {/* Instances */}
-        {instances.length > 0 && (
-          <div className="mt-4 px-2">
-            {!collapsed && (
-              <div className="px-3 pb-1.5 flex items-center gap-1">
-                <span className="text-[10px] font-semibold uppercase tracking-widest text-[var(--dim)]">Instances</span>
-                <button
-                  onClick={manualRefresh}
-                  className="ml-1 text-[var(--dim)] hover:text-[var(--fg)] transition-colors"
-                  title="Refresh health scores"
-                >
-                  <RefreshCw size={9} className={refreshing ? 'animate-spin' : ''} />
-                </button>
-                <span className="text-[10px] text-[var(--dim)] ml-auto">health</span>
-              </div>
-            )}
-            <div className="space-y-0.5">
-              {instances.map(inst => (
-                <button
-                  key={inst.name}
-                  onClick={() => { navToDetail(inst.name); onMobileClose?.() }}
-                  className={cn(
-                    'w-full flex items-center gap-2 rounded-lg text-sm transition-colors',
-                    collapsed ? 'justify-center px-0 py-2' : 'px-3 py-1.5',
-                    'text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)]',
-                  )}
-                  title={collapsed ? `${inst.name} (${inst.health_score})` : undefined}
-                >
-                  <span
-                    className="w-2 h-2 rounded-full shrink-0"
-                    style={{ backgroundColor: scoreColor(inst.health_score) }}
-                  />
-                  {!collapsed && (
-                    <>
-                      <span className="truncate flex-1 text-left">{inst.name}</span>
-                      <span className="text-xs font-mono" style={{ color: scoreColor(inst.health_score) }}>
-                        {Math.round(inst.health_score)}
+        {/* Nav groups */}
+        <nav className="flex-1 py-2 overflow-y-auto">
+          {NAV_GROUPS.map(group => (
+            <div key={group.label} className="mb-1">
+              {/* Group label */}
+              {!collapsed && (
+                <div className="px-4 pt-3 pb-1">
+                  <span className="text-[9px] font-semibold uppercase tracking-[0.12em] text-[var(--dim)] opacity-70">
+                    {group.label}
+                  </span>
+                </div>
+              )}
+              {collapsed && <div className="mt-2" />}
+
+              {/* Items */}
+              <div className="space-y-0.5 px-2">
+                {group.items.map(item => {
+                  const Icon = item.icon
+                  const active = view === item.view
+                  return (
+                    <a
+                      key={item.view}
+                      href={`?view=${item.view}`}
+                      onClick={e => { e.preventDefault(); handleNavClick(item.view) }}
+                      className={cn(
+                        'w-full flex items-center gap-2.5 rounded-md text-[12px] transition-colors no-underline',
+                        collapsed ? 'justify-center px-0 py-2' : 'px-3 py-1.5',
+                        active
+                          ? 'bg-[var(--accent-subtle)] text-[var(--accent)] font-medium'
+                          : 'text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)]',
+                      )}
+                      title={collapsed ? item.label : undefined}
+                    >
+                      <span className="relative shrink-0">
+                        <Icon size={16} />
+                        {item.view === 'analyzer' && hasActiveAnalysis && (
+                          <span className="absolute -top-1 -right-1 w-1.5 h-1.5 rounded-full bg-orange-400 animate-pulse" />
+                        )}
                       </span>
-                    </>
+                      {!collapsed && <span>{item.label}</span>}
+                    </a>
+                  )
+                })}
+              </div>
+            </div>
+          ))}
+
+          {/* Instances section */}
+          {instances.length > 0 && (
+            <div className="mt-3 px-2">
+              {!collapsed && (
+                <div className="px-2 pb-1.5 flex items-center gap-1.5">
+                  <span className="text-[9px] font-semibold uppercase tracking-[0.12em] text-[var(--dim)] opacity-70">Instances</span>
+                  <button
+                    onClick={manualRefresh}
+                    className="ml-0.5 text-[var(--dim)] hover:text-[var(--text)] transition-colors"
+                    title="Refresh health scores"
+                  >
+                    <RefreshCw size={9} className={refreshing ? 'animate-spin' : ''} />
+                  </button>
+                  <span className="text-[9px] text-[var(--dim)] ml-auto opacity-60">health</span>
+                </div>
+              )}
+              {collapsed && <div className="mt-2" />}
+              <div className="space-y-0.5">
+                {instances.map(inst => (
+                  <button
+                    key={inst.name}
+                    onClick={() => { navToDetail(inst.name); onMobileClose?.() }}
+                    className={cn(
+                      'w-full flex items-center gap-2 rounded-md text-[12px] transition-colors',
+                      collapsed ? 'justify-center px-0 py-1.5' : 'px-3 py-1.5',
+                      'text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)]',
+                    )}
+                    title={collapsed ? `${inst.name} (${inst.health_score})` : undefined}
+                  >
+                    <span
+                      className="w-1.5 h-1.5 rounded-full shrink-0"
+                      style={{ backgroundColor: scoreColor(inst.health_score) }}
+                    />
+                    {!collapsed && (
+                      <>
+                        <span className="truncate flex-1 text-left">{inst.name}</span>
+                        <span className="text-[11px] font-mono" style={{ color: scoreColor(inst.health_score) }}>
+                          {Math.round(inst.health_score)}
+                        </span>
+                      </>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </nav>
+
+        {/* Footer */}
+        <div className={cn(
+          'border-t border-[var(--border)] p-2 space-y-1 shrink-0',
+          collapsed && 'flex flex-col items-center gap-1',
+        )}>
+          {/* Discover link */}
+          {!collapsed ? (
+            <a
+              href="?view=discover"
+              onClick={e => { e.preventDefault(); handleNavClick('discover') }}
+              className={cn(
+                'w-full flex items-center gap-2.5 px-3 py-1.5 rounded-md text-[12px] no-underline transition-colors',
+                view === 'discover'
+                  ? 'bg-[var(--accent-subtle)] text-[var(--accent)] font-medium'
+                  : 'text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)]',
+              )}
+            >
+              <Compass size={14} />
+              <span>Feature Guide</span>
+            </a>
+          ) : (
+            <button
+              onClick={() => handleNavClick('discover')}
+              className={cn(
+                'p-2 rounded-md transition-colors',
+                view === 'discover' ? 'text-[var(--accent)]' : 'text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)]',
+              )}
+              title="Feature Guide"
+            >
+              <Compass size={14} />
+            </button>
+          )}
+
+          {/* Refresh interval */}
+          {!collapsed ? (
+            <div className="flex items-center gap-1 px-1">
+              <span className="text-[9px] text-[var(--dim)] uppercase tracking-wider mr-auto opacity-70">Refresh</span>
+              {REFRESH_OPTIONS.map(opt => (
+                <button
+                  key={opt.value}
+                  onClick={() => setRefreshInterval(opt.value)}
+                  className={cn(
+                    'px-1.5 py-0.5 rounded text-[9px] transition-colors',
+                    refreshInterval === opt.value
+                      ? 'bg-[var(--accent-subtle)] text-[var(--accent)]'
+                      : 'text-[var(--dim)] hover:text-[var(--text)]',
                   )}
+                >
+                  {opt.label}
                 </button>
               ))}
             </div>
-          </div>
-        )}
-      </nav>
+          ) : null}
 
-      {/* Footer */}
-      <div className={cn('border-t border-[var(--border)] p-2 space-y-1 shrink-0', collapsed && 'flex flex-col items-center gap-1')}>
-        {/* Refresh interval */}
-        {!collapsed ? (
-          <div className="flex items-center gap-1 px-1">
-            <span className="text-[10px] text-[var(--dim)] uppercase tracking-wider mr-auto">Refresh</span>
-            {REFRESH_OPTIONS.map(opt => (
-              <button
-                key={opt.value}
-                onClick={() => setRefreshInterval(opt.value)}
-                className={cn(
-                  'px-1.5 py-0.5 rounded text-[10px] transition-colors',
-                  refreshInterval === opt.value
-                    ? 'bg-[var(--accent)]/15 text-[var(--accent)]'
-                    : 'text-[var(--dim)] hover:text-[var(--text)]',
-                )}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-        ) : null}
-
-        {/* Theme toggle — full-width button when expanded for discoverability */}
-        {!collapsed ? (
-          <button
-            onClick={toggleTheme}
-            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)] transition-colors"
-          >
-            {theme === 'dark' ? <Sun size={16} className="shrink-0" /> : <Moon size={16} className="shrink-0" />}
-            <span className="text-xs">{theme === 'dark' ? 'Light mode' : 'Dark mode'}</span>
-          </button>
-        ) : (
-          <button
-            onClick={toggleTheme}
-            className="p-2 rounded-lg text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)] transition-colors"
-            title={theme === 'dark' ? 'Light mode' : 'Dark mode'}
-          >
-            {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
-          </button>
-        )}
-
-      </div>
-    </aside>
+          {/* Theme toggle */}
+          {!collapsed ? (
+            <button
+              onClick={toggleTheme}
+              className="w-full flex items-center gap-2.5 px-3 py-1.5 rounded-md text-[12px] text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)] transition-colors"
+            >
+              {theme === 'dark' ? <Sun size={14} className="shrink-0" /> : <Moon size={14} className="shrink-0" />}
+              <span>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</span>
+            </button>
+          ) : (
+            <button
+              onClick={toggleTheme}
+              className="p-2 rounded-md text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)] transition-colors"
+              title={theme === 'dark' ? 'Light mode' : 'Dark mode'}
+            >
+              {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
+            </button>
+          )}
+        </div>
+      </aside>
     </>
   )
 }
