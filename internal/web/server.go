@@ -43,10 +43,10 @@ type Server struct {
 	version       string
 	forcePollCh   chan struct{} // signals main loop to run an immediate poll
 
-	// Active auth-login session — stdin writer so /api/auth/callback can feed
-	// the OAuth callback URL back to the claude process.
+	// Active auth-login session state.
 	authStdinMu sync.Mutex
 	authStdin   io.WriteCloser
+	authPid     int // PID of the running claude auth login process
 }
 
 // New creates a new web Server.

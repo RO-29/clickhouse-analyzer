@@ -101,6 +101,7 @@ function ReAuthModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
     setState('running')
 
     ;(async () => {
+      let urlReceived = false
       try {
         const resp = await fetch('/api/auth/login', { method: 'POST', signal: ac.signal })
         if (!resp.ok || !resp.body) {
@@ -110,7 +111,7 @@ function ReAuthModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
         }
         const reader = resp.body.getReader()
         const dec = new TextDecoder()
-        let buf = '', ev = '', data = '', urlReceived = false
+        let buf = '', ev = '', data = ''
         const flush = () => {
           if (ev === 'url' && data) {
             try {
@@ -149,13 +150,25 @@ function ReAuthModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
             else if (line.startsWith('data: ')) data = line.slice(6)
           }
         }
-        // If URL was received but process ended without 'done', keep modal open
-        // so user can complete auth — don't auto-close or show error.
-        if (!urlReceived && state !== 'done') setState('done')
+        // Stream ended. If URL was delivered but no 'done' event arrived (claude
+        // exited before completing token exchange), keep modal open so the user
+        // can still paste the callback code. Don't auto-close or show error.
+        // If no URL was delivered at all, something went wrong — show done so
+        // the modal doesn't spin forever.
+        if (!urlReceived) setState('done')
+        // If urlReceived && no done event: leave state as 'running' so the
+        // callback paste section stays visible.
       } catch (err: any) {
+        // ERR_INCOMPLETE_CHUNKED_ENCODING and similar network errors are expected
+        // when the underlying process exits while the SSE stream is open.
+        // If we already have a URL, suppress the error — auth can still complete
+        // via the callback paste.
         if (err.name !== 'AbortError') {
-          setState('error')
-          setLines(l => [...l, { type: 'error', text: err.message }])
+          if (!urlReceived) {
+            setState('error')
+            setLines(l => [...l, { type: 'error', text: err.message }])
+          }
+          // else: URL delivered, stream just closed — not a real error
         }
       }
     })()

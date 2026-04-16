@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -85,21 +87,19 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// POST /api/auth/callback — complete the OAuth flow by feeding the callback URL
-// back to the claude process.
+// POST /api/auth/callback — complete the OAuth flow by proxying the callback
+// to claude's local HTTP server.
 //
-// Two cases:
+// Claude starts a local HTTP server on a random port and waits for a GET to
+// /callback?code=…&state=… to complete the PKCE exchange. The browser can't
+// reach that port on a remote server, so the user pastes the redirect URL here
+// and we proxy it from the server side.
 //
-//  1. localhost URL (http://localhost:PORT/callback?code=…): the user's browser
-//     tried to redirect there but got "connection refused" because PORT is on the
-//     server, not the user's machine. We proxy the GET from the server side.
-//
-//  2. platform.claude.com URL (https://platform.claude.com/oauth/code/callback?code=…):
-//     Claude's newer auth flow redirects the browser here. The page tries to relay
-//     the code back to the local claude process; on a remote server that relay fails.
-//     We write the full URL to the claude process's stdin so it can complete the
-//     token exchange itself (the claude CLI reads the callback URL from stdin when
-//     running headlessly).
+// Accepts either:
+//   - A localhost URL  (http://localhost:PORT/callback?code=…&state=…)
+//   - A platform URL  (https://platform.claude.com/oauth/code/callback?code=…&state=…)
+//     or a bare OAuth code — in both cases we find claude's listening port via
+//     ss/lsof and reconstruct the localhost callback URL ourselves.
 func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		URL string `json:"url"`
@@ -108,48 +108,150 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "missing url")
 		return
 	}
-	callbackURL := strings.TrimSpace(req.URL)
-	parsed, err := url.Parse(callbackURL)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid url: "+err.Error())
+	raw := strings.TrimSpace(req.URL)
+
+	// Extract code + state regardless of whether we got a full URL or bare code.
+	code, state := extractCodeState(raw)
+	if code == "" {
+		writeErr(w, http.StatusBadRequest, "could not find OAuth code in the provided value")
 		return
 	}
 
-	host := parsed.Hostname()
-	switch {
-	case host == "localhost" || host == "127.0.0.1":
-		// Proxy the GET request directly to the local claude auth server.
-		resp, err := http.Get(callbackURL) //nolint:noctx
-		if err != nil {
-			writeErr(w, http.StatusBadGateway, "callback forward failed: "+err.Error()+
-				" — make sure the login flow is still running")
-			return
-		}
-		defer resp.Body.Close()
-		slog.Info("auth callback forwarded to localhost", "status", resp.StatusCode)
-		writeJSON(w, http.StatusOK, map[string]string{"status": "forwarded", "http_status": fmt.Sprint(resp.StatusCode)})
-
-	case host == "platform.claude.com":
-		// Write the full callback URL to the claude process's stdin.
-		// The claude CLI reads the callback URL from stdin when running headlessly
-		// (no real browser). This lets it complete the PKCE token exchange.
-		s.authStdinMu.Lock()
-		stdin := s.authStdin
-		s.authStdinMu.Unlock()
-		if stdin == nil {
-			writeErr(w, http.StatusConflict, "no active login session — open the re-auth modal and start the flow first")
-			return
-		}
-		if _, err := fmt.Fprintln(stdin, callbackURL); err != nil {
-			writeErr(w, http.StatusInternalServerError, "failed to send callback to claude: "+err.Error())
-			return
-		}
-		slog.Info("auth callback written to stdin", "host", host)
-		writeJSON(w, http.StatusOK, map[string]string{"status": "sent_to_stdin"})
-
-	default:
-		writeErr(w, http.StatusBadRequest, "url must be a localhost or platform.claude.com callback URL")
+	// If the caller already gave us a localhost URL, proxy it directly.
+	if strings.HasPrefix(raw, "http://localhost") || strings.HasPrefix(raw, "http://127.0.0.1") {
+		s.proxyLocalCallback(w, raw)
+		return
 	}
+
+	// For platform.claude.com URLs or bare codes we use two strategies:
+	//
+	// Strategy A — follow platform redirect.
+	// platform.claude.com knows the exact localhost URL (port AND path) from the
+	// state parameter. If it issues an HTTP redirect, Go follows it to claude's
+	// local server automatically — no guessing needed.
+	//
+	// Strategy B — port scan fallback.
+	// If platform uses a JS redirect (browser-only), we find claude's listening
+	// port via ss/lsof and build the localhost URL ourselves.
+
+	// ── Strategy A: follow platform.claude.com redirect ──────────────────────
+	if strings.Contains(raw, "platform.claude.com") {
+		var localURLHit string
+		client := &http.Client{
+			Timeout: 12 * time.Second,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				h := req.URL.Hostname()
+				if (h == "localhost" || h == "127.0.0.1") && localURLHit == "" {
+					localURLHit = req.URL.String()
+				}
+				if len(via) > 10 {
+					return http.ErrUseLastResponse
+				}
+				return nil
+			},
+		}
+		resp, err := client.Get(raw) //nolint:noctx
+		if err == nil {
+			resp.Body.Close()
+		}
+		if localURLHit != "" {
+			slog.Info("auth callback: platform redirect followed to localhost", "url", localURLHit)
+			// Already proxied by following the redirect — just confirm to client.
+			writeJSON(w, http.StatusOK, map[string]string{"status": "forwarded", "via": "platform_redirect"})
+			return
+		}
+		slog.Info("auth callback: platform did not HTTP-redirect to localhost — falling back to port scan")
+	}
+
+	// ── Strategy B: find claude's local port and build the URL ───────────────
+	s.authStdinMu.Lock()
+	pid := s.authPid
+	s.authStdinMu.Unlock()
+
+	if pid == 0 {
+		writeErr(w, http.StatusConflict, "no active login session — open the re-auth modal and start the flow first")
+		return
+	}
+
+	port, err := findListeningPort(pid)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "could not find claude's local callback port: "+err.Error())
+		return
+	}
+
+	localURL := fmt.Sprintf("http://localhost:%d/callback?code=%s&state=%s",
+		port, url.QueryEscape(code), url.QueryEscape(state))
+	slog.Info("auth callback: proxying to local port", "pid", pid, "port", port, "code_len", len(code))
+	s.proxyLocalCallback(w, localURL)
+}
+
+func (s *Server) proxyLocalCallback(w http.ResponseWriter, localURL string) {
+	resp, err := http.Get(localURL) //nolint:noctx
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "callback forward failed: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	slog.Info("auth callback forwarded", "status", resp.StatusCode, "url", localURL)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "forwarded", "http_status": fmt.Sprint(resp.StatusCode)})
+}
+
+// extractCodeState parses code and state from a URL or returns the raw string
+// as code if it looks like a bare OAuth code (no slashes).
+func extractCodeState(raw string) (code, state string) {
+	if strings.Contains(raw, "://") {
+		u, err := url.Parse(raw)
+		if err == nil {
+			code = u.Query().Get("code")
+			state = u.Query().Get("state")
+			return
+		}
+	}
+	// Bare code — no slashes, no spaces, looks like a token.
+	if !strings.Contains(raw, "/") && !strings.Contains(raw, " ") {
+		code = raw
+	}
+	return
+}
+
+// findListeningPort returns the TCP port the given process is listening on.
+// Tries ss (Linux) then lsof (macOS/Linux).
+func findListeningPort(pid int) (int, error) {
+	pidStr := strconv.Itoa(pid)
+
+	// ── ss (Linux) ──────────────────────────────────────────────────────────
+	if out, err := exec.Command("ss", "-tlnpH").Output(); err == nil {
+		needle := fmt.Sprintf("pid=%d,", pid)
+		rePort := regexp.MustCompile(`:(\d+)\s`)
+		for _, line := range strings.Split(string(out), "\n") {
+			if !strings.Contains(line, needle) {
+				continue
+			}
+			if m := rePort.FindStringSubmatch(line); m != nil {
+				if p, err := strconv.Atoi(m[1]); err == nil && p > 1024 {
+					return p, nil
+				}
+			}
+		}
+	}
+
+	// ── lsof (macOS / fallback) ─────────────────────────────────────────────
+	if out, err := exec.Command("lsof", "-p", pidStr, "-i", "4TCP", "-n", "-P").Output(); err == nil {
+		rePort := regexp.MustCompile(`\*:(\d+)\s+\(LISTEN\)|:(\d+)\s+\(LISTEN\)`)
+		for _, line := range strings.Split(string(out), "\n") {
+			if m := rePort.FindStringSubmatch(line); m != nil {
+				s := m[1]
+				if s == "" {
+					s = m[2]
+				}
+				if p, err := strconv.Atoi(s); err == nil && p > 1024 {
+					return p, nil
+				}
+			}
+		}
+	}
+
+	return 0, fmt.Errorf("ss and lsof found no listening port for pid %d", pid)
 }
 
 // POST /api/auth/login — start the claude.ai OAuth login flow.
@@ -234,11 +336,13 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	stdin, _ := cmd.StdinPipe()
 	s.authStdinMu.Lock()
 	s.authStdin = stdin
+	s.authPid = 0 // will be set after Start()
 	s.authStdinMu.Unlock()
 	defer func() {
 		stdin.Close()
 		s.authStdinMu.Lock()
 		s.authStdin = nil
+		s.authPid = 0
 		s.authStdinMu.Unlock()
 	}()
 
@@ -249,7 +353,10 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		sendEvent("error", jsonStr("Failed to start login: "+err.Error()))
 		return
 	}
-	slog.Info("auth login: started", "home", home, "bin", bin)
+	s.authStdinMu.Lock()
+	s.authPid = cmd.Process.Pid
+	s.authStdinMu.Unlock()
+	slog.Info("auth login: started", "home", home, "bin", bin, "pid", cmd.Process.Pid)
 
 	forward := func(line string) {
 		line = strings.TrimSpace(line)
