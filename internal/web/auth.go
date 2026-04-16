@@ -2,6 +2,7 @@ package web
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -98,8 +100,7 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 //
 // Accepts either:
 //   - A localhost URL  (http://localhost:PORT/callback?code=…&state=…)
-//   - A platform URL  (https://platform.claude.com/oauth/code/callback?code=…&state=…)
-//     or a bare OAuth code — in both cases we find claude's listening port via
+//   - A bare OAuth code (or code#state) — we find claude's listening port via
 //     ss/lsof and reconstruct the localhost callback URL ourselves.
 func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -124,67 +125,7 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// For platform.claude.com URLs or bare codes we use two strategies:
-	//
-	// Strategy A — follow platform redirect.
-	// platform.claude.com knows the exact localhost URL (port AND path) from the
-	// state parameter. If it issues an HTTP redirect, Go follows it to claude's
-	// local server automatically — no guessing needed.
-	//
-	// Strategy B — port scan fallback.
-	// If platform uses a JS redirect (browser-only), we find claude's listening
-	// port via ss/lsof and build the localhost URL ourselves.
-
-	// ── Strategy A: follow platform.claude.com redirect ──────────────────────
-	if strings.Contains(raw, "platform.claude.com") {
-		var localURLHit string
-		// Use browser-like headers — some servers behave differently for
-		// scripted vs real-browser requests (e.g. issuing a proper 302 redirect).
-		req, _ := http.NewRequest("GET", raw, nil) //nolint:noctx
-		if req != nil {
-			req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
-			req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-		}
-		client := &http.Client{
-			Timeout: 12 * time.Second,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				h := req.URL.Hostname()
-				if (h == "localhost" || h == "127.0.0.1") && localURLHit == "" {
-					localURLHit = req.URL.String()
-				}
-				if len(via) > 10 {
-					return http.ErrUseLastResponse
-				}
-				return nil
-			},
-		}
-		var platformBody string
-		if req != nil {
-			resp, err := client.Do(req)
-			if err == nil {
-				b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-				resp.Body.Close()
-				platformBody = string(b)
-				// Also scan body for localhost URL (JS redirect pattern)
-				if localURLHit == "" {
-					reLocal := regexp.MustCompile(`http://localhost:\d+[^\s"'\\]*`)
-					if m := reLocal.FindString(platformBody); m != "" {
-						localURLHit = m
-						slog.Info("auth callback: found localhost URL in platform page body", "url", localURLHit)
-					}
-				}
-			}
-		}
-		if localURLHit != "" {
-			slog.Info("auth callback: platform redirect followed to localhost", "url", localURLHit)
-			writeJSON(w, http.StatusOK, map[string]string{"status": "forwarded", "via": "platform_redirect"})
-			return
-		}
-		slog.Info("auth callback: platform did not redirect to localhost — falling back to port scan",
-			"body_preview", truncate(platformBody, 300))
-	}
-
-	// ── Strategy B: find claude's local port and build the URL ───────────────
+	// Find claude's local port and build the callback URL.
 	s.authStdinMu.Lock()
 	pid := s.authPid
 	s.authStdinMu.Unlock()
@@ -485,4 +426,176 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		slog.Info("auth login: completed successfully")
 		sendEvent("done", `{"success":true}`)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Token refresh
+// ---------------------------------------------------------------------------
+
+type claudeCredentials struct {
+	ClaudeAiOauth struct {
+		AccessToken      string   `json:"accessToken"`
+		RefreshToken     string   `json:"refreshToken"`
+		ExpiresAt        int64    `json:"expiresAt"` // Unix ms
+		Scopes           []string `json:"scopes"`
+		SubscriptionType string   `json:"subscriptionType"`
+		RateLimitTier    string   `json:"rateLimitTier"`
+	} `json:"claudeAiOauth"`
+}
+
+// POST /api/auth/refresh — silently refresh expired OAuth token.
+// Reads .claude/.credentials.json, calls Anthropic's token endpoint with the
+// stored refreshToken, and writes the new tokens back to the file.
+func (s *Server) handleAuthRefresh(w http.ResponseWriter, r *http.Request) {
+	home := findClaudeHome()
+	if home == "" {
+		home = "/var/lib/ch-analyzer"
+	}
+	credsPath := filepath.Join(home, ".claude", ".credentials.json")
+
+	raw, err := os.ReadFile(credsPath)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "credentials file not found: "+err.Error())
+		return
+	}
+
+	var creds claudeCredentials
+	if err := json.Unmarshal(raw, &creds); err != nil {
+		writeErr(w, http.StatusInternalServerError, "could not parse credentials: "+err.Error())
+		return
+	}
+
+	oauth := creds.ClaudeAiOauth
+	if oauth.RefreshToken == "" {
+		writeErr(w, http.StatusBadRequest, "no refresh token in credentials file")
+		return
+	}
+
+	// Check if token is still valid (with 5-min buffer matching claude CLI's KS4=300000).
+	nowMs := time.Now().UnixMilli()
+	bufferMs := int64(5 * 60 * 1000)
+	if oauth.ExpiresAt > nowMs+bufferMs {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"refreshed": false,
+			"message":   "token still valid",
+			"expires_at": oauth.ExpiresAt,
+		})
+		return
+	}
+
+	slog.Info("auth refresh: token expired, refreshing", "expires_at_ms", oauth.ExpiresAt, "now_ms", nowMs)
+
+	newCreds, err := refreshOAuthToken(oauth.RefreshToken, oauth.Scopes)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "token refresh failed: "+err.Error())
+		return
+	}
+
+	// Preserve subscription/rate fields from old creds if not returned.
+	if newCreds.ClaudeAiOauth.SubscriptionType == "" {
+		newCreds.ClaudeAiOauth.SubscriptionType = oauth.SubscriptionType
+	}
+	if newCreds.ClaudeAiOauth.RateLimitTier == "" {
+		newCreds.ClaudeAiOauth.RateLimitTier = oauth.RateLimitTier
+	}
+	if len(newCreds.ClaudeAiOauth.Scopes) == 0 {
+		newCreds.ClaudeAiOauth.Scopes = oauth.Scopes
+	}
+
+	out, err := json.Marshal(newCreds)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "could not marshal credentials: "+err.Error())
+		return
+	}
+	if err := os.WriteFile(credsPath, out, 0o600); err != nil {
+		writeErr(w, http.StatusInternalServerError, "could not write credentials: "+err.Error())
+		return
+	}
+
+	slog.Info("auth refresh: token refreshed successfully", "new_expires_at_ms", newCreds.ClaudeAiOauth.ExpiresAt)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"refreshed":  true,
+		"expires_at": newCreds.ClaudeAiOauth.ExpiresAt,
+	})
+}
+
+// refreshOAuthToken exchanges a refresh token for a new access token via
+// Anthropic's OAuth endpoint (same grant as claude CLI's ZS8/IQH functions).
+func refreshOAuthToken(refreshToken string, scopes []string) (claudeCredentials, error) {
+	type tokenReq struct {
+		GrantType    string   `json:"grant_type"`
+		RefreshToken string   `json:"refresh_token"`
+		Scopes       []string `json:"scopes,omitempty"`
+	}
+	body, _ := json.Marshal(tokenReq{
+		GrantType:    "refresh_token",
+		RefreshToken: refreshToken,
+		Scopes:       scopes,
+	})
+
+	// Try both known Anthropic token endpoints.
+	endpoints := []string{
+		"https://claude.ai/api/oauth/token",
+		"https://claude.com/cai/oauth/token",
+	}
+
+	var lastErr error
+	for _, endpoint := range endpoints {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", "Claude-Code/1.0")
+
+		resp, err := http.DefaultClient.Do(req)
+		cancel()
+		if err != nil {
+			lastErr = fmt.Errorf("POST %s: %w", endpoint, err)
+			continue
+		}
+
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+		resp.Body.Close()
+		slog.Info("auth refresh: token endpoint response", "endpoint", endpoint, "status", resp.StatusCode,
+			"body_preview", truncate(string(respBody), 200))
+
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("POST %s returned %d: %s", endpoint, resp.StatusCode, truncate(string(respBody), 200))
+			continue
+		}
+
+		// The response is the new token payload. Parse it into our credentials shape.
+		// Claude CLI stores it under claudeAiOauth, so try both wrapped and flat forms.
+		var wrapped claudeCredentials
+		if err := json.Unmarshal(respBody, &wrapped); err == nil && wrapped.ClaudeAiOauth.AccessToken != "" {
+			return wrapped, nil
+		}
+
+		// Flat form: {"access_token":"…","refresh_token":"…","expires_in":…}
+		var flat struct {
+			AccessToken  string `json:"access_token"`
+			RefreshToken string `json:"refresh_token"`
+			ExpiresIn    int64  `json:"expires_in"` // seconds
+			ExpiresAt    int64  `json:"expires_at"` // ms (if present)
+		}
+		if err := json.Unmarshal(respBody, &flat); err == nil && flat.AccessToken != "" {
+			var c claudeCredentials
+			c.ClaudeAiOauth.AccessToken = flat.AccessToken
+			if flat.RefreshToken != "" {
+				c.ClaudeAiOauth.RefreshToken = flat.RefreshToken
+			} else {
+				c.ClaudeAiOauth.RefreshToken = refreshToken // keep existing
+			}
+			if flat.ExpiresAt > 0 {
+				c.ClaudeAiOauth.ExpiresAt = flat.ExpiresAt
+			} else if flat.ExpiresIn > 0 {
+				c.ClaudeAiOauth.ExpiresAt = time.Now().UnixMilli() + flat.ExpiresIn*1000
+			} else {
+				c.ClaudeAiOauth.ExpiresAt = time.Now().Add(1*time.Hour).UnixMilli()
+			}
+			return c, nil
+		}
+
+		lastErr = fmt.Errorf("POST %s: could not parse response: %s", endpoint, truncate(string(respBody), 200))
+	}
+	return claudeCredentials{}, lastErr
 }

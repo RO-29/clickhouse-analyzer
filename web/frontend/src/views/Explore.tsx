@@ -103,41 +103,48 @@ function QueryModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
       onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
     >
-      <div className="w-full max-w-3xl bg-[var(--card)] border border-[var(--border)] rounded-xl shadow-2xl flex flex-col max-h-[80vh]">
+      <div className="w-full max-w-4xl bg-[var(--card)] border border-[var(--border)] rounded-xl shadow-2xl flex flex-col max-h-[85vh]">
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--border)] shrink-0">
-          <span className="text-sm font-semibold">Full Query</span>
+        <div className="flex items-center justify-between px-5 py-3 border-b border-[var(--border)] shrink-0 bg-[var(--surface)]">
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] font-semibold uppercase tracking-widest text-[var(--dim)]">Query</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--hover)] text-[var(--dim)] border border-[var(--border)] font-mono">SQL</span>
+          </div>
           <div className="flex items-center gap-2">
             <button
               onClick={handleCopy}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[var(--border)] text-xs text-[var(--dim)] hover:text-[var(--fg)] hover:border-[var(--accent)] transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-[var(--border)] text-[11px] text-[var(--dim)] hover:text-[var(--text)] hover:border-[var(--accent)]/40 transition-colors"
             >
-              <Copy size={12} />
+              <Copy size={11} />
               Copy
             </button>
             <button
               onClick={handleRun}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--accent)] text-white text-xs font-medium hover:opacity-90 transition-opacity"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[var(--accent)] text-white text-[11px] font-medium hover:bg-[var(--accent-hover)] transition-colors"
             >
-              <Play size={12} />
+              <Play size={11} />
               Run in Terminal
             </button>
             <button
               onClick={onClose}
-              className="p-1.5 rounded-lg text-[var(--dim)] hover:text-[var(--fg)] hover:bg-[var(--surface)] transition-colors"
+              className="p-1.5 rounded-md text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--hover)] transition-colors"
             >
               <X size={14} />
             </button>
           </div>
         </div>
         {/* Query body */}
-        <div className="flex-1 overflow-auto p-4">
-          <pre className="font-mono text-sm text-[var(--fg)] whitespace-pre-wrap break-all leading-relaxed">
+        <div className="flex-1 overflow-auto p-5 bg-[var(--bg)]">
+          <pre className="font-mono text-[12px] text-[var(--text)] whitespace-pre-wrap break-all leading-[1.7] tracking-tight">
             {query}
           </pre>
+        </div>
+        {/* Footer hint */}
+        <div className="px-5 py-2 border-t border-[var(--border)] bg-[var(--surface)] shrink-0">
+          <span className="text-[10px] text-[var(--dim)]">Press <kbd className="px-1.5 py-0.5 rounded bg-[var(--hover)] border border-[var(--border)] font-mono text-[10px]">Esc</kbd> to close</span>
         </div>
       </div>
     </div>
@@ -499,51 +506,62 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
         </div>
       )}
 
-      {/* Recharts stacked bar overview */}
+      {/* ── Overview: stacked bar chart ── */}
       {stackedChartData && (
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4">
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--dim)] mb-3">
-            CPU Load by Query Pattern
+        <div className="bg-[var(--card)] border border-[var(--border)] rounded-lg overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-2.5 border-b border-[var(--border)]">
+            <span className="text-[11px] font-semibold uppercase tracking-widest text-[var(--dim)]">% Overview</span>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] text-[var(--dim)]">Average load by query pattern</span>
+              <AnalyzeTabBtn label="Query Patterns" data={{ patterns }} tab="patterns" onAnalyze={onAnalyze} disabled={patterns.length === 0} />
+            </div>
           </div>
-          <div style={{ height: 130 }}>
+          <div className="px-4 pt-3 pb-2" style={{ height: 180 }}>
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={stackedChartData} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
+              <BarChart data={stackedChartData} margin={{ top: 4, right: 4, bottom: 4, left: 0 }}>
                 <XAxis dataKey="ts" tick={{ fill: '#64748b', fontSize: 10 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
                 <YAxis tick={{ fill: '#64748b', fontSize: 10 }} tickFormatter={(v) => fmtDuration(Number(v))} axisLine={false} tickLine={false} width={42} />
                 <Tooltip
                   contentStyle={{ background: '#0f1420', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, fontSize: 11 }}
                   formatter={(v: any, name: any) => [fmtDuration(Number(v)), name]}
+                  cursor={{ fill: 'rgba(124,58,237,0.06)' }}
                 />
                 {patternKeys.map((k, i) => (
-                  <Bar key={k} dataKey={k} stackId="a" fill={COLORS[i % COLORS.length] + 'cc'} />
+                  <Bar key={k} dataKey={k} stackId="a" fill={COLORS[i % COLORS.length]} fillOpacity={0.85} />
                 ))}
               </BarChart>
             </ResponsiveContainer>
           </div>
+          {/* Legend */}
+          <div className="px-4 pb-2.5 flex items-center gap-3 flex-wrap border-t border-[var(--border)] pt-2">
+            {patternKeys.slice(0, 8).map((k, i) => (
+              <span key={k} className="flex items-center gap-1.5 text-[10px] text-[var(--dim)]">
+                <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: COLORS[i % COLORS.length] }} />
+                {k}
+              </span>
+            ))}
+          </div>
         </div>
       )}
 
-      <Card>
-        <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
-          <span className="text-xs text-[var(--dim)] uppercase tracking-wider font-medium">
-            {patterns.length} patterns
-          </span>
+      {/* ── Queries section ── */}
+      <div className="bg-[var(--card)] border border-[var(--border)] rounded-lg overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-2.5 border-b border-[var(--border)]">
+          <div className="flex items-center gap-3">
+            <span className="text-[11px] font-semibold uppercase tracking-widest text-[var(--dim)]">% Queries</span>
+            <span className="text-[11px] text-[var(--dim)]">
+              Showing 1–{Math.min(patterns.length, 50)} of {patterns.length}
+            </span>
+          </div>
           <div className="flex items-center gap-2">
-            <label className="text-xs text-[var(--dim)]">Sort by</label>
+            <label className="text-[11px] text-[var(--dim)]">Sort</label>
             <select
               value={sortBy}
               onChange={e => setSortBy(e.target.value)}
-              className="rounded border border-[var(--border)] bg-[var(--card)] px-2 py-1 text-xs text-[var(--fg)] focus:outline-none"
+              className="rounded border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-[11px] text-[var(--text)] focus:outline-none focus:border-[var(--accent)]"
             >
               {SORT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
-            <AnalyzeTabBtn
-              label="Query Patterns"
-              data={{ patterns }}
-              tab="patterns"
-              onAnalyze={onAnalyze}
-              disabled={patterns.length === 0}
-            />
           </div>
         </div>
         <DataTable
@@ -559,7 +577,7 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
           }
           emptyText="No query patterns found"
         />
-      </Card>
+      </div>
 
       {/* ── Failure Detail Panel ─────────────────────────────────── */}
       {failHash && (
@@ -2487,39 +2505,41 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
   }, [])
 
   return (
-    <div className="space-y-4">
-      {/* Instance selector + global AI button */}
-      <div className="flex items-center gap-3">
-        <label className="text-sm text-[var(--dim)]">Instance</label>
-        <select
-          value={inst}
-          onChange={handleInstChange}
-          className="rounded-md border border-[var(--border)] bg-[var(--card)] px-3 py-1.5 text-sm text-[var(--text)] focus:outline-none focus:border-[var(--accent)]"
-        >
-          {instances.map(i => (
-            <option key={i} value={i}>{i}</option>
-          ))}
-        </select>
+    <div className="space-y-0">
+      {/* Header bar: instance selector + AI button */}
+      <div className="flex items-center gap-3 pb-3">
+        <div className="flex items-center gap-2 bg-[var(--card)] border border-[var(--border)] rounded-md px-3 py-1.5">
+          <span className="text-[10px] font-semibold uppercase tracking-widest text-[var(--dim)]">Instance</span>
+          <select
+            value={inst}
+            onChange={handleInstChange}
+            className="bg-transparent text-[12px] text-[var(--text)] focus:outline-none"
+          >
+            {instances.map(i => (
+              <option key={i} value={i}>{i}</option>
+            ))}
+          </select>
+        </div>
         <button
           onClick={() => setView('analyzer')}
-          className="ml-auto inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium bg-purple-500/15 text-purple-400 hover:bg-purple-500/25 transition-colors border border-purple-500/20"
+          className="ml-auto inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] font-medium text-[var(--accent)] hover:bg-[var(--accent-subtle)] border border-[var(--accent)]/20 transition-colors"
         >
-          <Sparkles size={14} />
+          <Sparkles size={10} />
           Full Analysis
         </button>
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-1 overflow-x-auto border-b border-[var(--border)] pb-px">
+      {/* Tab bar */}
+      <div className="flex gap-0 overflow-x-auto border-b border-[var(--border)]">
         {TABS.map(t => (
           <button
             key={t.key}
             onClick={() => switchTab(t.key)}
             className={cn(
-              'px-3 py-2 text-sm whitespace-nowrap rounded-t-md transition-colors',
+              'px-4 py-2 text-[12px] whitespace-nowrap transition-colors relative',
               tab === t.key
-                ? 'text-[var(--accent)] border-b-2 border-[var(--accent)] font-medium'
-                : 'text-[var(--dim)] hover:text-[var(--text)]',
+                ? 'text-[var(--accent)] font-medium after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-[var(--accent)]'
+                : 'text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)]',
             )}
           >
             {t.label}
@@ -2528,6 +2548,7 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
       </div>
 
       {/* Tab content */}
+      <div className="pt-4">
       {!inst ? (
         <div className="text-sm text-[var(--dim)] text-center py-12">
           Select an instance to explore
@@ -2575,6 +2596,8 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
           {tab === 'diskio' && <DiskIOTab instance={inst} from={from} to={to} refreshKey={refreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
         </>
       )}
+
+      </div>
 
       {/* Full-query modal */}
       {queryModal && (

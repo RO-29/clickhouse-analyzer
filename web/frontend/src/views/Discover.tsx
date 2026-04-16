@@ -634,18 +634,23 @@ export default function Discover() {
   }
 
   return (
-    <div className="space-y-8 max-w-7xl mx-auto">
+    <div className="space-y-6 max-w-7xl mx-auto">
       {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-[var(--fg)]">Feature Guide</h1>
-        <p className="text-sm text-[var(--dim)] mt-1">
-          Everything ch-analyzer can surface — what each feature does, what to look for, and where the data comes from.
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-[15px] font-semibold text-[var(--text)]">Feature Guide</h1>
+          <p className="text-[12px] text-[var(--dim)] mt-1">
+            Everything ch-analyzer can surface — what each feature does, what to look for, and where the data comes from.
+          </p>
+        </div>
       </div>
 
       {/* Quick start workflows */}
       <div>
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--dim)] mb-3">Start here</h2>
+        <div className="flex items-center gap-3 mb-3">
+          <span className="text-[10px] font-semibold uppercase tracking-widest text-[var(--dim)] shrink-0">— Start Here</span>
+          <div className="flex-1 h-px bg-[var(--border)]" />
+        </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
           {QUICK_STARTS.map(qs => (
             <div key={qs.label} className={cn('rounded-xl border p-4 space-y-2.5', qs.color)}>
@@ -669,21 +674,21 @@ export default function Discover() {
       </div>
 
       {/* Search + tag filter */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <div className="relative flex-1 max-w-sm">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--dim)]" />
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="relative">
+          <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--dim)]" />
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="Search features, data sources…"
-            className="w-full pl-8 pr-3 py-2 text-sm rounded-lg border border-[var(--border)] bg-[var(--card)] text-[var(--fg)] placeholder:text-[var(--dim)] focus:outline-none focus:border-[var(--accent)]"
+            className="pl-8 pr-3 py-1.5 text-[12px] rounded-md border border-[var(--border)] bg-[var(--card)] text-[var(--text)] placeholder:text-[var(--dim)] focus:outline-none focus:border-[var(--accent)] w-64"
           />
         </div>
-        <div className="flex items-center gap-1.5 flex-wrap">
+        <div className="flex items-center gap-1 flex-wrap">
           <button
             onClick={() => setActiveTag(null)}
-            className={cn('text-xs px-2.5 py-1 rounded-md border transition-colors',
-              !activeTag ? 'bg-[var(--accent)] text-white border-transparent' : 'border-[var(--border)] text-[var(--dim)] hover:text-[var(--fg)]')}
+            className={cn('text-[11px] px-2 py-1 rounded border transition-colors',
+              !activeTag ? 'bg-[var(--accent-subtle)] text-[var(--accent)] border-[var(--accent)]/30' : 'border-[var(--border)] text-[var(--dim)] hover:text-[var(--text)]')}
           >
             All
           </button>
@@ -691,8 +696,8 @@ export default function Discover() {
             <button
               key={t}
               onClick={() => setActiveTag(activeTag === t ? null : t)}
-              className={cn('text-xs px-2.5 py-1 rounded-md border transition-colors',
-                activeTag === t ? 'bg-[var(--accent)] text-white border-transparent' : 'border-[var(--border)] text-[var(--dim)] hover:text-[var(--fg)]')}
+              className={cn('text-[11px] px-2 py-1 rounded border transition-colors',
+                activeTag === t ? 'bg-[var(--accent-subtle)] text-[var(--accent)] border-[var(--accent)]/30' : 'border-[var(--border)] text-[var(--dim)] hover:text-[var(--text)]')}
             >
               {t}
             </button>
@@ -702,11 +707,13 @@ export default function Discover() {
 
       {/* Feature categories */}
       {filtered.map(cat => (
-        <div key={cat.id}>
-          <div className={cn('flex items-center gap-2 mb-3 pb-2 border-b', cat.borderColor)}>
-            <span className={cat.color}>{cat.icon}</span>
-            <h2 className={cn('text-sm font-semibold', cat.color)}>{cat.label}</h2>
-            <span className="text-xs text-[var(--dim)]">({cat.features.length})</span>
+        <div key={cat.id} className="space-y-3">
+          <div className="flex items-center gap-3">
+            <span className={cn('text-[10px] font-semibold uppercase tracking-widest shrink-0 flex items-center gap-1.5', cat.color)}>
+              — {cat.label}
+            </span>
+            <div className={cn('flex-1 h-px', cat.borderColor)} style={{ background: 'var(--border)' }} />
+            <span className="text-[10px] text-[var(--dim)] shrink-0">{cat.features.length}</span>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
             {cat.features.map(f => (
@@ -724,8 +731,11 @@ export default function Discover() {
       )}
 
       {/* Data sources legend */}
-      <div className="border-t border-[var(--border)] pt-6">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--dim)] mb-3">Data sources reference</h2>
+      <div className="pt-2">
+        <div className="flex items-center gap-3 mb-3">
+          <span className="text-[10px] font-semibold uppercase tracking-widest text-[var(--dim)] shrink-0">— Data Sources Reference</span>
+          <div className="flex-1 h-px bg-[var(--border)]" />
+        </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 text-xs text-[var(--dim)]">
           {[
             ['system.query_log', 'Historical queries — latency, memory, read bytes, errors. Populated after query finishes.'],

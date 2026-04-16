@@ -57,7 +57,7 @@ function ReAuthModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
     if (!state && loginUrl) {
       try { state = new URL(loginUrl).searchParams.get('state') ?? '' } catch {}
     }
-    return `https://platform.claude.com/oauth/code/callback?code=${encodeURIComponent(code)}${state ? `&state=${encodeURIComponent(state)}` : ''}`
+    return state ? `${code}#${state}` : code
   }
 
   const submitCallback = async (rawOverride?: string) => {
@@ -203,7 +203,7 @@ function ReAuthModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
           )}
           {loginUrl && state !== 'done' && callbackState !== 'ok' && (
             <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3 space-y-2">
-              <div className="text-[10px] font-semibold text-[var(--dim)]">After login — paste the OAuth code</div>
+              <div className="text-[10px] font-semibold text-[var(--dim)]">After login — paste the redirect URL from your browser (or just the code)</div>
               <p className="text-[10px] text-[var(--dim)]">Paste the code or full redirect URL.</p>
               <div className="flex gap-2">
                 <input type="text" value={callbackUrl} onChange={e => setCallbackUrl(e.target.value)}
@@ -264,6 +264,24 @@ export function TopBar({ onMobileMenuClick }: TopBarProps) {
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
   const [showReAuth, setShowReAuth] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+
+  // When auth expires, silently attempt token refresh before asking user to re-auth.
+  useEffect(() => {
+    if (!authExpired) return
+    setRefreshing(true)
+    fetch('/api/auth/refresh', { method: 'POST' })
+      .then(r => r.json())
+      .then((j: any) => {
+        if (j.refreshed || j.message === 'token still valid') {
+          setAuthExpired(false)
+        } else {
+          setShowReAuth(true)
+        }
+      })
+      .catch(() => setShowReAuth(true))
+      .finally(() => setRefreshing(false))
+  }, [authExpired]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleGo = () => {
     if (!customFrom || !customTo) return
@@ -317,17 +335,19 @@ export function TopBar({ onMobileMenuClick }: TopBarProps) {
           <div className="flex items-center gap-2">
             {/* Auth indicator */}
             <button
-              onClick={() => setShowReAuth(true)}
-              title={authExpired ? 'Session expired — click to re-authenticate' : 'Claude auth — click to re-authenticate'}
+              onClick={() => !refreshing && setShowReAuth(true)}
+              title={refreshing ? 'Refreshing token…' : authExpired ? 'Session expired — click to re-authenticate' : 'Claude auth — click to re-authenticate'}
               className={cn(
                 'p-1.5 rounded-md transition-colors relative',
-                authExpired
+                refreshing
+                  ? 'text-blue-400'
+                  : authExpired
                   ? 'text-orange-400 hover:bg-orange-500/15 animate-pulse'
                   : 'text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)]',
               )}
             >
-              {authExpired ? <Lock size={14} /> : <LockOpen size={14} />}
-              {authExpired && (
+              {refreshing ? <Loader2 size={14} className="animate-spin" /> : authExpired ? <Lock size={14} /> : <LockOpen size={14} />}
+              {authExpired && !refreshing && (
                 <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-orange-400" />
               )}
             </button>

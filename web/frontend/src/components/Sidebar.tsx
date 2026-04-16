@@ -50,6 +50,12 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
       { view: 'chlogs', label: 'CH Logs', icon: Database },
     ],
   },
+  {
+    label: 'Help',
+    items: [
+      { view: 'discover', label: 'Feature Guide', icon: Compass },
+    ],
+  },
 ]
 
 const REFRESH_OPTIONS = [
@@ -246,34 +252,6 @@ export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
           'border-t border-[var(--border)] p-2 space-y-1 shrink-0',
           collapsed && 'flex flex-col items-center gap-1',
         )}>
-          {/* Discover link */}
-          {!collapsed ? (
-            <a
-              href="?view=discover"
-              onClick={e => { e.preventDefault(); handleNavClick('discover') }}
-              className={cn(
-                'w-full flex items-center gap-2.5 px-3 py-1.5 rounded-md text-[12px] no-underline transition-colors',
-                view === 'discover'
-                  ? 'bg-[var(--accent-subtle)] text-[var(--accent)] font-medium'
-                  : 'text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)]',
-              )}
-            >
-              <Compass size={14} />
-              <span>Feature Guide</span>
-            </a>
-          ) : (
-            <button
-              onClick={() => handleNavClick('discover')}
-              className={cn(
-                'p-2 rounded-md transition-colors',
-                view === 'discover' ? 'text-[var(--accent)]' : 'text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)]',
-              )}
-              title="Feature Guide"
-            >
-              <Compass size={14} />
-            </button>
-          )}
-
           {/* Refresh interval */}
           {!collapsed ? (
             <div className="flex items-center gap-1 px-1">
