@@ -87,6 +87,10 @@ type AlertManager struct {
 	// lastEscalated records the last time an escalation notice was sent per instance.
 	lastEscalated map[string]time.Time
 
+	// onStateChange is called (in a goroutine) after each successful Slack update.
+	// Used by SlackApp to refresh the pinned dashboard message.
+	onStateChange func()
+
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 	logger *slog.Logger
@@ -479,6 +483,14 @@ func (am *AlertManager) updateInstanceMessage(instance string) {
 			}
 		}
 	}
+
+	// Notify SlackApp to refresh the pinned dashboard (non-blocking).
+	am.mu.Lock()
+	cb := am.onStateChange
+	am.mu.Unlock()
+	if cb != nil {
+		go cb()
+	}
 }
 
 // drainDirtyInstances returns and clears the current dirty set.
@@ -729,4 +741,35 @@ func (am *AlertManager) GetActiveAlert(dedupKey string) *ActiveAlert {
 	}
 	cp := *a
 	return &cp
+}
+
+// SetOnStateChange registers a callback invoked after each Slack update.
+// Used by SlackApp to refresh the pinned dashboard. Safe to call at any time.
+func (am *AlertManager) SetOnStateChange(fn func()) {
+	am.mu.Lock()
+	am.onStateChange = fn
+	am.mu.Unlock()
+}
+
+// GetActiveAlertsForInstance returns copies of all currently-firing non-info
+// alerts for the given instance, sorted critical-first.
+func (am *AlertManager) GetActiveAlertsForInstance(instance string) []*ActiveAlert {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	var result []*ActiveAlert
+	for _, active := range am.activeAlerts {
+		if active.Alert.Instance == instance && active.Alert.Severity != collector.SeverityInfo {
+			cp := *active
+			result = append(result, &cp)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		oi := severityOrder(result[i].Alert.Severity)
+		oj := severityOrder(result[j].Alert.Severity)
+		if oi != oj {
+			return oi < oj
+		}
+		return result[i].Alert.Title < result[j].Alert.Title
+	})
+	return result
 }

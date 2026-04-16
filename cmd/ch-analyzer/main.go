@@ -18,6 +18,7 @@ import (
 	"github.com/rohitjain/ch-analyzer/internal/collector"
 	"github.com/rohitjain/ch-analyzer/internal/config"
 	"github.com/rohitjain/ch-analyzer/internal/prometheus"
+	"github.com/rohitjain/ch-analyzer/internal/slackapp"
 	"github.com/rohitjain/ch-analyzer/internal/store"
 	"github.com/rohitjain/ch-analyzer/internal/web"
 )
@@ -314,6 +315,15 @@ func main() {
 	// Start digest scheduler
 	if cfg.Slack.Digest.Enabled && slackNotifier != nil {
 		go runDigestScheduler(ctx, cfg, az, slackNotifier, clientMgr)
+	}
+
+	// Start Slack Socket Mode app (slash commands + interactive buttons + pinned dashboard).
+	if cfg.Slack.BotToken != "" && cfg.Slack.AppToken != "" {
+		app := slackapp.New(cfg.Slack, cfg.Web.ListenAddr, alertMgr, maintenanceStore, clientMgr)
+		go func() {
+			slog.Info("slack socket mode app starting")
+			app.Run(ctx)
+		}()
 	}
 
 	// Note: no pruner needed — ClickHouse TTL handles retention automatically.

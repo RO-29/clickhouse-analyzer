@@ -216,7 +216,10 @@ type MaintenanceConfig struct{}
 // SlackConfig controls Slack alerting behaviour.
 type SlackConfig struct {
 	BotToken        string          `yaml:"bot_token"`
+	AppToken        string          `yaml:"app_token"`         // xapp-... for Socket Mode
+	SigningSecret   string          `yaml:"signing_secret"`    // from Basic Information
 	ChannelID       string          `yaml:"channel_id"`
+	DashboardURL    string          `yaml:"dashboard_url"`     // public URL for "View in Dashboard" links
 	DedupWindow     Duration        `yaml:"dedup_window"`
 	ResolveMessages bool            `yaml:"resolve_messages"`
 	Digest          DigestConfig    `yaml:"digest"`
