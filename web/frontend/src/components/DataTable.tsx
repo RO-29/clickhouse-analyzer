@@ -7,6 +7,7 @@ interface Column {
   label: string
   format?: (v: any, row: Record<string, any>) => ReactNode
   className?: string
+  tooltip?: string
 }
 
 interface DataTableProps {
@@ -83,9 +84,11 @@ export function DataTable({
             {columns.map(col => (
               <th
                 key={col.key}
+                title={col.tooltip}
                 className={cn(
                   'text-left py-2 px-3 text-xs font-medium uppercase tracking-wider text-[var(--dim)] cursor-pointer select-none hover:text-[var(--text)] transition-colors',
                   col.className,
+                  col.tooltip && 'underline decoration-dotted decoration-[var(--dim)]',
                 )}
                 onClick={() => handleSort(col.key)}
               >

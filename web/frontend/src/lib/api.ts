@@ -93,8 +93,11 @@ export const api = {
   history: {
     merges: (inst: string, from: number, to: number) =>
       get<HistoryMerge[]>(`/api/instances/${inst}/history/merges?from=${from}&to=${to}`),
-    failures: (inst: string, from: number, to: number) =>
-      get<{ timeline: HistoryFailure[]; by_code: Record<string, any>[] }>(`/api/instances/${inst}/history/failures?from=${from}&to=${to}`),
+    failures: (inst: string, from: number, to: number, hash?: string) => {
+      const p = new URLSearchParams({ from: String(from), to: String(to) })
+      if (hash) p.set('hash', hash)
+      return get<{ timeline: HistoryFailure[]; by_code: Record<string, any>[] }>(`/api/instances/${inst}/history/failures?${p}`)
+    },
     inserts: (inst: string, from: number, to: number) =>
       get<HistoryInsert[]>(`/api/instances/${inst}/history/inserts?from=${from}&to=${to}`),
     s3: (inst: string, from: number, to: number) =>

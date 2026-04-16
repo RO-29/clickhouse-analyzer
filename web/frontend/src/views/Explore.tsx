@@ -262,6 +262,10 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
   const [tlLoading, setTlLoading] = useState(false)
   const [sortBy, setSortBy] = useState<string>('total_ms')
   const [overview, setOverview] = useState<PatternOverviewResponse | null>(null)
+  // Failure detail panel
+  const [failHash, setFailHash] = useState<string | null>(null)
+  const [failData, setFailData] = useState<{ byCode: Record<string, any>[]; byTs: Record<string, any>[] } | null>(null)
+  const [failLoading, setFailLoading] = useState(false)
 
   useEffect(() => {
     let c = false
@@ -293,6 +297,25 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
       .finally(() => { if (!c) setTlLoading(false) })
     return () => { c = true }
   }, [instance, selectedHash, from, to])
+
+  useEffect(() => {
+    if (!failHash) { setFailData(null); return }
+    let c = false
+    setFailLoading(true)
+    api.history.failures(instance, from, to, failHash)
+      .then(d => {
+        if (c) return
+        const tl = Array.isArray(d.timeline) ? d.timeline : []
+        const bc = Array.isArray(d.by_code) ? d.by_code : []
+        const map = new Map<string, number>()
+        for (const r of tl) map.set(r.ts, (map.get(r.ts) ?? 0) + (Number(r.cnt) || 0))
+        const byTs = [...map.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([ts, cnt]) => ({ ts, cnt }))
+        setFailData({ byCode: bc, byTs })
+      })
+      .catch(() => { if (!c) setFailData({ byCode: [], byTs: [] }) })
+      .finally(() => { if (!c) setFailLoading(false) })
+    return () => { c = true }
+  }, [instance, failHash, from, to])
 
   // Stacked bar overview — must be before any early returns (Rules of Hooks).
   const overviewChart = useMemo(() => {
@@ -369,14 +392,16 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
     {
       key: 'normalized_query_hash',
       label: 'Hash',
+      tooltip: 'Unique fingerprint of the normalized query (parameters stripped)',
       format: (v: any) => (
         <span className="font-mono text-[11px] text-[var(--accent)] tracking-tight">{String(v).slice(0, 12)}</span>
       ),
     },
-    { key: 'cnt', label: 'Execs', format: (v: any) => <span className="tabular-nums">{fmtCompact(v)}</span> },
+    { key: 'cnt', label: 'Execs', tooltip: 'Total number of times this query pattern ran in the selected time range', format: (v: any) => <span className="tabular-nums">{fmtCompact(v)}</span> },
     {
       key: 'kind',
       label: 'Kind',
+      tooltip: 'Query type: SELECT, INSERT, etc.',
       format: (v: any) => (
         <span className={cn('inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium', kindBg(v))}>
           {String(v || '—').slice(0, 6)}
@@ -386,6 +411,7 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
     {
       key: 'total_ms',
       label: 'Total CPU',
+      tooltip: 'Sum of wall-clock duration for all executions — proportional bar shows share of total load',
       format: (v: any, row: any) => (
         <span className="flex items-center gap-2 min-w-[110px]">
           <span className="tabular-nums text-xs">{fmtDuration(v)}</span>
@@ -397,6 +423,7 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
     {
       key: 'avg_ms',
       label: 'Avg',
+      tooltip: 'Average query duration across all executions. Green < 1s, amber 1–10s, red > 10s',
       format: (v: any) => (
         <span className={cn('inline-flex px-1.5 py-0.5 rounded text-[11px] tabular-nums', latencyBg(v))}>
           {fmtDuration(v)}
@@ -406,21 +433,34 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
     {
       key: 'p95_ms',
       label: 'P95',
+      tooltip: '95th-percentile latency — 95% of executions were faster than this',
       format: (v: any) => (
         <span className={cn('inline-flex px-1.5 py-0.5 rounded text-[11px] tabular-nums', latencyBg(v))}>
           {fmtDuration(v)}
         </span>
       ),
     },
-    { key: 'avg_memory', label: 'Avg Mem', format: (v: any) => <span className="text-xs tabular-nums">{fmtBytes(v)}</span> },
+    { key: 'avg_memory', label: 'Avg Mem', tooltip: 'Average peak memory usage per execution (from query_log.memory_usage)', format: (v: any) => <span className="text-xs tabular-nums">{fmtBytes(v)}</span> },
     {
       key: 'failures',
       label: 'Fails',
-      format: (v: any) => {
+      tooltip: 'Number of executions that raised an exception. Click to see error messages and charts.',
+      format: (v: any, row: any) => {
         const n = Number(v)
-        if (n === 0) return <span className="text-[var(--dim)] text-xs">—</span>
-        if (n > 5) return <span className="inline-flex px-1.5 py-0.5 rounded text-[11px] font-semibold bg-red-500/10 text-red-400 border border-red-500/20">{fmtCompact(n)}</span>
-        return <span className="text-amber-400 text-xs font-medium">{n}</span>
+        const hash = String(row.normalized_query_hash)
+        if (n === 0) return <span className="text-[var(--dim)] text-xs" title="No failures">—</span>
+        const chip = n > 5
+          ? <span className="inline-flex px-1.5 py-0.5 rounded text-[11px] font-semibold bg-red-500/10 text-red-400 border border-red-500/20">{fmtCompact(n)}</span>
+          : <span className="text-amber-400 text-xs font-medium">{n}</span>
+        return (
+          <button
+            onClick={e => { e.stopPropagation(); setFailHash(h => h === hash ? null : hash); setSelectedHash(null) }}
+            className="hover:opacity-75 transition-opacity"
+            title="Click to see failure details"
+          >
+            {chip}
+          </button>
+        )
       },
     },
     {
@@ -526,6 +566,106 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
           emptyText="No query patterns found"
         />
       </Card>
+
+      {/* ── Failure Detail Panel ─────────────────────────────────── */}
+      {failHash && (
+        <div className="space-y-3 mt-2">
+          <div className="flex items-center gap-2 px-1">
+            <span className="text-xs font-semibold text-red-400 uppercase tracking-wider">
+              Failure Detail — hash {failHash.slice(0, 14)}
+            </span>
+            <span className="text-[11px] text-[var(--dim)]">
+              {patterns.find(p => String(p.normalized_query_hash) === failHash)?.sample_query?.slice(0, 60)}
+            </span>
+            <button onClick={() => setFailHash(null)} className="ml-auto text-[var(--dim)] hover:text-[var(--fg)]">
+              <X size={14} />
+            </button>
+          </div>
+
+          {failLoading ? (
+            <LoadingSkeleton />
+          ) : !failData || (failData.byCode.length === 0 && failData.byTs.length === 0) ? (
+            <div className="text-sm text-[var(--dim)] p-4 bg-[var(--surface)] border border-[var(--border)] rounded-xl">
+              No failure records found for this query in the selected time range.
+            </div>
+          ) : (
+            <>
+              {/* Failures over time chart + timeline charts from pattern */}
+              <div className="grid grid-cols-1 gap-3">
+                <HistoryChart
+                  title="Failures Over Time"
+                  data={failData.byTs}
+                  series={[{ key: 'cnt', label: 'Errors', color: C.red }]}
+                  height={120}
+                  onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
+                />
+                {/* Latency + memory charts from existing timeline if same hash selected */}
+                {selectedHash === failHash && timeline.length > 0 && (
+                  <>
+                    <HistoryChart
+                      title="Latency During Failures (Avg / P95 / Max)"
+                      data={timeline}
+                      series={[
+                        { key: 'avg_ms', label: 'Avg', color: C.green },
+                        { key: 'p95_ms', label: 'P95', color: C.yellow },
+                        { key: 'max_ms', label: 'Max', color: C.red },
+                      ]}
+                      yFormat="ms"
+                      height={120}
+                      onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
+                    />
+                    <HistoryChart
+                      title="Memory & Read Bytes During Failures"
+                      data={timeline}
+                      series={[
+                        { key: 'avg_memory', label: 'Memory', color: C.purple },
+                        { key: 'avg_read_bytes', label: 'Read Bytes', color: C.cyan },
+                      ]}
+                      yFormat="bytes"
+                      height={120}
+                      onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
+                    />
+                  </>
+                )}
+              </div>
+
+              {/* Error messages accordion */}
+              <Card>
+                <div className="text-xs font-medium text-[var(--dim)] uppercase tracking-wider mb-3">
+                  Error Messages — {failData.byCode.length} exception type{failData.byCode.length !== 1 ? 's' : ''}
+                </div>
+                <div className="space-y-2">
+                  {failData.byCode.map((row, i) => {
+                    const msgs: string[] = Array.isArray(row.messages) ? row.messages : [row.messages ?? ''].filter(Boolean)
+                    return (
+                      <div key={i} className="rounded-lg border border-[var(--border)] overflow-hidden">
+                        <div className="flex items-center gap-2 px-3 py-2.5 bg-[var(--surface)]">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded bg-red-500/10 border border-red-500/20 text-red-400 font-mono text-xs font-semibold shrink-0">
+                            {row.exception_code}
+                          </span>
+                          <span className="text-xs font-semibold tabular-nums text-[var(--fg)] shrink-0">
+                            {fmtCompact(row.cnt)} errors
+                          </span>
+                          {row.sample_user && (
+                            <span className="text-[11px] text-[var(--dim)] shrink-0">user: {row.sample_user}</span>
+                          )}
+                        </div>
+                        <div className="border-t border-[var(--border)] px-3 py-2.5 space-y-2">
+                          {msgs.map((msg, j) => (
+                            <pre key={j} className="text-xs font-mono text-red-300/80 whitespace-pre-wrap break-all leading-relaxed bg-red-500/5 border border-red-500/10 rounded p-2 max-h-36 overflow-y-auto">
+                              {msg}
+                            </pre>
+                          ))}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </Card>
+            </>
+          )}
+        </div>
+      )}
 
       {selectedHash && (
         <div className="space-y-3 mt-2">

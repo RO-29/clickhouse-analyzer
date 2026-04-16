@@ -20,7 +20,7 @@ import { api } from '../lib/api'
 import { fmtDuration, fmtNum, fmtBytes, fmtCompact, cn } from '../lib/utils'
 import { Card } from '../components/Card'
 import { DataTable } from '../components/DataTable'
-import { SqlEditor, type SqlEditorHandle } from '../components/SqlEditor'
+import { SqlEditor, type SqlEditorHandle, type SchemaItem } from '../components/SqlEditor'
 import type { QueryResult, QueryHistoryEntry } from '../types/api'
 
 ChartJS.register(
@@ -248,7 +248,7 @@ export default function Terminal() {
   const [showHistory, setShowHistory] = useState(false)
   const [history, setHistory] = useState<QueryHistoryEntry[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
-  const [schema, setSchema] = useState<string[]>([])
+  const [schema, setSchema] = useState<SchemaItem[]>([])
   const editorRef = useRef<SqlEditorHandle>(null)
 
   useEffect(() => {
@@ -260,19 +260,55 @@ export default function Terminal() {
     if (selectedInstance && !terminalInstance) setInst(selectedInstance)
   }, [selectedInstance, terminalInstance])
 
-  // Fetch table/column names for autocomplete
+  // Fetch tables + columns for autocomplete
   useEffect(() => {
     if (!inst) return
-    api.tables(inst).then((tables: any[]) => {
-      if (!Array.isArray(tables)) return
-      const names: string[] = []
-      for (const t of tables) {
-        if (t.database && t.name) {
-          names.push(`${t.database}.${t.name}`, t.name)
+    let cancelled = false
+
+    Promise.all([
+      api.tables(inst).catch(() => [] as any[]),
+      api.terminal.execute(
+        inst,
+        `SELECT database, table, name, type FROM system.columns
+         WHERE database NOT IN ('system','information_schema','INFORMATION_SCHEMA')
+         ORDER BY database, table, name LIMIT 10000`,
+        10000,
+      ).catch(() => null),
+    ]).then(([tables, colRes]) => {
+      if (cancelled) return
+      const items: SchemaItem[] = []
+      const seen = new Set<string>()
+
+      // Tables
+      if (Array.isArray(tables)) {
+        for (const t of tables) {
+          if (!t.database || !t.name) continue
+          const fq = `${t.database}.${t.name}`
+          if (!seen.has(fq)) { items.push({ label: fq, kind: 'table', detail: t.database }); seen.add(fq) }
+          if (!seen.has(t.name)) { items.push({ label: t.name, kind: 'table', detail: t.database }); seen.add(t.name) }
         }
       }
-      setSchema([...new Set(names)])
-    }).catch(() => {})
+
+      // Columns
+      if (colRes?.rows) {
+        for (const r of colRes.rows) {
+          const col = String(r.name || '')
+          const tbl = String(r.table || '')
+          const db  = String(r.database || '')
+          const typ = String(r.type || '')
+          if (!col) continue
+          // table.column
+          const tqc = `${tbl}.${col}`
+          if (!seen.has(tqc)) { items.push({ label: tqc, kind: 'column', detail: typ }); seen.add(tqc) }
+          // bare column (dedup)
+          if (!seen.has(col)) { items.push({ label: col, kind: 'column', detail: `${db}.${tbl} · ${typ}` }); seen.add(col) }
+        }
+      }
+
+      setSchema(items)
+    })
+
+    return () => { cancelled = true }
   }, [inst])
 
   const execute = useCallback(async () => {

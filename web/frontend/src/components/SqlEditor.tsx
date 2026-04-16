@@ -70,12 +70,19 @@ export interface SqlEditorHandle {
   getValue: () => string
 }
 
+export interface SchemaItem {
+  label: string
+  /** 'table' | 'column' */
+  kind: 'table' | 'column'
+  detail?: string   // e.g. column type or db name
+}
+
 interface SqlEditorProps {
   value: string
   onChange: (value: string) => void
   onSubmit?: () => void
-  /** Extra completions — table/column names from schema */
-  schemaCompletions?: string[]
+  /** Extra completions — tables and columns from schema */
+  schemaCompletions?: SchemaItem[]
   height?: string
 }
 
@@ -93,10 +100,12 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(
     const schemaRef = useRef<Completion[]>([])
 
     useEffect(() => {
-      schemaRef.current = schemaCompletions.map(label => ({
-        label,
-        type: 'variable' as const,
-        boost: 3,
+      schemaRef.current = schemaCompletions.map(item => ({
+        label: item.label,
+        // CodeMirror built-in icon types: 'class' = table icon, 'property' = field icon
+        type: item.kind === 'table' ? ('class' as const) : ('property' as const),
+        detail: item.detail,
+        boost: item.kind === 'table' ? 4 : 3,
       }))
     }, [schemaCompletions])
 
