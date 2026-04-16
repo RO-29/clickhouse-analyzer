@@ -897,7 +897,7 @@ func (s *Server) handleQuerySamples(w http.ResponseWriter, r *http.Request) {
 
 	// Try ch_analyzer.query_samples first (fast).
 	samples, err := s.queryFromSamples(ctx, client, fromTime, toTime, hash, user, kind, minMs, limit)
-	if err != nil || samples == nil {
+	if err != nil || len(samples) == 0 {
 		// Fall back to system.query_log.
 		samples, err = s.queryFromQueryLog(ctx, client, fromTime, toTime, hash, user, kind, minMs, limit)
 		if err != nil {
@@ -1033,7 +1033,7 @@ func (s *Server) handleQueryPatternOverview(w http.ResponseWriter, r *http.Reque
 	LIMIT %d`, fromTime, toTime, topN)
 
 	topRows, err := client.Query(ctx, topSQL)
-	if err != nil {
+	if err != nil || len(topRows) == 0 {
 		// Fall back to system.query_log.
 		topSQL = fmt.Sprintf(`SELECT
 			normalized_query_hash,
@@ -1137,7 +1137,7 @@ func (s *Server) handleQueryUsers(w http.ResponseWriter, r *http.Request) {
 	LIMIT 50`, fromTime, toTime)
 
 	rows, err := client.Query(ctx, sql)
-	if err != nil {
+	if err != nil || len(rows) == 0 {
 		// Fall back to system.query_log.
 		sql = fmt.Sprintf(`SELECT
 			user,
@@ -1222,7 +1222,7 @@ func (s *Server) handleQueryPatternsV2(w http.ResponseWriter, r *http.Request) {
 	LIMIT %d`, fromTime, toTime, sortBy, limit)
 
 	rows, err := client.Query(ctx, sql)
-	if err != nil {
+	if err != nil || len(rows) == 0 {
 		// Fall back to system.query_log.
 		sql = fmt.Sprintf(`SELECT
 			normalized_query_hash,

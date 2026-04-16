@@ -1039,7 +1039,7 @@ func (s *Server) handleCompareQueryPatterns(w http.ResponseWriter, r *http.Reque
 			LIMIT 30`, fromTime, toTime)
 
 			rows, err := client.Query(ctx, sql)
-			if err != nil {
+			if err != nil || len(rows) == 0 {
 				// Fallback to system.query_log.
 				sql = fmt.Sprintf(`SELECT
 					normalized_query_hash AS hash,
