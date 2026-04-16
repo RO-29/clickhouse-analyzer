@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -137,6 +138,13 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	// ── Strategy A: follow platform.claude.com redirect ──────────────────────
 	if strings.Contains(raw, "platform.claude.com") {
 		var localURLHit string
+		// Use browser-like headers — some servers behave differently for
+		// scripted vs real-browser requests (e.g. issuing a proper 302 redirect).
+		req, _ := http.NewRequest("GET", raw, nil) //nolint:noctx
+		if req != nil {
+			req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+			req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+		}
 		client := &http.Client{
 			Timeout: 12 * time.Second,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -150,17 +158,30 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 				return nil
 			},
 		}
-		resp, err := client.Get(raw) //nolint:noctx
-		if err == nil {
-			resp.Body.Close()
+		var platformBody string
+		if req != nil {
+			resp, err := client.Do(req)
+			if err == nil {
+				b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+				resp.Body.Close()
+				platformBody = string(b)
+				// Also scan body for localhost URL (JS redirect pattern)
+				if localURLHit == "" {
+					reLocal := regexp.MustCompile(`http://localhost:\d+[^\s"'\\]*`)
+					if m := reLocal.FindString(platformBody); m != "" {
+						localURLHit = m
+						slog.Info("auth callback: found localhost URL in platform page body", "url", localURLHit)
+					}
+				}
+			}
 		}
 		if localURLHit != "" {
 			slog.Info("auth callback: platform redirect followed to localhost", "url", localURLHit)
-			// Already proxied by following the redirect — just confirm to client.
 			writeJSON(w, http.StatusOK, map[string]string{"status": "forwarded", "via": "platform_redirect"})
 			return
 		}
-		slog.Info("auth callback: platform did not HTTP-redirect to localhost — falling back to port scan")
+		slog.Info("auth callback: platform did not redirect to localhost — falling back to port scan",
+			"body_preview", truncate(platformBody, 300))
 	}
 
 	// ── Strategy B: find claude's local port and build the URL ───────────────
@@ -191,9 +212,18 @@ func (s *Server) proxyLocalCallback(w http.ResponseWriter, localURL string) {
 		writeErr(w, http.StatusBadGateway, "callback forward failed: "+err.Error())
 		return
 	}
-	defer resp.Body.Close()
-	slog.Info("auth callback forwarded", "status", resp.StatusCode, "url", localURL)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	resp.Body.Close()
+	slog.Info("auth callback forwarded", "status", resp.StatusCode, "url", localURL,
+		"body_preview", truncate(string(body), 300))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "forwarded", "http_status": fmt.Sprint(resp.StatusCode)})
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 // extractCodeState parses code and state from a URL or returns the raw string
