@@ -1314,6 +1314,12 @@ function LiveTab({ instance, onShowQuery }: { instance: string; onShowQuery: (q:
   const [killError, setKillError] = useState<string | null>(null)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape' && killTarget) { setKillTarget(null); setKillError(null) } }
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [killTarget])
+
   const load = useCallback(() => {
     api.queries(instance)
       .then(d => { setRows(Array.isArray(d) ? d : []); setError(null) })
@@ -1404,7 +1410,7 @@ function LiveTab({ instance, onShowQuery }: { instance: string; onShowQuery: (q:
                   </span>
                 )}
                 {/* Query preview */}
-                <span className="text-xs font-mono text-[var(--fg)] truncate flex-1">
+                <span className="text-xs font-mono text-[var(--fg)] truncate flex-1" title={q}>
                   <SqlHighlight text={q} maxLen={100} />
                 </span>
                 {/* Memory */}

@@ -170,7 +170,7 @@ export function NodeCard({
 
         {/* Name */}
         <div className="flex items-center gap-2 min-w-0 flex-1">
-          <span className="font-medium text-[13px] truncate">{instance.name}</span>
+          <span className="font-medium text-[13px] truncate" title={instance.name}>{instance.name}</span>
           {inMaint && (
             <span className="flex items-center gap-1 text-[10px] text-orange-400 bg-orange-500/10 rounded px-1.5 py-0.5 shrink-0" title={maintUntil ? `Until ${maintUntil}` : 'Maintenance'}>
               <Wrench size={9} /> {maintUntil ? `until ${maintUntil}` : 'maint'}

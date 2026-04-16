@@ -101,7 +101,7 @@ export function TableDetail({ instance, database, table, onClose }: TableDetailP
         {/* Header */}
         <div className="sticky top-0 z-10 bg-[var(--bg)] border-b border-[var(--border)] px-6 py-4 flex items-center gap-3">
           <Database size={20} className="text-[var(--accent)] shrink-0" />
-          <h2 className="text-lg font-bold truncate flex-1">
+          <h2 className="text-lg font-bold truncate flex-1" title={`${database}.${table}`}>
             {database}.{table}
           </h2>
           {data?.engine && (

@@ -49,6 +49,7 @@ export default function Maintenance() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [loadedAt, setLoadedAt] = useState<Date | null>(null)
 
   // Form state
   const [formInstance, setFormInstance] = useState('*')
@@ -71,6 +72,7 @@ export default function Maintenance() {
       setWindows(wins)
       setInstances(insts)
       setError(null)
+      setLoadedAt(new Date())
     } catch (e: any) {
       setError(e.message ?? 'Failed to load')
     } finally {
@@ -127,6 +129,11 @@ export default function Maintenance() {
           <p className="text-xs text-[var(--dim)]">Suppress alerts for an instance during planned maintenance</p>
         </div>
         <div className="flex-1" />
+        {loadedAt && !refreshing && (
+          <span className="text-[11px] text-[var(--dim)] hidden sm:block">
+            Updated {loadedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+          </span>
+        )}
         <button
           onClick={() => load(true)}
           disabled={refreshing}

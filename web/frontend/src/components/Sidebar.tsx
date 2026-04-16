@@ -237,7 +237,7 @@ export function Sidebar({ mobileOpen = false, onMobileClose, onOpenPalette }: Si
                       />
                       {!collapsed && (
                         <>
-                          <span className="truncate flex-1 text-left">{inst.name}</span>
+                          <span className="truncate flex-1 text-left" title={inst.name}>{inst.name}</span>
                           <span className="text-[11px] font-mono" style={{ color: scoreColor(inst.health_score) }}>
                             {Math.round(inst.health_score)}
                           </span>

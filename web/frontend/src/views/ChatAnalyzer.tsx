@@ -259,10 +259,6 @@ export default function ChatAnalyzer() {
             } else if (line.startsWith('data: ')) {
               const raw = line.slice(6)
 
-              // Log every SSE event to the browser console for debugging
-              // eslint-disable-next-line no-console
-              console.debug('[CH-CHAT] event:', currentEvent, '|', raw.slice(0, 300))
-
               if (currentEvent === 'debug') {
                 try {
                   const dbg = JSON.parse(raw)

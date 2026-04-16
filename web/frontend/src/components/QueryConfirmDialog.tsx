@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { ShieldCheck, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react'
 import { cn } from '../lib/utils'
 
@@ -23,6 +23,12 @@ export function QueryConfirmDialog({
   onCancel,
 }: QueryConfirmDialogProps) {
   const [showSql, setShowSql] = useState(false)
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel() }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onCancel])
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">

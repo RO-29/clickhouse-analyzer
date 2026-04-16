@@ -441,7 +441,7 @@ function AlertRow({ alert, showMeta, staleHours, snoozed, acked, onSelect }: {
             <span className="text-xs text-[var(--dim)] shrink-0">{alert.category}</span>
           </>
         )}
-        <span className="font-medium truncate flex-1">{alert.title}</span>
+        <span className="font-medium truncate flex-1" title={alert.title}>{alert.title}</span>
         <span className="text-[var(--dim)] text-xs shrink-0">{fmtTime(alert.created_at)}</span>
         {alert.resolved && <Badge className="bg-green-500/10 text-green-400 border-green-500/20">resolved</Badge>}
       </button>

@@ -290,7 +290,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
             Overview
           </button>
           <span className="text-[var(--dim)] opacity-40 text-sm">/</span>
-          <h2 className="text-sm font-semibold truncate">{instance}</h2>
+          <h2 className="text-sm font-semibold truncate" title={instance}>{instance}</h2>
         </div>
         {refreshing && (
           <div className="flex items-center gap-1.5 text-[11px] text-[var(--dim)]">

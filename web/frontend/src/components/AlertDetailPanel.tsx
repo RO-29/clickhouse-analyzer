@@ -516,7 +516,7 @@ export function AlertDetailPanel({
                 )}
                 <div className="col-span-2">
                   <div className="text-[9px] font-semibold uppercase tracking-wider text-[var(--dim)] mb-0.5">Dedup Key</div>
-                  <div className="text-[10px] font-mono text-[var(--dim)] truncate">{alert.dedup_key}</div>
+                  <div className="text-[10px] font-mono text-[var(--dim)] truncate" title={alert.dedup_key}>{alert.dedup_key}</div>
                 </div>
               </div>
 
