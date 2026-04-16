@@ -289,9 +289,11 @@ func (a *Analyzer) crossCollectorAnalysis(instance string, m map[string]float64,
 func (a *Analyzer) computeHealthScore(instance string, alerts, crossAlerts []collector.Alert) HealthScore {
 	score := 100
 
-	// Deduplicate by title+severity so repeated alerts for the same issue
-	// (e.g. one alert per table) only deduct once from the score.
-	type dedupKey struct{ title, severity string }
+	// Deduplicate by category+severity so per-table/per-query alerts (which embed
+	// table names in their title) don't each deduct separately. For example, 10
+	// tables with cold parts all share the "tables" category and count as one
+	// critical deduction rather than 10.
+	type dedupKey struct{ category, severity string }
 	seen := make(map[dedupKey]bool)
 	issueSet := make(map[string]bool)
 
@@ -301,26 +303,26 @@ func (a *Analyzer) computeHealthScore(instance string, alerts, crossAlerts []col
 		if alert.Instance != instance && alert.Instance != "" {
 			continue
 		}
-		k := dedupKey{alert.Title, string(alert.Severity)}
+		issueSet[alert.Title] = true
+		k := dedupKey{alert.Category, string(alert.Severity)}
 		if seen[k] {
-			issueSet[alert.Title] = true
 			continue
 		}
 		seen[k] = true
-		issueSet[alert.Title] = true
 		switch alert.Severity {
 		case collector.SeverityCritical:
-			totalDeduct += 12
+			totalDeduct += 15
 		case collector.SeverityWarn:
-			totalDeduct += 4
+			totalDeduct += 5
 		case collector.SeverityInfo:
 			totalDeduct += 1
 		}
 	}
 
-	// Cap total deduction at 70 so even a badly degraded instance shows > 0.
-	if totalDeduct > 70 {
-		totalDeduct = 70
+	// Cap total deduction at 60 so even badly degraded instances show > 0.
+	// With ~8 possible categories, 8 criticals × 15 = 120 → capped → min score 40.
+	if totalDeduct > 60 {
+		totalDeduct = 60
 	}
 	score -= totalDeduct
 
