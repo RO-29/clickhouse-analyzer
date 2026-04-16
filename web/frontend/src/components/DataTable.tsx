@@ -108,7 +108,7 @@ export function DataTable({
             <tr
               key={i}
               className={cn(
-                'border-b border-[var(--border)] last:border-0 transition-colors relative',
+                'group/row border-b border-[var(--border)] last:border-0 transition-colors relative',
                 i % 2 === 1 && 'bg-[var(--surface)]/40',
                 (onRowClick || onRowAnalyze) && 'cursor-pointer hover:bg-[var(--accent-subtle)]',
               )}

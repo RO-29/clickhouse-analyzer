@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef, type ChangeEvent } from 'react'
-import { Sparkles, X, Copy, Play, Maximize2, Skull, RefreshCw, ChevronDown, ChevronRight, Wrench } from 'lucide-react'
+import { Sparkles, X, Copy, Play, Maximize2, Skull, RefreshCw, ChevronDown, ChevronRight, Wrench, ArrowRight, BarChart2 } from 'lucide-react'
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, Cell, PieChart, Pie, Legend } from 'recharts'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
@@ -235,6 +235,262 @@ function StatCard({ label, value, sub, color }: { label: string; value: string; 
 }
 
 /* ------------------------------------------------------------------ */
+/*  Query Detail Panel — Datadog-style right slide-in                 */
+/* ------------------------------------------------------------------ */
+
+interface QueryDetailPanelProps {
+  pattern: QueryPatternV2
+  timeline: Record<string, any>[]
+  tlLoading: boolean
+  instance: string
+  onClose: () => void
+  onDrillHash?: (hash: string) => void
+  onAnalyze: TabProps['onAnalyze']
+  onShowQuery: (q: string) => void
+}
+
+function QueryDetailPanel({ pattern, timeline, tlLoading, instance, onClose, onDrillHash, onAnalyze, onShowQuery }: QueryDetailPanelProps) {
+  const [panelTab, setPanelTab] = useState<'metrics' | 'query'>('metrics')
+  const hash = String(pattern.normalized_query_hash)
+
+  // Close on Escape
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [onClose])
+
+  const statChips = [
+    { label: 'Executions', value: fmtCompact(pattern.cnt) },
+    { label: 'Avg', value: fmtDuration(pattern.avg_ms), color: latencyBg(pattern.avg_ms) },
+    { label: 'P95', value: fmtDuration(pattern.p95_ms), color: latencyBg(pattern.p95_ms) },
+    { label: 'Total CPU', value: fmtDuration(pattern.total_ms) },
+    { label: 'Rd Bytes', value: fmtBytes(pattern.avg_read_bytes) },
+    { label: 'Rd Rows', value: fmtCompact(pattern.avg_read_rows) },
+    { label: 'Failures', value: fmtCompact(pattern.failures), color: pattern.failures > 0 ? 'text-red-400' : '' },
+  ]
+
+  return (
+    <>
+      {/* Backdrop */}
+      <div
+        className="fixed inset-0 z-40 bg-black/30"
+        onClick={onClose}
+      />
+      {/* Panel */}
+      <div className="fixed right-0 top-0 h-full z-50 flex flex-col bg-[var(--card)] border-l border-[var(--border)] shadow-2xl w-[520px] max-w-full">
+
+        {/* ── Header ── */}
+        <div className="shrink-0 border-b border-[var(--border)] bg-[var(--surface)]">
+          {/* SQL preview row */}
+          <div className="flex items-center gap-2 px-4 py-3">
+            <button
+              onClick={() => onShowQuery(pattern.sample_query)}
+              className="flex-1 min-w-0 text-left"
+            >
+              <div className="font-mono text-[11px] text-[var(--text)] truncate leading-relaxed">
+                <SqlHighlight text={pattern.sample_query} maxLen={90} />
+              </div>
+            </button>
+            <button
+              onClick={() => onShowQuery(pattern.sample_query)}
+              className="shrink-0 p-1 rounded text-[var(--dim)] hover:text-[var(--accent)] transition-colors"
+              title="View full query"
+            >
+              <Maximize2 size={12} />
+            </button>
+            <button
+              onClick={onClose}
+              className="shrink-0 p-1 rounded text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--hover)] transition-colors"
+            >
+              <X size={14} />
+            </button>
+          </div>
+          {/* Meta row */}
+          <div className="flex items-center gap-3 px-4 pb-2.5">
+            <span className="font-mono text-[10px] text-[var(--accent)] bg-[var(--accent-subtle)] px-1.5 py-0.5 rounded border border-[var(--accent)]/20">
+              {hash.slice(0, 12)}
+            </span>
+            <span className={cn('text-[10px] px-1.5 py-0.5 rounded font-medium', kindBg(pattern.kind))}>
+              {pattern.kind || 'SELECT'}
+            </span>
+            {pattern.user && (
+              <span className="text-[10px] text-[var(--dim)]">user: <span className="text-[var(--text)]">{pattern.user}</span></span>
+            )}
+            <button
+              onClick={() => onDrillHash?.(hash)}
+              className="ml-auto flex items-center gap-1 text-[11px] text-[var(--accent)] hover:underline"
+            >
+              Samples <ArrowRight size={10} />
+            </button>
+          </div>
+        </div>
+
+        {/* ── Stat chips ── */}
+        <div className="shrink-0 grid grid-cols-7 border-b border-[var(--border)]">
+          {statChips.map(chip => (
+            <div key={chip.label} className="flex flex-col items-center justify-center py-3 border-r border-[var(--border)] last:border-0">
+              <div className={cn('text-[13px] font-bold tabular-nums', chip.color)}>{chip.value}</div>
+              <div className="text-[9px] uppercase tracking-widest text-[var(--dim)] mt-0.5">{chip.label}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* ── Sub-tabs ── */}
+        <div className="shrink-0 flex border-b border-[var(--border)]">
+          {(['metrics', 'query'] as const).map(t => (
+            <button
+              key={t}
+              onClick={() => setPanelTab(t)}
+              className={cn(
+                'px-5 py-2 text-[12px] capitalize relative transition-colors',
+                panelTab === t
+                  ? 'text-[var(--accent)] font-medium after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-[var(--accent)]'
+                  : 'text-[var(--dim)] hover:text-[var(--text)]',
+              )}
+            >
+              {t === 'metrics' ? 'Metrics' : 'Query'}
+            </button>
+          ))}
+          <div className="flex-1" />
+          <button
+            onClick={() => onAnalyze(`Query ${hash.slice(0, 8)}`, { pattern, timeline }, { contextType: 'row', tab: 'patterns', elementId: hash })}
+            className="flex items-center gap-1 px-3 py-2 text-[11px] text-[var(--accent)] hover:bg-[var(--accent-subtle)] transition-colors"
+          >
+            <Sparkles size={10} /> Analyze
+          </button>
+        </div>
+
+        {/* ── Content ── */}
+        <div className="flex-1 overflow-y-auto">
+          {panelTab === 'metrics' && (
+            <div className="p-4 space-y-4">
+              {tlLoading ? (
+                <div className="space-y-3">
+                  {[140, 140, 100].map((h, i) => (
+                    <div key={i} className="rounded-lg bg-[var(--surface)] animate-pulse" style={{ height: h }} />
+                  ))}
+                </div>
+              ) : timeline.length === 0 ? (
+                <div className="text-[12px] text-[var(--dim)] text-center py-12 border border-[var(--border)] rounded-lg">
+                  No timeline data in this range — try expanding the time window.
+                </div>
+              ) : (
+                <>
+                  <HistoryChart
+                    title="Latency — Avg / P95 / Max"
+                    data={timeline}
+                    series={[
+                      { key: 'avg_ms', label: 'Avg', color: C.green },
+                      { key: 'p95_ms', label: 'P95', color: C.yellow },
+                      { key: 'max_ms', label: 'Max', color: C.red },
+                    ]}
+                    yFormat="ms"
+                    height={140}
+                    onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
+                  />
+                  <HistoryChart
+                    title="Executions & Failures"
+                    data={timeline}
+                    series={[
+                      { key: 'cnt', label: 'Execs', color: C.blue },
+                      { key: 'failures', label: 'Failures', color: C.red },
+                    ]}
+                    height={110}
+                    onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
+                  />
+                  <HistoryChart
+                    title="Memory & Read Bytes"
+                    data={timeline}
+                    series={[
+                      { key: 'avg_memory', label: 'Memory', color: C.purple },
+                      { key: 'avg_read_bytes', label: 'Read Bytes', color: C.cyan },
+                    ]}
+                    yFormat="bytes"
+                    height={110}
+                    onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
+                  />
+                  {timeline.some(r => Number(r.avg_read_rows) > 0) && (
+                    <HistoryChart
+                      title="Rows Read"
+                      data={timeline}
+                      series={[{ key: 'avg_read_rows', label: 'Rows', color: C.orange }]}
+                      height={90}
+                      onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
+                    />
+                  )}
+                  <HistoryChart
+                    title="Mark Cache Hit Rate %"
+                    data={timeline}
+                    series={[{ key: 'avg_mark_cache_hit_pct', label: 'Hit %', color: C.cyan }]}
+                    note="No disk index reads — data served from cache"
+                    height={90}
+                    onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
+                  />
+                </>
+              )}
+            </div>
+          )}
+
+          {panelTab === 'query' && (
+            <div className="p-4 space-y-3">
+              {/* Full SQL */}
+              <div className="rounded-lg border border-[var(--border)] overflow-hidden">
+                <div className="flex items-center justify-between px-3 py-2 bg-[var(--surface)] border-b border-[var(--border)]">
+                  <span className="text-[10px] font-semibold uppercase tracking-widest text-[var(--dim)]">SQL</span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => navigator.clipboard.writeText(pattern.sample_query).catch(() => {})}
+                      className="flex items-center gap-1 text-[10px] text-[var(--dim)] hover:text-[var(--text)] transition-colors"
+                    >
+                      <Copy size={10} /> Copy
+                    </button>
+                    <button
+                      onClick={() => onShowQuery(pattern.sample_query)}
+                      className="flex items-center gap-1 text-[10px] text-[var(--accent)] hover:underline"
+                    >
+                      <Maximize2 size={10} /> Expand
+                    </button>
+                  </div>
+                </div>
+                <div className="p-3 bg-[var(--bg)] max-h-[400px] overflow-auto">
+                  <pre className="font-mono text-[11px] leading-[1.7] whitespace-pre-wrap break-all text-[var(--text)]">
+                    {pattern.sample_query}
+                  </pre>
+                </div>
+              </div>
+
+              {/* Pattern metadata */}
+              <div className="rounded-lg border border-[var(--border)] overflow-hidden">
+                <div className="px-3 py-2 bg-[var(--surface)] border-b border-[var(--border)]">
+                  <span className="text-[10px] font-semibold uppercase tracking-widest text-[var(--dim)]">Pattern Info</span>
+                </div>
+                <div className="divide-y divide-[var(--border)]">
+                  {[
+                    ['Hash', hash],
+                    ['Kind', pattern.kind],
+                    ['User', pattern.user || '—'],
+                    ['Client', pattern.client || '—'],
+                    ['Avg Memory', fmtBytes(pattern.avg_memory)],
+                    ['Max Memory', fmtBytes(pattern.max_memory)],
+                    ['Max Duration', fmtDuration(pattern.max_ms)],
+                  ].map(([k, v]) => (
+                    <div key={k} className="flex items-center px-3 py-1.5 text-[11px]">
+                      <span className="text-[var(--dim)] w-28 shrink-0">{k}</span>
+                      <span className="font-mono text-[var(--text)] truncate">{v}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </>
+  )
+}
+
+/* ------------------------------------------------------------------ */
 /*  Query Patterns Tab                                                 */
 /* ------------------------------------------------------------------ */
 
@@ -375,103 +631,105 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
     return { stackedChartData: data, patternKeys: keys }
   })()
 
-  // ── table columns ──────────────────────────────────────────────────────────
+  // ── table columns — Datadog order: query first, then metrics ─────────────
   const columns: any[] = [
     {
-      key: 'normalized_query_hash',
-      label: 'Hash',
-      tooltip: 'Unique fingerprint of the normalized query (parameters stripped)',
-      format: (v: any) => (
-        <span className="font-mono text-[11px] text-[var(--accent)] tracking-tight">{String(v).slice(0, 12)}</span>
-      ),
+      key: 'sample_query',
+      label: 'Query Statement',
+      tooltip: 'Normalized query pattern — parameters stripped. Click row to open detail panel.',
+      className: 'max-w-0 w-full',
+      format: (v: any, row: any) => {
+        const q = String(v ?? '')
+        const kind = String(row.kind || '')
+        return (
+          <span className="flex items-center gap-2 min-w-0">
+            <span className={cn('shrink-0 text-[9px] px-1 py-0.5 rounded font-semibold uppercase tracking-wide', kindBg(kind))}>
+              {kind.slice(0, 3) || 'SQL'}
+            </span>
+            <span className="truncate min-w-0 font-mono text-[11px]">
+              <SqlHighlight text={q} maxLen={80} />
+            </span>
+            {q && (
+              <button
+                onClick={e => { e.stopPropagation(); onShowQuery(q) }}
+                className="shrink-0 p-0.5 rounded text-[var(--dim)] hover:text-[var(--accent)] opacity-0 group-hover/row:opacity-100 transition-all"
+                title="View full query"
+              >
+                <Maximize2 size={10} />
+              </button>
+            )}
+          </span>
+        )
+      },
     },
-    { key: 'cnt', label: 'Execs', tooltip: 'Total number of times this query pattern ran in the selected time range', format: (v: any) => <span className="tabular-nums">{fmtCompact(v)}</span> },
     {
-      key: 'kind',
-      label: 'Kind',
-      tooltip: 'Query type: SELECT, INSERT, etc.',
+      key: 'cnt',
+      label: 'Count',
+      tooltip: 'Total executions in selected time range',
+      format: (v: any) => <span className="tabular-nums text-[11px]">{fmtCompact(v)}</span>,
+    },
+    {
+      key: 'avg_ms',
+      label: 'Avg Duration',
+      tooltip: 'Average query duration. Green <1s · Amber 1–10s · Red >10s',
       format: (v: any) => (
-        <span className={cn('inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium', kindBg(v))}>
-          {String(v || '—').slice(0, 6)}
+        <span className={cn('inline-flex px-1.5 py-0.5 rounded text-[11px] tabular-nums font-medium', latencyBg(v))}>
+          {fmtDuration(v)}
         </span>
       ),
     },
     {
       key: 'total_ms',
-      label: 'Total CPU',
-      tooltip: 'Sum of wall-clock duration for all executions — proportional bar shows share of total load',
+      label: 'Total Duration',
+      tooltip: 'Sum of all execution times — bar shows share of total load',
       format: (v: any, row: any) => (
-        <span className="flex items-center gap-2 min-w-[110px]">
-          <span className="tabular-nums text-xs">{fmtDuration(v)}</span>
-          <span className="h-1.5 rounded-full shrink-0 bg-[var(--accent)] opacity-60"
-            style={{ width: `${Math.max(3, ((row.total_ms || 0) / maxTotalMs) * 56)}px` }} />
+        <span className="flex items-center gap-1.5 min-w-[90px]">
+          <span className="tabular-nums text-[11px]">{fmtDuration(v)}</span>
+          <span
+            className="h-1 rounded-full shrink-0 bg-[var(--accent)] opacity-50"
+            style={{ width: `${Math.max(3, ((row.total_ms || 0) / maxTotalMs) * 40)}px` }}
+          />
         </span>
       ),
     },
     {
-      key: 'avg_ms',
-      label: 'Avg',
-      tooltip: 'Average query duration across all executions. Green < 1s, amber 1–10s, red > 10s',
-      format: (v: any) => (
-        <span className={cn('inline-flex px-1.5 py-0.5 rounded text-[11px] tabular-nums', latencyBg(v))}>
-          {fmtDuration(v)}
-        </span>
-      ),
+      key: 'avg_read_bytes',
+      label: 'Avg Read Bytes',
+      tooltip: 'Average bytes read from disk per execution',
+      format: (v: any) => <span className="tabular-nums text-[11px] text-[var(--dim)]">{fmtBytes(v)}</span>,
+    },
+    {
+      key: 'avg_read_rows',
+      label: 'Avg Read Rows',
+      tooltip: 'Average rows scanned per execution',
+      format: (v: any) => <span className="tabular-nums text-[11px] text-[var(--dim)]">{fmtCompact(v)}</span>,
     },
     {
       key: 'p95_ms',
       label: 'P95',
-      tooltip: '95th-percentile latency — 95% of executions were faster than this',
+      tooltip: '95th-percentile latency',
       format: (v: any) => (
         <span className={cn('inline-flex px-1.5 py-0.5 rounded text-[11px] tabular-nums', latencyBg(v))}>
           {fmtDuration(v)}
         </span>
       ),
     },
-    { key: 'avg_memory', label: 'Avg Mem', tooltip: 'Average peak memory usage per execution (from query_log.memory_usage)', format: (v: any) => <span className="text-xs tabular-nums">{fmtBytes(v)}</span> },
     {
       key: 'failures',
-      label: 'Fails',
-      tooltip: 'Number of executions that raised an exception. Click to see the failed query samples.',
+      label: 'Errors',
+      tooltip: 'Executions that raised an exception. Click to drill into failure details.',
       format: (v: any, row: any) => {
         const n = Number(v)
         const hash = String(row.normalized_query_hash)
-        if (n === 0) return <span className="text-[var(--dim)] text-xs" title="No failures">—</span>
-        const chip = n > 5
-          ? <span className="inline-flex px-1.5 py-0.5 rounded text-[11px] font-semibold bg-red-500/10 text-red-400 border border-red-500/20">{fmtCompact(n)}</span>
-          : <span className="text-amber-400 text-xs font-medium">{n}</span>
+        if (n === 0) return <span className="text-[var(--dim)] text-[11px]">—</span>
         return (
           <button
             onClick={e => { e.stopPropagation(); onDrillFail?.(hash) }}
-            className="hover:opacity-75 transition-opacity"
+            className="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-semibold bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 transition-colors"
             title="Click to see failed query samples"
           >
-            {chip}
+            {fmtCompact(n)}
           </button>
-        )
-      },
-    },
-    {
-      key: 'sample_query',
-      label: 'Sample Query',
-      tooltip: 'Example SQL from this query pattern (parameters stripped and normalized)',
-      format: (v: any) => {
-        const q = String(v ?? '')
-        return (
-          <span className="flex items-center gap-1.5 group/q min-w-0">
-            <span className="truncate min-w-0">
-              <SqlHighlight text={q} maxLen={70} />
-            </span>
-            {q && (
-              <button
-                onClick={e => { e.stopPropagation(); onShowQuery(q) }}
-                className="shrink-0 p-0.5 rounded text-[var(--dim)] hover:text-[var(--accent)] opacity-0 group-hover/q:opacity-100 transition-all"
-                title="View full query"
-              >
-                <Maximize2 size={11} />
-              </button>
-            )}
-          </span>
         )
       },
     },
@@ -481,7 +739,7 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
       format: (_v: any, row: any) => (
         <button
           onClick={(e: any) => { e.stopPropagation(); onDrillHash(String(row.normalized_query_hash)) }}
-          className="text-xs text-[var(--accent)] hover:underline whitespace-nowrap opacity-60 hover:opacity-100 transition-opacity"
+          className="text-[11px] text-[var(--accent)] hover:underline whitespace-nowrap opacity-0 group-hover/row:opacity-100 transition-opacity"
         >
           Samples →
         </button>
@@ -679,142 +937,23 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
         </div>
       )}
 
-      {selectedHash && (
-        <div className="space-y-3 mt-2">
-          {/* Header */}
-          <div className="flex items-center gap-2 px-1">
-            <span className="text-xs font-semibold text-[var(--dim)] uppercase tracking-wider">
-              Query Detail — hash {selectedHash.slice(0, 14)}
-            </span>
-            <button
-              onClick={() => onDrillHash?.(selectedHash)}
-              className="ml-auto text-xs text-[var(--accent)] hover:underline"
-            >
-              View Samples →
-            </button>
-            <button
-              onClick={() => setSelectedHash(null)}
-              className="text-[var(--dim)] hover:text-[var(--fg)]"
-            >
-              <X size={14} />
-            </button>
-          </div>
-
-          {tlLoading ? (
-            <LoadingSkeleton />
-          ) : timeline.length === 0 ? (
-            <div className="text-sm text-[var(--dim)] p-4 bg-[var(--surface)] border border-[var(--border)] rounded-xl">
-              No timeline data for this hash in the selected range. Try expanding the time range.
-            </div>
-          ) : (
-            <>
-              {/* Inline stat cards derived from timeline */}
-              {(() => {
-                const totalExecsTl = timeline.reduce((s, r) => s + (Number(r.cnt) || 0), 0)
-                const avgMs = timeline.reduce((s, r) => s + (Number(r.avg_ms) || 0), 0) / Math.max(1, timeline.length)
-                const totalFails = timeline.reduce((s, r) => s + (Number(r.failures) || 0), 0)
-                const avgMem = timeline.reduce((s, r) => s + (Number(r.avg_memory) || 0), 0) / Math.max(1, timeline.length)
-                const errRate = totalExecsTl > 0 ? (totalFails / totalExecsTl * 100) : 0
-                return (
-                  <div className="flex gap-2 flex-wrap">
-                    <StatCard label="Executions" value={fmtCompact(totalExecsTl)} />
-                    <StatCard label="Avg Latency" value={fmtDuration(avgMs)} />
-                    <StatCard label="Avg Memory" value={fmtBytes(avgMem)} sub="per execution" />
-                    <StatCard label="Error Rate"
-                      value={errRate < 0.1 ? (totalFails === 0 ? '0%' : '<0.1%') : errRate.toFixed(1) + '%'}
-                      color={errRate > 5 ? 'text-red-400' : errRate > 0 ? 'text-amber-400' : 'text-emerald-400'}
-                      sub={`${fmtCompact(totalFails)} failures`}
-                    />
-                  </div>
-                )
-              })()}
-
-              {/* Charts grid */}
-              <div className="grid grid-cols-1 gap-3">
-                <HistoryChart
-                  title="Executions & Failures"
-                  data={timeline}
-                  series={[
-                    { key: 'cnt', label: 'Executions', color: C.blue },
-                    { key: 'failures', label: 'Failures', color: C.red },
-                  ]}
-                  height={120}
-                  onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
-                />
-                <HistoryChart
-                  title="Latency (Avg / P95 / Max)"
-                  data={timeline}
-                  series={[
-                    { key: 'avg_ms', label: 'Avg', color: C.green },
-                    { key: 'p95_ms', label: 'P95', color: C.yellow },
-                    { key: 'max_ms', label: 'Max', color: C.red },
-                  ]}
-                  yFormat="ms"
-                  height={120}
-                  onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
-                />
-                <HistoryChart
-                  title="Memory & Read Bytes"
-                  data={timeline}
-                  series={[
-                    { key: 'avg_memory', label: 'Avg Memory', color: C.purple },
-                    { key: 'avg_read_bytes', label: 'Avg Read Bytes', color: C.cyan },
-                  ]}
-                  yFormat="bytes"
-                  height={120}
-                  onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
-                />
-                {/* CPU time */}
-                {timeline.some(r => Number(r.avg_cpu_ms) > 0) && (
-                  <HistoryChart
-                    title="CPU Time (User + System)"
-                    data={timeline}
-                    series={[{ key: 'avg_cpu_ms', label: 'Avg CPU', color: C.orange }]}
-                    yFormat="ms"
-                    height={100}
-                    onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
-                  />
-                )}
-                {/* Read rows */}
-                {timeline.some(r => Number(r.avg_read_rows) > 0) && (
-                  <HistoryChart
-                    title="Rows Read / Written"
-                    data={timeline}
-                    series={[
-                      { key: 'avg_read_rows', label: 'Read Rows', color: C.blue },
-                      { key: 'avg_written_rows', label: 'Written Rows', color: C.green },
-                    ]}
-                    height={100}
-                    onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
-                  />
-                )}
-                {/* Mark cache — always shown; N/A means data fully served from uncompressed/OS cache */}
-                <HistoryChart
-                  title="Mark Cache Hit Rate (%)"
-                  data={timeline}
-                  series={[{ key: 'avg_mark_cache_hit_pct', label: 'Hit %', color: C.cyan }]}
-                  note="No disk index reads — data served from uncompressed or OS page cache"
-                  height={100}
-                  onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
-                />
-                {/* S3 latency — always shown; N/A means this pattern does not read from S3 storage */}
-                <HistoryChart
-                  title="S3 Latency & Requests per Exec"
-                  data={timeline}
-                  series={[
-                    { key: 'avg_s3_latency_ms', label: 'Avg Latency ms', color: C.yellow },
-                    { key: 'avg_s3_requests', label: 'Requests/exec', color: C.orange },
-                  ]}
-                  yFormat="ms"
-                  note="No S3 reads — this query pattern does not access S3-backed storage"
-                  height={100}
-                  onAnalyze={(d, s, t) => onAnalyze(t, { data: d, series: s }, { contextType: 'chart', tab: 'patterns' })}
-                />
-              </div>
-            </>
-          )}
-        </div>
-      )}
+      {/* ── Slide-in detail panel ── */}
+      {selectedHash && (() => {
+        const pattern = patterns.find(p => String(p.normalized_query_hash) === selectedHash)
+        if (!pattern) return null
+        return (
+          <QueryDetailPanel
+            pattern={pattern}
+            timeline={timeline}
+            tlLoading={tlLoading}
+            instance={instance}
+            onClose={() => setSelectedHash(null)}
+            onDrillHash={onDrillHash}
+            onAnalyze={onAnalyze}
+            onShowQuery={onShowQuery}
+          />
+        )
+      })()}
     </div>
   )
 }
