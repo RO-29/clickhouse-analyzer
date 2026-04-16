@@ -1138,69 +1138,11 @@ func (s *Server) validInstance(name string) bool {
 	return s.manager.Get(name) != nil
 }
 
-// getHealthScore computes a simple health score 0-100 from the latest metrics.
-// This is a best-effort heuristic: start at 100 and deduct for problems.
+// getHealthScore returns the health score for an instance. It delegates to the
+// analyzer's pre-computed score so that the API and the Prometheus metric always
+// report the same value.
 func (s *Server) getHealthScore(instance string) float64 {
-	score := 100.0
-
-	alerts, err := s.store.GetActiveAlerts(instance)
-	if err == nil {
-		// Count unique alert categories, not individual alerts
-		critCats := make(map[string]bool)
-		warnCats := make(map[string]bool)
-		for _, a := range alerts {
-			switch a.Severity {
-			case "critical":
-				critCats[a.Category] = true
-			case "warn":
-				warnCats[a.Category] = true
-			}
-		}
-		alertDeduct := float64(len(critCats))*10 + float64(len(warnCats))*3
-		if alertDeduct > 55 {
-			alertDeduct = 55
-		}
-		score -= alertDeduct
-	}
-
-	latest, err := s.store.QueryLatestMetrics(instance)
-	if err != nil {
-		return max(score, 0)
-	}
-
-	for _, m := range latest {
-		switch m.Name {
-		case "memory_usage_percent":
-			if m.Value > 90 {
-				score -= 15
-			} else if m.Value > 80 {
-				score -= 5
-			}
-		case "cpu_usage_percent":
-			if m.Value > 95 {
-				score -= 10
-			} else if m.Value > 80 {
-				score -= 3
-			}
-		case "disk_usage_percent":
-			if m.Value > 90 {
-				score -= 15
-			} else if m.Value > 80 {
-				score -= 5
-			}
-		case "total_parts":
-			if m.Value > 500 {
-				score -= 10
-			} else if m.Value > 300 {
-				score -= 3
-			}
-		}
-	}
-
-	if score < 0 {
-		score = 0
-	}
-	return score
+	return float64(s.analyzer.GetHealthScore(instance).Score)
 }
 
 func parseTimeRange(r *http.Request) (time.Time, time.Time) {
