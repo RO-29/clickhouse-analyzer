@@ -266,12 +266,6 @@ export default function ChatAnalyzer() {
               if (currentEvent === 'debug') {
                 try {
                   const dbg = JSON.parse(raw)
-                  // eslint-disable-next-line no-console
-                  console.log('[CH-CHAT] ── Debug payload ──', dbg)
-                  if (dbg.prompt_head) {
-                    // eslint-disable-next-line no-console
-                    console.log('[CH-CHAT] ── Prompt sent to Claude (first 5 KB) ──\n' + dbg.prompt_head)
-                  }
                   // Store evidence in the message so EvidencePanel can show it
                   updateAssistantMsg(sessionId, assistantMsgId, {
                     evidence: {
@@ -541,7 +535,7 @@ export default function ChatAnalyzer() {
           <>
             {/* Chat header bar */}
             <div className="px-6 py-3 border-b border-[var(--border)] shrink-0 bg-[var(--card)] flex items-center gap-3">
-              <span className="truncate text-sm font-medium text-[var(--fg)] flex-1 min-w-0">
+              <span className="truncate text-sm font-medium text-[var(--fg)] flex-1 min-w-0" title={activeSession.name || 'Untitled'}>
                 {activeSession.name || 'Untitled'}
               </span>
               <span className="bg-[var(--surface)] border border-[var(--border)] text-xs px-2 py-0.5 rounded text-[var(--dim)] shrink-0">

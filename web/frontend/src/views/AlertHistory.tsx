@@ -71,6 +71,8 @@ export default function AlertHistory({ refreshKey }: { refreshKey?: number }) {
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [stats, setStats] = useState<AlertStats | null>(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null)
   const [rangeHours, setRangeHours] = useState(24)
   const [instanceFilter, setInstanceFilter] = useState('')
   const [severityFilter, setSeverityFilter] = useState('')
@@ -82,14 +84,15 @@ export default function AlertHistory({ refreshKey }: { refreshKey?: number }) {
   // Fetch history + stats whenever range / instance filter changes
   useEffect(() => {
     setLoading(true)
+    setLoadError(null)
     const now = Math.floor(Date.now() / 1000)
     const from = now - rangeHours * 3600
     Promise.all([
       api.alerts.history({ from, to: now, instance: instanceFilter || undefined }),
       api.alerts.stats(rangeHours),
     ])
-      .then(([h, s]) => { setAlerts(h); setStats(s) })
-      .catch(() => { setAlerts([]); setStats(null) })
+      .then(([h, s]) => { setAlerts(h); setStats(s); setLastRefreshed(new Date()) })
+      .catch((e: any) => { setAlerts([]); setStats(null); setLoadError(e?.message ?? 'Failed to load alert history') })
       .finally(() => setLoading(false))
   }, [refreshKey, rangeHours, instanceFilter])
 
@@ -129,11 +132,23 @@ export default function AlertHistory({ refreshKey }: { refreshKey?: number }) {
 
   return (
     <div className="space-y-4">
+      {loadError && (
+        <div className="flex items-center gap-3 px-4 py-3 rounded-lg border border-red-500/30 bg-red-500/10 text-sm text-red-400">
+          <XCircle className="w-4 h-4 shrink-0" />
+          <span className="flex-1">{loadError}</span>
+        </div>
+      )}
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-2">
         <h2 className="text-lg font-semibold flex items-center gap-2">
           <Bell className="w-5 h-5" /> Alert History
         </h2>
+        <div className="flex items-center gap-2">
+          {lastRefreshed && !loading && (
+            <span className="text-[11px] text-[var(--dim)] hidden sm:block">
+              Updated {lastRefreshed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+            </span>
+          )}
         <div className="flex items-center gap-1">
           {RANGE_OPTIONS.map(o => (
             <button
@@ -147,6 +162,7 @@ export default function AlertHistory({ refreshKey }: { refreshKey?: number }) {
               )}
             >{o.label}</button>
           ))}
+        </div>
         </div>
       </div>
 
@@ -180,7 +196,7 @@ export default function AlertHistory({ refreshKey }: { refreshKey?: number }) {
             <div className="text-xs text-[var(--text-muted)] mt-0.5">Avg duration</div>
           </Card>
           <Card className="p-3">
-            <div className="text-xl font-bold truncate">
+            <div className="text-xl font-bold truncate" title={stats.top_categories[0]?.category}>
               {stats.top_categories[0]?.category ?? '—'}
             </div>
             <div className="text-xs text-[var(--text-muted)] mt-0.5">Top category</div>
@@ -294,7 +310,7 @@ export default function AlertHistory({ refreshKey }: { refreshKey?: number }) {
                       )} />
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
-                          <span className={cn('text-sm font-medium truncate', SEV_TEXT[alert.severity])}>
+                          <span className={cn('text-sm font-medium truncate', SEV_TEXT[alert.severity])} title={alert.title}>
                             {alert.title}
                           </span>
                           {alert.resolved ? (

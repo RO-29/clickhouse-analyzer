@@ -300,7 +300,7 @@ function QueryDetailPanel({ pattern, timeline, tlLoading, instance, onClose, onD
               onClick={() => onShowQuery(pattern.sample_query)}
               className="flex-1 min-w-0 text-left"
             >
-              <div className="font-mono text-[11px] text-[var(--text)] truncate leading-relaxed">
+              <div className="font-mono text-[11px] text-[var(--text)] truncate leading-relaxed" title={pattern.sample_query}>
                 <SqlHighlight text={pattern.sample_query} maxLen={90} />
               </div>
             </button>
@@ -1016,7 +1016,7 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
       for (const r of tlArr) map.set(r.ts, (map.get(r.ts) ?? 0) + (Number(r.cnt) || 0))
       setFailTimeline([...map.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([ts, cnt]) => ({ ts, cnt })))
       setPatternTimeline(Array.isArray(tl) ? tl : [])
-    }).catch(() => {})
+    }).catch(() => { if (!c) { setFailTimeline([]); setPatternTimeline([]) } })
     return () => { c = true }
   }, [instance, hashFilter, errorsOnly, from, to])
 
@@ -1396,7 +1396,7 @@ function LiveTab({ instance, onShowQuery }: { instance: string; onShowQuery: (q:
                   </span>
                 </div>
                 {/* User */}
-                <span className="text-xs text-[var(--dim)] w-20 shrink-0 truncate">{r.user}</span>
+                <span className="text-xs text-[var(--dim)] w-20 shrink-0 truncate" title={r.user}>{r.user}</span>
                 {/* Kind badge */}
                 {kind && (
                   <span className={cn('shrink-0 inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium', kindBg(kind))}>
@@ -1545,7 +1545,7 @@ function UsersTab({ instance, from, to, refreshKey, onDrillUser }: UsersTabProps
                       onDrillUser && 'cursor-pointer',
                     )}
                   >
-                    <span className="text-sm font-medium w-28 shrink-0 truncate">{u.user || '(unknown)'}</span>
+                    <span className="text-sm font-medium w-28 shrink-0 truncate" title={u.user || '(unknown)'}>{u.user || '(unknown)'}</span>
                     <div className="flex-1 flex items-center gap-2 min-w-0">
                       <div className="flex-1 h-2 rounded-full bg-[var(--border)] overflow-hidden">
                         <div className="h-full rounded-full transition-all duration-500"
@@ -1688,7 +1688,7 @@ function FailuresTab({ instance, from, to, refreshKey, onAnalyze }: TabProps) {
                     {fmtCompact(row.cnt)} errs
                   </span>
                   {/* First message preview */}
-                  <span className="text-xs text-[var(--dim)] truncate flex-1 font-mono">
+                  <span className="text-xs text-[var(--dim)] truncate flex-1 font-mono" title={msgs[0] || undefined}>
                     {msgs[0] ? msgs[0].slice(0, 120) : '—'}
                   </span>
                   <button

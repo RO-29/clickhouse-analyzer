@@ -133,7 +133,7 @@ function NodePill({
             : 'border-[var(--border)] bg-[var(--surface)] hover:border-green-500/40 cursor-pointer',
       )}
     >
-      <div className={cn('font-medium text-sm truncate', isBaseline && 'text-[var(--accent)]')}>
+      <div className={cn('font-medium text-sm truncate', isBaseline && 'text-[var(--accent)]')} title={inst}>
         {inst}
       </div>
       {isBaseline ? (
@@ -344,7 +344,7 @@ function TablePicker({
 
       {/* Selected badge */}
       {value && (
-        <div className="text-[10px] text-[var(--dim)] truncate">
+        <div className="text-[10px] text-[var(--dim)] truncate" title={`${value.db}.${value.table} @ ${value.inst}`}>
           {value.inst === selInst
             ? <span className="text-[var(--accent)]">{value.db}.{value.table} @ {value.inst}</span>
             : <span className="italic">({value.db}.{value.table} @ {value.inst})</span>}
@@ -576,14 +576,16 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
   // On-demand query stats: instance → "db.table" → stats
   const [queryStatsData, setQueryStatsData] = useState<Record<string, Record<string, QueryStats>> | null>(null)
   const [queryStatsLoading, setQueryStatsLoading] = useState(false)
+  const [queryStatsError, setQueryStatsError] = useState<string | null>(null)
 
   const loadQueryStats = useCallback(async () => {
     setQueryStatsLoading(true)
+    setQueryStatsError(null)
     try {
       const resp = await api.compare.queryStats()
       setQueryStatsData(resp.stats ?? null)
     } catch (e: any) {
-      console.error('Failed to load query stats:', e.message)
+      setQueryStatsError(e?.message ?? 'Failed to load query stats')
     } finally {
       setQueryStatsLoading(false)
     }
@@ -767,6 +769,9 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
           {queryStatsLoading && <Loader2 size={11} className="animate-spin" />}
           {queryStatsLoading ? 'Loading stats…' : queryStatsData ? '✓ Query stats' : 'Load query stats'}
         </button>
+        {queryStatsError && (
+          <span className="text-xs text-red-400" title={queryStatsError}>Stats failed</span>
+        )}
 
         <div className="flex items-center gap-4 text-xs ml-auto">
           {totalBytes > 0 && (
@@ -1511,7 +1516,7 @@ function CrossQueryView({ from, to }: { from: number; to: number }) {
                     {row.hash.slice(0, 12)}
                   </td>
                   <td className="py-2 px-3 max-w-xs">
-                    <div className="text-xs text-[var(--dim)] font-mono truncate">{String(row.label).slice(0, 60)}</div>
+                    <div className="text-xs text-[var(--dim)] font-mono truncate" title={String(row.label)}>{String(row.label).slice(0, 60)}</div>
                     <div className="text-xs text-[var(--dim)] mt-0.5 opacity-60">{row.kind}</div>
                   </td>
                   {instances.map((inst, j) => {

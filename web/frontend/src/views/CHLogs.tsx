@@ -49,6 +49,7 @@ export default function CHLogs({ refreshKey }: { refreshKey?: number }) {
   const [logs, setLogs] = useState<CHLogEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [loadedAt, setLoadedAt] = useState<Date | null>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(null!)
 
   // Keep inst in sync
@@ -71,6 +72,7 @@ export default function CHLogs({ refreshKey }: { refreshKey?: number }) {
       const lvl = level === 'All' ? undefined : level
       const data = await api.chLogs(inst, lvl, debouncedSearch || undefined, minutes, limit)
       setLogs(data)
+      setLoadedAt(new Date())
     } catch (e: any) {
       setError(e.message)
       setLogs([])
@@ -158,6 +160,11 @@ export default function CHLogs({ refreshKey }: { refreshKey?: number }) {
           ))}
         </select>
 
+        {loadedAt && !loading && (
+          <span className="text-[11px] text-[var(--dim)] hidden sm:block">
+            Updated {loadedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+          </span>
+        )}
         <button
           onClick={fetchLogs}
           disabled={loading}

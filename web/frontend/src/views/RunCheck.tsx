@@ -253,6 +253,7 @@ export default function RunCheck() {
   const [results, setResults] = useState<RunCheckResult[]>([])
   const [running, setRunning] = useState(false)
   const [error, setError] = useState('')
+  const [initError, setInitError] = useState<string | null>(null)
   const [instanceList, setInstanceList] = useState<string[]>([])
   const [forcingPoll, setForcingPoll] = useState(false)
   const [forcePollStatus, setForcePollStatus] = useState('')
@@ -283,8 +284,13 @@ export default function RunCheck() {
   }, [preset, customFrom, customTo])
 
   useEffect(() => {
-    api.collectors().then(setCollectorMetas).catch(() => {})
-    api.overview().then(data => setInstanceList(data.map(d => d.name))).catch(() => {})
+    Promise.all([
+      api.collectors().catch((e: any) => { setInitError(e?.message ?? 'Failed to load collectors'); return [] }),
+      api.overview().catch((e: any) => { setInitError(e?.message ?? 'Failed to load instances'); return [] }),
+    ]).then(([collectors, overview]) => {
+      setCollectorMetas(collectors as CollectorMeta[])
+      setInstanceList((overview as any[]).map((d: any) => d.name))
+    })
   }, [])
 
   const toggleCollector = (name: string) => {
@@ -578,7 +584,13 @@ export default function RunCheck() {
         </div>
       </div>
 
-      {/* Error */}
+      {/* Init / run errors */}
+      {initError && (
+        <div className="flex items-center gap-2 text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3">
+          <XCircle size={16} />
+          Failed to load: {initError}
+        </div>
+      )}
       {error && (
         <div className="flex items-center gap-2 text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3">
           <XCircle size={16} />

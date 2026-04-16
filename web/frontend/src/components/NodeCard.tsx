@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
 import { ChevronRight, RotateCcw, Wrench } from 'lucide-react'
+import { flashToast } from '../lib/notify'
 import { cn, scoreColor, sevColor, fmtTime } from '../lib/utils'
 import { api } from '../lib/api'
 import { Badge } from './Badge'
@@ -125,8 +126,8 @@ export function NodeCard({
     try {
       await api.alerts.resolve(dedupKey)
       onResolved?.()
-    } catch {
-      // ignore
+    } catch (e: any) {
+      flashToast(e?.message ?? 'Failed to resolve alert', 'error')
     } finally {
       setResolvingKey(null)
     }

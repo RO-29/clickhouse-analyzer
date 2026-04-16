@@ -295,7 +295,7 @@ function InstanceCostDetail({ instance }: { instance: string }) {
                       <td className="px-4 py-2 max-w-[220px]">
                         <div className="flex items-baseline gap-0.5 min-w-0">
                           <span className="text-[var(--dim)] text-[10px] shrink-0">{t.database}.</span>
-                          <span className="font-medium truncate">{t.table}</span>
+                          <span className="font-medium truncate" title={t.table}>{t.table}</span>
                         </div>
                         {/* Mini bar */}
                         <div className="mt-1 h-1 rounded-full bg-[var(--surface)] overflow-hidden">
@@ -359,7 +359,7 @@ function CostOverviewPanel({ onSelect }: { onSelect: (inst: string) => void }) {
             onClick={() => onSelect(inst.instance)}
             className="w-full flex items-center gap-4 px-4 py-2.5 hover:bg-[var(--hover)] transition-colors text-left"
           >
-            <span className="text-xs font-medium w-40 truncate shrink-0">{inst.instance}</span>
+            <span className="text-xs font-medium w-40 truncate shrink-0" title={inst.instance}>{inst.instance}</span>
             <div className="flex-1 h-2 rounded-full bg-[var(--surface)] overflow-hidden">
               <div
                 className="h-full rounded-full bg-[var(--accent)]/50"

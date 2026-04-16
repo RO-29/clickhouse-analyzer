@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
-import { Bell, BellOff, BookOpen, Brain, ChevronDown, ChevronLeft, ChevronRight, Clock, RefreshCw, Sparkles, Table2, Trash2, Wrench, Zap, Bookmark, X, CheckSquare, Square, CheckCheck } from 'lucide-react'
+import { Bell, BellOff, BookOpen, Brain, ChevronDown, ChevronLeft, ChevronRight, Clock, RefreshCw, Sparkles, Table2, Trash2, Wrench, Zap, Bookmark, X, CheckSquare, Square, CheckCheck, AlertCircle } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
@@ -532,7 +532,7 @@ function TimelineView({ alerts, staleHours, onSelect }: { alerts: Alert[]; stale
                           {a.resolved && <><span>·</span><span className="text-green-400">resolved</span></>}
                         </div>
                         {a.message && (
-                          <div className="text-xs text-[var(--dim)] mt-1 truncate">{a.message.slice(0, 120)}</div>
+                          <div className="text-xs text-[var(--dim)] mt-1 truncate" title={a.message}>{a.message.slice(0, 120)}</div>
                         )}
                       </div>
                       {tableInfo && (
@@ -588,6 +588,7 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
   const [historyAlerts, setHistoryAlerts] = useState<Alert[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [forcingPoll, setForcingPoll] = useState(false)
   const [forcePollMsg, setForcePollMsg] = useState('')
 
@@ -664,9 +665,9 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
       }
       try {
         const [active, history] = await Promise.all([api.alerts.active(), api.alerts.history()])
-        if (!cancelled) { setActiveAlerts(active); setHistoryAlerts(history) }
-      } catch {
-        // keep empty
+        if (!cancelled) { setActiveAlerts(active); setHistoryAlerts(history); setLoadError(null) }
+      } catch (e: any) {
+        if (!cancelled) setLoadError(e?.message ?? 'Failed to load alerts')
       } finally {
         if (!cancelled) {
           setLoading(false)
@@ -912,6 +913,14 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
 
   return (
     <div className="space-y-6">
+      {/* ---- Load error banner ---- */}
+      {loadError && (
+        <div className="flex items-center gap-3 px-4 py-3 rounded-lg border border-red-500/30 bg-red-500/10 text-sm text-red-400">
+          <AlertCircle size={14} className="shrink-0" />
+          <span className="flex-1">{loadError}</span>
+          <button onClick={() => setLoadError(null)} className="text-xs hover:underline opacity-70">Dismiss</button>
+        </div>
+      )}
       {/* ---- Maintenance banners ---- */}
       {maintInstances.length > 0 && (
         <div className="space-y-2">
@@ -1100,7 +1109,18 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
 
       {/* ---- Alert list ---- */}
       {filtered.length === 0 ? (
-        <div className="text-sm text-[var(--dim)] text-center py-12">No alerts match the current filters</div>
+        <div className="flex flex-col items-center gap-2 py-12 text-[var(--dim)]">
+          <Bell size={20} className="opacity-30" />
+          <span className="text-sm">No alerts match the current filters</span>
+          {(filterInstance !== 'all' || filterSeverity !== 'all' || filterCategory !== 'all' || filterType !== 'all' || filterStatus !== 'all') && (
+            <button
+              onClick={() => { setFilterInstance('all'); setFilterSeverity('all'); setFilterCategory('all'); setFilterType('all'); setFilterStatus('all') }}
+              className="text-xs text-[var(--accent)] hover:underline mt-1"
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
       ) : viewMode === 'timeline' ? (
         <TimelineView alerts={filtered} staleHours={staleHours} onSelect={setSelectedAlert} />
       ) : viewMode === 'flat' ? (

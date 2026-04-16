@@ -46,6 +46,7 @@ export default function AppLogs({ refreshKey }: { refreshKey?: number }) {
   const [allLogs, setAllLogs] = useState<LogEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [loadedAt, setLoadedAt] = useState<Date | null>(null)
 
   // Filters — applied client-side on the loaded set
   const [level, setLevel] = useState<string | null>(null)   // null = all
@@ -60,6 +61,7 @@ export default function AppLogs({ refreshKey }: { refreshKey?: number }) {
       const data = await api.logs(undefined, undefined, FETCH_LIMIT)
       setAllLogs(Array.isArray(data) ? data : [])
       setExpanded(new Set())
+      setLoadedAt(new Date())
     } catch (e: any) {
       setError(e.message)
       setAllLogs([])
@@ -184,6 +186,11 @@ export default function AppLogs({ refreshKey }: { refreshKey?: number }) {
             >
               Clear filters
             </button>
+          )}
+          {loadedAt && !loading && (
+            <span className="text-[11px] text-[var(--dim)] hidden sm:block">
+              Updated {loadedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+            </span>
           )}
           <button
             onClick={fetchLogs}

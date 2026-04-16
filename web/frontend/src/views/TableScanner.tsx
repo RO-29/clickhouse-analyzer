@@ -510,7 +510,7 @@ function TableRow({
       <td className={cn('px-2 py-1.5 text-xs max-w-[220px]', hl('table'))}>
         <div className="flex items-baseline gap-0.5 min-w-0">
           <span className="text-[var(--dim)] text-[10px] shrink-0">{entry.database}.</span>
-          <span className="font-medium text-[var(--fg)] truncate">{entry.table}</span>
+          <span className="font-medium text-[var(--fg)] truncate" title={entry.table}>{entry.table}</span>
         </div>
         {entry.schema_issues && entry.schema_issues.length > 0 && (
           <div className="flex flex-wrap gap-0.5 mt-0.5">
@@ -520,7 +520,7 @@ function TableRow({
       </td>
 
       {/* Engine */}
-      <td className={cn('px-2 py-1.5 text-[10px] font-mono text-[var(--dim)] max-w-[120px] truncate', hl('engine'))}>
+      <td className={cn('px-2 py-1.5 text-[10px] font-mono text-[var(--dim)] max-w-[120px] truncate', hl('engine'))} title={entry.engine}>
         {abbrevEngine(entry.engine)}
       </td>
 

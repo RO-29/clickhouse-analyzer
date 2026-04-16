@@ -442,7 +442,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
                         )}>
                           <AlertTriangle size={12} className={cn('mt-0.5 shrink-0', group.severity === 'critical' ? 'text-red-400' : 'text-yellow-400')} />
                           <div className="min-w-0">
-                            <div className="text-[12px] font-medium truncate">{group.title}</div>
+                            <div className="text-[12px] font-medium truncate" title={group.title}>{group.title}</div>
                             <div className="text-[11px] text-[var(--dim)]">{group.count} {group.count === 1 ? 'table/query' : 'tables/queries'}</div>
                           </div>
                         </div>

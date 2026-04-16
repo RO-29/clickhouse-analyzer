@@ -74,8 +74,9 @@ func (a *App) Run(ctx context.Context) {
 		}
 	}()
 
-	// Post initial pinned dashboard.
-	a.UpdatePinned()
+	// Schedule initial pinned dashboard non-blocking so the event loop
+	// starts immediately and socket.Events is always being drained.
+	go a.UpdatePinned()
 
 	for {
 		select {

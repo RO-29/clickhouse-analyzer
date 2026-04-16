@@ -701,10 +701,10 @@ export default function Terminal() {
                       <span className="text-xs text-[var(--dim)]">{entry.instance}</span>
                       <span className="text-xs text-[var(--dim)] ml-auto">{fmtDuration(entry.elapsed_ms)} · {fmtCompact(entry.row_count)} rows</span>
                     </div>
-                    <div className="text-xs font-mono text-[var(--fg)] truncate">
+                    <div className="text-xs font-mono text-[var(--fg)] truncate" title={entry.query}>
                       {entry.query.length > 80 ? entry.query.slice(0, 80) + '…' : entry.query}
                     </div>
-                    {entry.error && <div className="text-xs text-[var(--red)] mt-1 truncate">{entry.error}</div>}
+                    {entry.error && <div className="text-xs text-[var(--red)] mt-1 truncate" title={entry.error}>{entry.error}</div>}
                   </button>
                 ))}
               </div>
