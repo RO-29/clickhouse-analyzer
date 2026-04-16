@@ -311,18 +311,19 @@ func (a *Analyzer) computeHealthScore(instance string, alerts, crossAlerts []col
 		seen[k] = true
 		switch alert.Severity {
 		case collector.SeverityCritical:
-			totalDeduct += 15
+			totalDeduct += 10
 		case collector.SeverityWarn:
-			totalDeduct += 5
+			totalDeduct += 3
 		case collector.SeverityInfo:
 			totalDeduct += 1
 		}
 	}
 
-	// Cap total deduction at 60 so even badly degraded instances show > 0.
-	// With ~8 possible categories, 8 criticals × 15 = 120 → capped → min score 40.
-	if totalDeduct > 60 {
-		totalDeduct = 60
+	// Cap total deduction at 50.
+	// With 10 possible categories all critical: 100 → capped → min score 50.
+	// Typical "has some issues" node (3 criticals): ~30 deducted → score ~70 (yellow).
+	if totalDeduct > 50 {
+		totalDeduct = 50
 	}
 	score -= totalDeduct
 
