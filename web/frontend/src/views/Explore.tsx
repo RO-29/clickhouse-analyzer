@@ -489,7 +489,7 @@ function QueryDetailPanel({ pattern, timeline, tlLoading, instance, onClose, onD
                   ].map(([k, v]) => (
                     <div key={k} className="flex items-center px-3 py-1.5 text-[11px]">
                       <span className="text-[var(--dim)] w-28 shrink-0">{k}</span>
-                      <span className="font-mono text-[var(--text)] truncate">{v}</span>
+                      <span className="font-mono text-[var(--text)] truncate" title={String(v ?? '')}>{v}</span>
                     </div>
                   ))}
                 </div>
@@ -658,7 +658,7 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
             <span className={cn('shrink-0 text-[9px] px-1 py-0.5 rounded font-semibold uppercase tracking-wide', kindBg(kind))}>
               {kind.slice(0, 3) || 'SQL'}
             </span>
-            <span className="truncate min-w-0 font-mono text-[11px]">
+            <span className="truncate min-w-0 font-mono text-[11px]" title={q}>
               <SqlHighlight text={q} maxLen={80} />
             </span>
             {q && (
@@ -1241,7 +1241,7 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
                       error
                     </span>
                   )}
-                  <span className="truncate min-w-0">
+                  <span className="truncate min-w-0" title={String(s.query_text ?? '')}>
                     <SqlHighlight text={String(s.query_text ?? '')} maxLen={80} />
                   </span>
                 </button>

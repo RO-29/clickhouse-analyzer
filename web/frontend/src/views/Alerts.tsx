@@ -776,7 +776,6 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
       flashToast('Alert resolved', 'done')
     } catch (e: any) {
       flashToast(e.message ?? 'Resolve failed', 'error')
-      console.error('[CH-Analyzer] Resolve alert failed:', e.message)
     }
   }, [])
 
@@ -792,7 +791,6 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
       flashToast(`${n} stale alert${n !== 1 ? 's' : ''} resolved`, 'done')
     } catch (e: any) {
       flashToast(e.message ?? 'Resolve stale failed', 'error')
-      console.error('[CH-Analyzer] Resolve stale failed:', e.message)
     } finally {
       resolvingRef.current = false
       setResolving(false)

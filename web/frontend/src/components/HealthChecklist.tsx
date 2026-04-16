@@ -52,7 +52,7 @@ function HealthCard({ check, instance }: { check: HealthCheck; instance: string 
       >
         {statusIcon(check.status)}
         <div className="flex-1 min-w-0">
-          <div className="text-sm font-medium truncate">{check.name}</div>
+          <div className="text-sm font-medium truncate" title={check.name}>{check.name}</div>
           <div className="text-xs text-[var(--dim)] mt-0.5 font-mono">{check.value}</div>
         </div>
         {expanded
