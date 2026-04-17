@@ -251,12 +251,33 @@ export function NodeCard({
         </div>
 
         {/* Alert counts */}
-        <div className="flex items-center gap-1.5 shrink-0 min-w-[60px] justify-end">
+        <div className="flex items-center gap-1.5 shrink-0 min-w-[60px] justify-end" title="C = critical alerts · W = warnings · I = info">
           {hasAlerts ? (
             <>
-              {counts.crit > 0 && <span className="text-[11px] font-semibold text-red-400">{counts.crit}C</span>}
-              {counts.warn > 0 && <span className="text-[11px] font-semibold text-yellow-400">{counts.warn}W</span>}
-              {counts.info > 0 && <span className="text-[11px] font-semibold text-blue-400">{counts.info}I</span>}
+              {counts.crit > 0 && (
+                <span
+                  className="text-[11px] font-semibold text-red-400"
+                  title={`${counts.crit} critical alert${counts.crit !== 1 ? 's' : ''}`}
+                >
+                  {counts.crit}C
+                </span>
+              )}
+              {counts.warn > 0 && (
+                <span
+                  className="text-[11px] font-semibold text-yellow-400"
+                  title={`${counts.warn} warning alert${counts.warn !== 1 ? 's' : ''}`}
+                >
+                  {counts.warn}W
+                </span>
+              )}
+              {counts.info > 0 && (
+                <span
+                  className="text-[11px] font-semibold text-blue-400"
+                  title={`${counts.info} info alert${counts.info !== 1 ? 's' : ''}`}
+                >
+                  {counts.info}I
+                </span>
+              )}
             </>
           ) : (
             <span className="text-[11px] text-green-400">✓</span>

@@ -7,6 +7,7 @@ import { api } from '../lib/api'
 import { Card } from '../components/Card'
 import { MetricChart } from '../components/MetricChart'
 import { cn, fmtNum, scoreColor } from '../lib/utils'
+import { flashToast } from '../lib/notify'
 import type { Alert, AlertStats, Instance, QueryPatternV2, SLOReport } from '../types/api'
 
 /* ── Types ──────────────────────────────────────────────────────────────── */
@@ -276,6 +277,7 @@ function StatMini({ label, value, color }: { label: string; value: number; color
 /* ── Widget: Slow Queries ───────────────────────────────────────────────── */
 
 function SlowQueriesWidget({ inst, from, to, setView }: { inst: string; from: number; to: number; setView: (v: any) => void }) {
+  const { navToExploreWithRange } = useStore()
   const [patterns, setPatterns] = useState<QueryPatternV2[]>([])
   const [loading, setLoading] = useState(true)
   const [tick, setTick] = useState(0)
@@ -300,7 +302,18 @@ function SlowQueriesWidget({ inst, from, to, setView }: { inst: string; from: nu
             <span className="text-[10px] text-[var(--dim)] uppercase tracking-wider text-right">Count</span>
           </div>
           {patterns.map(p => (
-            <div key={p.normalized_query_hash} className="grid grid-cols-[1fr_auto_auto] gap-x-2 py-0.5 text-xs">
+            <div
+              key={p.normalized_query_hash}
+              className="grid grid-cols-[1fr_auto_auto] gap-x-2 py-0.5 text-xs cursor-pointer hover:bg-[var(--hover)] rounded px-1 -mx-1"
+              onClick={() => {
+                const url = new URL(window.location.href)
+                url.searchParams.set('view', 'explore')
+                url.searchParams.set('tab', 'patterns')
+                url.searchParams.set('hash', p.normalized_query_hash)
+                window.history.pushState(null, '', url.toString())
+                setView('explore')
+              }}
+            >
               <span className="truncate text-[var(--text)] font-mono text-[10px]" title={p.sample_query}>
                 {p.normalized_query_hash.slice(0, 8)}
               </span>
@@ -309,7 +322,7 @@ function SlowQueriesWidget({ inst, from, to, setView }: { inst: string; from: nu
             </div>
           ))}
           <button
-            onClick={() => setView('explore')}
+            onClick={() => navToExploreWithRange(inst, from, to)}
             className="text-[11px] text-[var(--accent)] hover:underline mt-1 block"
           >
             Open Explore →
@@ -357,17 +370,21 @@ function SLOOverviewWidget({ instances }: { instances: string[] }) {
             <div key={name} className="grid grid-cols-[1fr_auto_auto_auto] gap-x-2 py-0.5 text-xs items-center">
               <span className="truncate text-[var(--text)]">{name}</span>
               {report ? (
-                <>
-                  <span className="text-right tabular-nums font-mono text-[11px]" style={{ color: pctColor(report.uptime_pct) }}>
-                    {report.uptime_pct.toFixed(1)}%
-                  </span>
-                  <span className="text-right tabular-nums font-mono text-[11px]" style={{ color: pctColor(report.healthy_pct) }}>
-                    {report.healthy_pct.toFixed(1)}%
-                  </span>
-                  <span className="text-right tabular-nums font-mono text-[11px]" style={{ color: scoreColor(report.p50_score) }}>
-                    {Math.round(report.p50_score)}
-                  </span>
-                </>
+                report.total_polls === 0 ? (
+                  <span className="col-span-3 text-right text-[var(--dim)] text-[10px]">No data yet</span>
+                ) : (
+                  <>
+                    <span className="text-right tabular-nums font-mono text-[11px]" style={{ color: pctColor(report.uptime_pct) }}>
+                      {report.uptime_pct.toFixed(1)}%
+                    </span>
+                    <span className="text-right tabular-nums font-mono text-[11px]" style={{ color: pctColor(report.healthy_pct) }}>
+                      {report.healthy_pct.toFixed(1)}%
+                    </span>
+                    <span className="text-right tabular-nums font-mono text-[11px]" style={{ color: scoreColor(report.p50_score) }}>
+                      {Math.round(report.p50_score)}
+                    </span>
+                  </>
+                )
               ) : (
                 <span className="col-span-3 text-right text-[var(--dim)] text-[10px]">No data</span>
               )}
@@ -409,8 +426,10 @@ function WidgetCard({ title, children, onRefresh, loading, noInnerPad }: WidgetC
       </div>
       {/* Body */}
       {loading && !noInnerPad ? (
-        <div className="px-3 py-4 flex items-center justify-center text-[var(--dim)] text-xs">
-          Loading…
+        <div className="px-3 py-3 space-y-2">
+          {[80, 60, 40].map(w => (
+            <div key={w} className="h-3 rounded bg-[var(--surface)] animate-pulse" style={{ width: `${w}%` }} />
+          ))}
         </div>
       ) : (
         <div className={noInnerPad ? '' : 'px-3 py-3'}>
@@ -472,6 +491,7 @@ export default function Dashboard() {
     const next = widgets.map(w => w.id === id ? { ...w, enabled: !w.enabled } : w)
     setWidgets(next)
     saveLayout(next)
+    flashToast('Layout saved', 'done')
   }, [widgets])
 
   const moveWidget = useCallback((id: string, dir: 'up' | 'down') => {
@@ -486,6 +506,7 @@ export default function Dashboard() {
     })
     setWidgets(next)
     saveLayout(next)
+    flashToast('Layout saved', 'done')
   }, [widgets])
 
   return (
@@ -538,6 +559,16 @@ export default function Dashboard() {
               </div>
             ))}
           </div>
+          <button
+            onClick={() => {
+              setWidgets(DEFAULT_WIDGETS)
+              saveLayout(DEFAULT_WIDGETS)
+              flashToast('Layout reset to defaults', 'done')
+            }}
+            className="mt-3 text-xs text-[var(--dim)] hover:text-red-400 transition-colors"
+          >
+            Reset to defaults
+          </button>
         </Card>
       )}
 

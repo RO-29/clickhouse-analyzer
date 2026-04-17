@@ -75,20 +75,27 @@ const RANGE_PRESETS = [
 
 /* ─── Issue helpers ───────────────────────────────────────────────────────── */
 
-type IssueStyle = { label: string; color: string }
+type IssueStyle = { label: string; color: string; title?: string }
 
 function getIssueStyle(issue: string): IssueStyle {
   if (issue === 'no_partition_key')  return { label: 'No Partition', color: 'bg-orange-500/15 text-orange-400 border-orange-500/30' }
   if (issue === 'no_sort_key')       return { label: 'No Sort Key',  color: 'bg-orange-500/15 text-orange-400 border-orange-500/30' }
-  if (issue.startsWith('high_parts_')) return { label: 'High Parts', color: 'bg-red-500/15 text-red-400 border-red-500/30' }
+  if (issue.startsWith('high_parts_')) {
+    const count = issue.replace('high_parts_', '')
+    return {
+      label: `High Parts (${count})`,
+      color: 'bg-red-500/15 text-red-400 border-red-500/30',
+      title: `${count} parts — consider optimizing merge settings (threshold: 300 parts)`,
+    }
+  }
   if (issue === 'no_recent_inserts') return { label: 'No Writes',    color: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30' }
   return { label: issue, color: 'bg-[var(--surface)] text-[var(--dim)] border-[var(--border)]' }
 }
 
 function IssueBadge({ issue }: { issue: string }) {
-  const { label, color } = getIssueStyle(issue)
+  const { label, color, title } = getIssueStyle(issue)
   return (
-    <span className={cn('inline-flex items-center text-[8px] font-bold uppercase tracking-wide px-1 py-px rounded border', color)}>
+    <span className={cn('inline-flex items-center text-[8px] font-bold uppercase tracking-wide px-1 py-px rounded border', color)} title={title}>
       {label}
     </span>
   )
@@ -482,7 +489,25 @@ function TableDetailModal({
                   </div>
                 )}
                 {partitionsError && (
-                  <div className="text-xs text-red-400 py-2">{partitionsError}</div>
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2 text-xs text-red-400 py-2">
+                      <AlertTriangle size={13} />
+                      <span>{partitionsError}</span>
+                    </div>
+                    <button
+                      onClick={() => {
+                        setPartitionsError(null)
+                        setPartitionsLoading(true)
+                        api.tablePartitions(instance, entry.database, entry.table)
+                          .then(rows => setPartitionRows(rows))
+                          .catch((e: any) => setPartitionsError(e?.message ?? 'Failed to load partitions'))
+                          .finally(() => setPartitionsLoading(false))
+                      }}
+                      className="flex items-center gap-1.5 text-xs px-2 py-1 rounded border border-[var(--border)] text-[var(--dim)] hover:text-[var(--fg)] hover:bg-[var(--hover)] transition-colors"
+                    >
+                      <RefreshCw size={11} /> Retry
+                    </button>
+                  </div>
                 )}
                 {partitionRows && !partitionsLoading && (
                   <PartitionDistribution rows={partitionRows} />
@@ -628,6 +653,10 @@ function TableRow({
       {/* Partitions */}
       <td className="px-2 py-1.5 text-[11px] font-mono text-right tabular-nums text-[var(--dim)]">
         {entry.partition_count != null ? entry.partition_count.toLocaleString() : '—'}
+        {entry.max_partition_bytes != null && entry.partition_count != null && entry.partition_count > 1 &&
+          entry.max_partition_bytes > 3 * (entry.total_bytes / Math.max(entry.partition_count, 1)) && (
+          <span className="ml-1 text-[9px] text-amber-400" title="Largest partition is 3× bigger than average — possible data skew">⚠</span>
+        )}
       </td>
 
       {/* Status */}

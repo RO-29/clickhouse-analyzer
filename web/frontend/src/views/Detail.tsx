@@ -360,11 +360,14 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
       {/* ── Tabs ── */}
       <div className="flex items-center gap-0 border-b border-[var(--border)]">
         {TABS.map(tab => {
+          const alertCount = activeAlerts.length
           const badge =
-            tab.key === 'queries' && queries.length > 0 ? queries.length
+            tab.key === 'summary' && alertCount > 0 ? alertCount
+            : tab.key === 'queries' && queries.length > 0 ? queries.length
             : tab.key === 'replication' && replicas.length > 0 ? replicas.length
             : tab.key === 'history' && (rangeAlerts.length > 0 || queryPatterns.length > 0) ? (rangeAlerts.length + queryPatterns.length)
             : null
+          const isAlertBadge = tab.key === 'summary' && alertCount > 0
           return (
             <button
               key={tab.key}
@@ -380,9 +383,11 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
               {badge != null && (
                 <span className={cn(
                   'text-[10px] px-1.5 py-0.5 rounded font-semibold',
-                  activeTab === tab.key
-                    ? 'bg-[var(--accent-subtle)] text-[var(--accent)]'
-                    : 'bg-[var(--surface)] text-[var(--dim)]',
+                  isAlertBadge
+                    ? 'bg-red-500/20 text-red-400'
+                    : activeTab === tab.key
+                      ? 'bg-[var(--accent-subtle)] text-[var(--accent)]'
+                      : 'bg-[var(--surface)] text-[var(--dim)]',
                 )}>
                   {badge}
                 </span>
@@ -456,6 +461,33 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
               <MetricChart instance={instance} title="Insert Throughput" metrics={['inserts.total.rows']} height={130} />
               <MetricChart instance={instance} title="S3 Latency" metrics={['storage.s3.avg_latency_ms', 'storage.s3.max_latency_ms']} yFormat="ms" height={130} />
             </div>
+            {/* Alert event timeline — marks alert fires in the current time range */}
+            {rangeAlerts.length > 0 && (
+              <div className="mt-3 px-1">
+                <div className="text-[10px] text-[var(--dim)] mb-1 uppercase tracking-wider font-medium">
+                  Alert events in range ({rangeAlerts.length})
+                </div>
+                <div className="relative h-3 w-full">
+                  {rangeAlerts.map((evt, idx) => {
+                    const range = customTo - customFrom
+                    const pct = range > 0 ? Math.min(100, Math.max(0, ((evt.created_at - customFrom) / range) * 100)) : 0
+                    return (
+                      <div
+                        key={evt.id ?? idx}
+                        className="absolute w-0.5 h-3 rounded-full"
+                        style={{
+                          left: `${pct}%`,
+                          backgroundColor: evt.severity === 'critical' ? 'rgba(248,113,113,0.7)'
+                            : evt.severity === 'warn' ? 'rgba(251,191,36,0.7)'
+                            : 'rgba(148,163,184,0.5)',
+                        }}
+                        title={`${evt.title} — ${new Date(evt.created_at * 1000).toLocaleString()}`}
+                      />
+                    )
+                  })}
+                </div>
+              </div>
+            )}
           </Section>
 
           {activeAlerts.length > 0 && (

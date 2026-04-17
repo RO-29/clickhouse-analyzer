@@ -34,7 +34,7 @@ interface DataTableProps {
   dense?: boolean
   /** Show gear icon to toggle column visibility */
   showColumnToggle?: boolean
-  /** localStorage key for persisting hidden columns (requires showColumnToggle) */
+  /** localStorage key for persisting hidden columns and sort state (requires showColumnToggle for columns) */
   storageKey?: string
   /** Right-click context menu items per row */
   contextMenu?: (row: Record<string, any>) => ContextMenuItem[]
@@ -61,8 +61,25 @@ export function DataTable({
   keyboardNav = false,
   mobileColumns,
 }: DataTableProps) {
-  const [sortKey, setSortKey] = useState<string | null>(null)
-  const [sortAsc, setSortAsc] = useState(true)
+  // Restore sort from localStorage on mount
+  const [sortKey, setSortKey] = useState<string | null>(() => {
+    if (storageKey) {
+      try {
+        const s = JSON.parse(localStorage.getItem(`${storageKey}-sort`) ?? 'null')
+        if (s?.col) return s.col
+      } catch {}
+    }
+    return null
+  })
+  const [sortAsc, setSortAsc] = useState<boolean>(() => {
+    if (storageKey) {
+      try {
+        const s = JSON.parse(localStorage.getItem(`${storageKey}-sort`) ?? 'null')
+        if (s?.dir) return s.dir === 'asc'
+      } catch {}
+    }
+    return true
+  })
   const [hoveredRow, setHoveredRow] = useState<number | null>(null)
   const [focusedRow, setFocusedRow] = useState<number | null>(null)
   const [page, setPage] = useState(0)
@@ -92,10 +109,24 @@ export function DataTable({
   const source = Array.isArray(data) ? data : Array.isArray(rows) ? rows : []
   const visibleColumns = columns.filter(c => !hiddenCols.has(c.key))
 
+  // Persist sort to localStorage whenever it changes
+  const persistSort = useCallback((col: string | null, dir: 'asc' | 'desc') => {
+    if (storageKey && col) {
+      try { localStorage.setItem(`${storageKey}-sort`, JSON.stringify({ col, dir })) } catch {}
+    }
+  }, [storageKey])
+
   const handleSort = (key: string) => {
     setPage(0)
-    if (sortKey === key) setSortAsc(!sortAsc)
-    else { setSortKey(key); setSortAsc(true) }
+    if (sortKey === key) {
+      const newDir = !sortAsc
+      setSortAsc(newDir)
+      persistSort(key, newDir ? 'asc' : 'desc')
+    } else {
+      setSortKey(key)
+      setSortAsc(true)
+      persistSort(key, 'asc')
+    }
   }
 
   let sorted = [...source]
@@ -206,15 +237,16 @@ export function DataTable({
             })}
             {/* Column toggle + analyze header */}
             {(onRowAnalyze || showColumnToggle) && (
-              <th className="w-8 py-2 px-1 text-right">
+              <th className="py-2 px-1 text-right">
                 {showColumnToggle && (
                   <div className="relative inline-block" ref={colMenuRef}>
                     <button
                       onClick={e => { e.stopPropagation(); setShowColMenu(v => !v) }}
-                      className="p-1 rounded text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--hover)] transition-colors"
+                      className="inline-flex items-center gap-0.5 px-1.5 py-1 rounded text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--hover)] transition-colors"
                       title="Toggle columns"
                     >
                       <Settings2 size={11} />
+                      <span className="text-[10px] ml-0.5 hidden sm:inline">Columns</span>
                     </button>
                     {showColMenu && (
                       <div className="absolute right-0 top-7 z-20 bg-[var(--card)] border border-[var(--border)] rounded-lg shadow-xl py-1 min-w-[160px]">
@@ -327,9 +359,16 @@ export function DataTable({
           </div>
         </div>
       )}
-      {maxRows && !pageSize && source.length > maxRows && (
-        <div className="text-[11px] text-[var(--dim)] py-2 text-center border-t border-[var(--border)]">
-          Showing {maxRows} of {source.length} rows
+
+      {/* Row count footer — shown when no pagination is active */}
+      {!pageSize && source.length > 0 && (
+        <div className="flex items-center px-3 py-1.5 border-t border-[var(--border)] text-[10px] text-[var(--dim)] bg-[var(--surface)]">
+          <span>
+            {maxRows && source.length > maxRows
+              ? `Showing ${maxRows} of ${source.length} rows`
+              : `${source.length} row${source.length !== 1 ? 's' : ''}`
+            }
+          </span>
         </div>
       )}
 

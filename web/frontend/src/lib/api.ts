@@ -42,9 +42,28 @@ import type {
 
 const BASE = ''
 
+function toastApiError(path: string, status: number) {
+  // Don't toast on auth errors (will be handled by auth flow) or 404s (expected)
+  if (status === 401 || status === 403 || status === 404) return
+  const event = new CustomEvent('ch-toast', {
+    detail: {
+      id: Date.now().toString(36),
+      kind: 'error',
+      title: 'API error',
+      body: `${status} — ${path.split('?')[0]}`,
+      timestamp: Date.now(),
+      ephemeral: true,
+    }
+  })
+  window.dispatchEvent(event)
+}
+
 async function get<T>(path: string): Promise<T> {
   const r = await fetch(BASE + path)
-  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  if (!r.ok) {
+    toastApiError(path, r.status)
+    throw new Error(`HTTP ${r.status}`)
+  }
   return r.json()
 }
 

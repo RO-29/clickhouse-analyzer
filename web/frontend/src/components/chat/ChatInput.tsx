@@ -145,10 +145,11 @@ export function ChatInput({
           <button
             type="button"
             onClick={onStop}
-            className="rounded-xl border border-red-500/50 text-red-400 hover:bg-red-500/10 px-3 py-2.5 transition-colors shrink-0"
-            title="Stop"
+            className="rounded-xl border border-red-500/50 text-red-400 hover:bg-red-500/10 px-3 py-2.5 transition-colors shrink-0 flex items-center gap-1.5 text-xs font-medium"
+            title="Stop generating"
           >
-            <Square size={15} />
+            <Square size={13} />
+            Stop generating
           </button>
         ) : (
           <button

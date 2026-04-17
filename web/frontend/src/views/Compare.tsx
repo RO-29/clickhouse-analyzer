@@ -1,9 +1,10 @@
 import { useEffect, useState, useMemo, useCallback } from 'react'
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip as RTooltip, Cell } from 'recharts'
-import { Check, AlertTriangle, XCircle, Sparkles, Search, Loader2 } from 'lucide-react'
+import { Check, AlertTriangle, XCircle, Sparkles, Search, Loader2, CheckCircle, Copy } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
+import { flashToast } from '../lib/notify'
 import { fmtBytes, fmtNum, fmtDuration, cn } from '../lib/utils'
 import { Card } from '../components/Card'
 import { DataTable } from '../components/DataTable'
@@ -135,8 +136,15 @@ function NodePill({
             : 'border-[var(--border)] bg-[var(--surface)] hover:border-green-500/40 cursor-pointer',
       )}
     >
-      <div className={cn('font-medium text-sm truncate', isBaseline && 'text-[var(--accent)]')} title={inst}>
-        {inst}
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <span className={cn('font-medium text-sm truncate', isBaseline && 'text-[var(--accent)]')} title={inst}>
+          {inst}
+        </span>
+        {isBaseline && (
+          <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-400 border border-blue-500/20 font-semibold uppercase tracking-wider">
+            baseline
+          </span>
+        )}
       </div>
       {isBaseline ? (
         <div className="text-xs text-[var(--accent)] opacity-70">baseline</div>
@@ -713,6 +721,14 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
         <NodeSelector instances={instances} selected={activeNodes} onChange={handleSetNodes} />
       </div>
 
+      {/* All-identical banner */}
+      {missingCount === 0 && diffCount === 0 && ddlCount === 0 && diskCount === 0 && data.tables.length > 0 && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-green-500/10 border border-green-500/20 text-xs text-green-400">
+          <CheckCircle size={13} />
+          <span>All nodes identical — no differences found</span>
+        </div>
+      )}
+
       {/* Search + filter + summary row */}
       <div className="flex items-center gap-3 flex-wrap">
         <div className="relative max-w-sm flex-1 min-w-[180px]">
@@ -1064,14 +1080,31 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
                           </div>
                         </td>
                       )}
-                      <td className="px-2 w-8">
-                        <button
-                          onClick={() => onAnalyze({ table: `${t.database}.${t.table}`, engine: t.engine, nodes: t.nodes, missing_on: t.missing_on, drift: (drift * 100).toFixed(1) + '%' })}
-                          className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-purple-400 hover:bg-purple-500/15"
-                          title="Analyze with AI"
-                        >
-                          <Sparkles size={11} />
-                        </button>
+                      <td className="px-2 w-16">
+                        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                          {(missing || diverging || ddl.criticality) && (
+                            <button
+                              onClick={() => {
+                                const lines = [`${t.database}.${t.table}:`]
+                                if (missing) lines.push(`  missing on: ${t.missing_on?.join(', ')}`)
+                                if (diverging) lines.push(`  drift: ${(drift * 100).toFixed(1)}%`)
+                                if (ddl.changes.length) lines.push(...ddl.changes.map(c => `  DDL: ${c}`))
+                                navigator.clipboard.writeText(lines.join('\n')).then(() => flashToast('Copied to clipboard', 'done'))
+                              }}
+                              className="p-1 rounded text-[var(--dim)] hover:text-[var(--fg)] hover:bg-[var(--hover)] transition-colors"
+                              title="Copy to clipboard"
+                            >
+                              <Copy size={11} />
+                            </button>
+                          )}
+                          <button
+                            onClick={() => onAnalyze({ table: `${t.database}.${t.table}`, engine: t.engine, nodes: t.nodes, missing_on: t.missing_on, drift: (drift * 100).toFixed(1) + '%' })}
+                            className="p-1 rounded text-purple-400 hover:bg-purple-500/15"
+                            title="Analyze with AI"
+                          >
+                            <Sparkles size={11} />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   )
@@ -1127,61 +1160,74 @@ function SettingsView({
         </label>
       </div>
 
-      <Card>
-        <div className="max-h-[60vh] overflow-auto">
-          <table className="w-full text-sm">
-            <thead className="sticky top-0 bg-[var(--surface)] z-10">
-              <tr className="border-b border-[var(--border)]">
-                <th className="text-left py-2 px-3 text-xs font-medium uppercase tracking-wider text-[var(--dim)]">Setting</th>
-                <th className="text-left py-2 px-3 text-xs font-medium uppercase tracking-wider text-[var(--accent)]">
-                  {baseline} (baseline)
-                </th>
-                {others.map((inst) => (
-                  <th key={inst} className="text-left py-2 px-3 text-xs font-medium uppercase tracking-wider text-[var(--dim)]">
-                    {inst}
-                  </th>
-                ))}
-                <th className="w-8 px-2" />
-              </tr>
-            </thead>
-            <tbody>
-              {settings.length === 0 ? (
-                <tr>
-                  <td colSpan={2 + others.length} className="py-10 text-center text-[var(--dim)] text-sm">
-                    All settings match baseline
-                  </td>
-                </tr>
-              ) : settings.map((s, i) => (
-                <tr
-                  key={i}
-                  className={cn('border-b border-[var(--border)] last:border-0 group', s.important && 'border-l-2 border-l-blue-500')}
-                >
-                  <td className="py-2 px-3 font-mono text-xs font-medium">{s.name}</td>
-                  <td className="py-2 px-3 font-mono text-xs">{String(s.values?.[baseline] ?? '—')}</td>
-                  {others.map((inst) => {
-                    const val = s.values?.[inst]
-                    const differs = val !== s.values?.[baseline]
-                    return (
-                      <td key={inst} className={cn('py-2 px-3 font-mono text-xs', differs ? 'bg-yellow-500/10 text-yellow-300' : '')}>
-                        {differs ? String(val ?? '—') : <span className="text-[var(--dim)]">—</span>}
-                      </td>
-                    )
-                  })}
-                  <td className="px-2 w-8">
-                    <button
-                      onClick={() => onAnalyze({ setting: s.name, baseline_value: s.values?.[baseline], values: s.values, important: s.important })}
-                      className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-purple-400 hover:bg-purple-500/15"
-                      title="Analyze with AI"
-                    >
-                      <Sparkles size={11} />
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {diffCount === 0 ? (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-green-500/10 border border-green-500/20 text-xs text-green-400">
+          <CheckCircle size={13} />
+          <span>All nodes identical — no differences found</span>
         </div>
-      </Card>
+      ) : (
+        <Card>
+          <div className="max-h-[60vh] overflow-auto">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-[var(--surface)] z-10">
+                <tr className="border-b border-[var(--border)]">
+                  <th className="text-left py-2 px-3 text-xs font-medium uppercase tracking-wider text-[var(--dim)]">Setting</th>
+                  <th className="text-left py-2 px-3 text-xs font-medium uppercase tracking-wider text-[var(--accent)]">
+                    {baseline} (baseline)
+                  </th>
+                  {others.map((inst) => (
+                    <th key={inst} className="text-left py-2 px-3 text-xs font-medium uppercase tracking-wider text-[var(--dim)]">
+                      {inst}
+                    </th>
+                  ))}
+                  <th className="w-16 px-2" />
+                </tr>
+              </thead>
+              <tbody>
+                {settings.map((s, i) => (
+                  <tr
+                    key={i}
+                    className={cn('border-b border-[var(--border)] last:border-0 group', s.important && 'border-l-2 border-l-blue-500')}
+                  >
+                    <td className="py-2 px-3 font-mono text-xs font-medium">{s.name}</td>
+                    <td className="py-2 px-3 font-mono text-xs">{String(s.values?.[baseline] ?? '—')}</td>
+                    {others.map((inst) => {
+                      const val = s.values?.[inst]
+                      const differs = val !== s.values?.[baseline]
+                      return (
+                        <td key={inst} className={cn('py-2 px-3 font-mono text-xs', differs ? 'bg-yellow-500/10 text-yellow-300' : '')}>
+                          {differs ? String(val ?? '—') : <span className="text-[var(--dim)]">—</span>}
+                        </td>
+                      )
+                    })}
+                    <td className="px-2 w-16">
+                      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          onClick={() => {
+                            const diffText = `${s.name}: ${others.map(inst => `${inst}=${s.values?.[inst] ?? '—'}`).join(', ')} (baseline ${baseline}=${s.values?.[baseline] ?? '—'})`
+                            navigator.clipboard.writeText(diffText).then(() => flashToast('Copied to clipboard', 'done'))
+                          }}
+                          className="p-1 rounded text-[var(--dim)] hover:text-[var(--fg)] hover:bg-[var(--hover)] transition-colors"
+                          title="Copy to clipboard"
+                        >
+                          <Copy size={11} />
+                        </button>
+                        <button
+                          onClick={() => onAnalyze({ setting: s.name, baseline_value: s.values?.[baseline], values: s.values, important: s.important })}
+                          className="p-1 rounded text-purple-400 hover:bg-purple-500/15"
+                          title="Analyze with AI"
+                        >
+                          <Sparkles size={11} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
     </div>
   )
 }
@@ -1212,8 +1258,23 @@ function MetricsView({ baseline, instances, onAnalyze }: { baseline: string; ins
   if (error) return <ErrorMsg msg={error} />
   if (!data?.metrics?.length) return <EmptyMsg msg="No metrics" />
 
+  const metricsDiffCount = data.metrics.filter(m => {
+    const bVal = m.values?.[baseline] ?? 0
+    return others.some(inst => {
+      const val = m.values?.[inst] ?? 0
+      const pct = bVal > 0 ? Math.abs((val - bVal) / bVal) : 0
+      return pct > 0.01
+    })
+  }).length
+
   return (
     <div className="space-y-6">
+      {metricsDiffCount === 0 ? (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-green-500/10 border border-green-500/20 text-xs text-green-400">
+          <CheckCircle size={13} />
+          <span>All nodes identical — no differences found</span>
+        </div>
+      ) : null}
       <Card>
         <div className="max-h-[60vh] overflow-auto">
           <table className="w-full text-sm">
@@ -1226,7 +1287,7 @@ function MetricsView({ baseline, instances, onAnalyze }: { baseline: string; ins
                 {others.map((inst) => (
                   <th key={inst} className="text-left py-2 px-3 text-xs font-medium uppercase tracking-wider text-[var(--dim)]">{inst}</th>
                 ))}
-                <th className="w-8 px-2" />
+                <th className="w-16 px-2" />
               </tr>
             </thead>
             <tbody>
@@ -1255,14 +1316,26 @@ function MetricsView({ baseline, instances, onAnalyze }: { baseline: string; ins
                         </td>
                       )
                     })}
-                    <td className="px-2 w-8">
-                      <button
-                        onClick={() => onAnalyze({ metric: m.name, unit: m.unit, baseline_value: bVal, values: m.values })}
-                        className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-purple-400 hover:bg-purple-500/15"
-                        title="Analyze with AI"
-                      >
-                        <Sparkles size={11} />
-                      </button>
+                    <td className="px-2 w-16">
+                      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          onClick={() => {
+                            const diffText = `${m.name}: ${[baseline, ...others].map(inst => `${inst}=${m.unit === 'bytes' ? fmtBytes(m.values?.[inst] ?? 0) : fmtNum(m.values?.[inst] ?? 0)}`).join(', ')}`
+                            navigator.clipboard.writeText(diffText).then(() => flashToast('Copied to clipboard', 'done'))
+                          }}
+                          className="p-1 rounded text-[var(--dim)] hover:text-[var(--fg)] hover:bg-[var(--hover)] transition-colors"
+                          title="Copy to clipboard"
+                        >
+                          <Copy size={11} />
+                        </button>
+                        <button
+                          onClick={() => onAnalyze({ metric: m.name, unit: m.unit, baseline_value: bVal, values: m.values })}
+                          className="p-1 rounded text-purple-400 hover:bg-purple-500/15"
+                          title="Analyze with AI"
+                        >
+                          <Sparkles size={11} />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 )

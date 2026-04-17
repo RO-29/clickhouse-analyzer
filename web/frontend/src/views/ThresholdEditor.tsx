@@ -299,6 +299,16 @@ export default function ThresholdEditor() {
     })
   }, [])
 
+  useEffect(() => {
+    if (!isDirty) return
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      e.returnValue = 'You have unsaved changes — leave anyway?'
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [isDirty])
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64 text-[var(--dim)]">
@@ -338,6 +348,11 @@ export default function ThresholdEditor() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {isDirty && (
+            <span className="text-[10px] px-2 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/20">
+              Unsaved changes
+            </span>
+          )}
           <button
             onClick={handleReset}
             disabled={!isDirty}

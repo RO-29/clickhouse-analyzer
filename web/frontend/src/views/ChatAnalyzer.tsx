@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { SquarePen } from 'lucide-react'
+import { SquarePen, HardDrive, Zap, TrendingUp, MessageSquare } from 'lucide-react'
+import { cn } from '../lib/utils'
 import { useStore } from '../hooks/useStore'
 import { ChatSessionList } from '../components/chat/ChatSessionList'
 import { ChatWelcome } from '../components/chat/ChatWelcome'
@@ -22,6 +23,16 @@ const STARTER_QUESTIONS = [
 ]
 
 /* ─── Helpers ────────────────────────────────────────────────────────────── */
+
+type LucideIcon = React.ComponentType<{ size?: number; className?: string }>
+
+function starterIcon(question: string): LucideIcon {
+  const q = question.toLowerCase()
+  if (/memory|disk|storage|i\/o/.test(q)) return HardDrive
+  if (/slow|quer|fast|speed/.test(q)) return Zap
+  if (/insert|write|ingest|throughput/.test(q)) return TrendingUp
+  return MessageSquare
+}
 
 function genId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
@@ -547,8 +558,19 @@ export default function ChatAnalyzer() {
               <span className="truncate text-sm font-medium text-[var(--fg)] flex-1 min-w-0" title={activeSession.name || 'Untitled'}>
                 {activeSession.name || 'Untitled'}
               </span>
-              <span className="bg-[var(--surface)] border border-[var(--border)] text-xs px-2 py-0.5 rounded text-[var(--dim)] shrink-0">
-                {activeSession.instance}
+              <span className={cn(
+                'flex items-center gap-1 text-[10px] text-[var(--dim)]',
+                'bg-[var(--surface)] border border-[var(--border)] rounded-full px-2 py-0.5 shrink-0',
+              )}>
+                <span className="font-mono">{activeSession.instance || 'all instances'}</span>
+                <span>·</span>
+                <span>
+                  {activeSession.timeWindowMins >= 1440
+                    ? `${activeSession.timeWindowMins / 1440}d`
+                    : activeSession.timeWindowMins >= 60
+                    ? `${activeSession.timeWindowMins / 60}h`
+                    : `${activeSession.timeWindowMins}m`}
+                </span>
               </span>
               <button
                 type="button"
@@ -569,16 +591,20 @@ export default function ChatAnalyzer() {
                     <div className="text-sm text-[var(--dim)]">Ask anything about this ClickHouse instance</div>
                   </div>
                   <div className="grid grid-cols-2 gap-2 max-w-lg w-full">
-                    {STARTER_QUESTIONS.map(q => (
-                      <button
-                        key={q}
-                        type="button"
-                        onClick={() => handleSend(q)}
-                        className="text-left px-3 py-2 text-xs rounded-lg border border-[var(--border)] hover:border-[var(--accent)]/50 hover:bg-[var(--accent)]/5 transition-colors text-[var(--text)]"
-                      >
-                        {q}
-                      </button>
-                    ))}
+                    {STARTER_QUESTIONS.map(q => {
+                      const Icon = starterIcon(q)
+                      return (
+                        <button
+                          key={q}
+                          type="button"
+                          onClick={() => handleSend(q)}
+                          className="text-left px-3 py-2 text-xs rounded-lg border border-[var(--border)] hover:border-[var(--accent)]/50 hover:bg-[var(--accent)]/5 transition-colors text-[var(--text)] flex items-start gap-1.5"
+                        >
+                          <Icon size={11} className="shrink-0 opacity-60 mt-0.5" />
+                          {q}
+                        </button>
+                      )
+                    })}
                   </div>
                 </div>
               )}

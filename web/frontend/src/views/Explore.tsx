@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef, type ChangeEvent } from 'react'
-import { Sparkles, X, Copy, Play, Maximize2, Skull, RefreshCw, ChevronDown, ChevronRight, Wrench, ArrowRight, BarChart2, AlertTriangle, ExternalLink } from 'lucide-react'
+import { Sparkles, X, Copy, Play, Maximize2, Skull, RefreshCw, ChevronDown, ChevronRight, Wrench, ArrowRight, BarChart2, AlertTriangle, ExternalLink, Zap } from 'lucide-react'
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, Cell, PieChart, Pie, Legend } from 'recharts'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
@@ -41,7 +41,7 @@ type Tab =
   | 'antipatterns'
 
 const TABS: { key: Tab; label: string }[] = [
-  { key: 'antipatterns', label: '⚡ Anti-patterns' },
+  { key: 'antipatterns', label: 'Anti-patterns' },
   { key: 'patterns', label: 'Query Patterns' },
   { key: 'samples', label: 'Samples' },
   { key: 'live', label: 'Live Queries' },
@@ -595,6 +595,19 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
     return () => { c = true }
   }, [instance, failHash, from, to])
 
+  // Deep-link: ?hash=<value> auto-opens the detail panel for that pattern
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const hash = params.get('hash')
+    if (hash && patterns.length > 0) {
+      const match = patterns.find(p => String(p.normalized_query_hash) === hash)
+      if (match) setSelectedHash(hash)
+      params.delete('hash')
+      const qs = params.toString()
+      window.history.replaceState(null, '', qs ? '?' + qs : window.location.pathname)
+    }
+  }, [patterns])
+
   // Stacked bar overview — must be before any early returns (Rules of Hooks).
   const overviewChart = useMemo(() => {
     if (!overview || !overview.timeline?.length) return null
@@ -664,7 +677,7 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
             </span>
             {q && (
               <button
-                onClick={e => { e.stopPropagation(); setSelectedHash(String(row.normalized_query_hash)) }}
+                onClick={e => { e.stopPropagation(); setSelectedHash(prev => { const h = String(row.normalized_query_hash); return prev === h ? null : h }) }}
                 className="shrink-0 p-0.5 rounded text-[var(--dim)] hover:text-[var(--accent)] opacity-0 group-hover/row:opacity-100 transition-all"
                 title="Open detail panel"
               >
@@ -835,10 +848,18 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
             </select>
           </div>
         </div>
+        {patterns.length > 0 && (
+          <div className="text-[10px] text-[var(--dim)] px-1 mb-1">
+            {patterns.length} patterns{patterns.length === 1000 ? ' (limit reached — narrow the time range)' : ''}
+          </div>
+        )}
         <DataTable
           columns={columns}
           data={patterns}
-          onRowClick={r => setSelectedHash(String(r.normalized_query_hash))}
+          onRowClick={r => setSelectedHash(prev => {
+            const hash = String(r.normalized_query_hash)
+            return prev === hash ? null : hash
+          })}
           onRowAnalyze={row => {
             if (!row) return
             onAnalyze(
@@ -983,9 +1004,10 @@ interface SamplesTabProps extends TabProps {
   initialUser?: string
   initialErrorsOnly?: boolean
   onClearDrill?: () => void
+  onFetched?: () => void
 }
 
-function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, initialUser, initialErrorsOnly, onClearDrill }: SamplesTabProps) {
+function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, initialUser, initialErrorsOnly, onClearDrill, onFetched }: SamplesTabProps) {
   const { setView, setSelectedInstance } = useStore()
   const [samples, setSamples] = useState<QuerySample[]>([])
   const [loading, setLoading] = useState(true)
@@ -1038,9 +1060,9 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
     })
       .then(d => { if (!c) setSamples(d) })
       .catch(e => { if (!c) setError(e.message) })
-      .finally(() => { if (!c) setLoading(false) })
+      .finally(() => { if (!c) { setLoading(false); onFetched?.() } })
     return () => { c = true }
-  }, [instance, from, to, refreshKey, hashFilter, userFilter, kindFilter, minMs, errorsOnly])
+  }, [instance, from, to, refreshKey, hashFilter, userFilter, kindFilter, minMs, errorsOnly, onFetched])
 
   const toggleExpand = (i: number) => {
     setExpanded(prev => {
@@ -1498,11 +1520,12 @@ function LiveTab({ instance, onShowQuery }: { instance: string; onShowQuery: (q:
 
 interface UsersTabProps extends TabProps {
   onDrillUser?: (user: string) => void
+  onFetched?: () => void
 }
 
 const USER_COLORS = ['#7c3aed','#22c55e','#f59e0b','#ef4444','#3b82f6','#06b6d4','#f97316','#ec4899']
 
-function UsersTab({ instance, from, to, refreshKey, onDrillUser }: UsersTabProps) {
+function UsersTab({ instance, from, to, refreshKey, onDrillUser, onFetched }: UsersTabProps) {
   const [users, setUsers] = useState<QueryUser[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -1514,9 +1537,9 @@ function UsersTab({ instance, from, to, refreshKey, onDrillUser }: UsersTabProps
     api.history.queryUsers(instance, from, to)
       .then(d => { if (!c) setUsers(d) })
       .catch(e => { if (!c) setError(e.message) })
-      .finally(() => { if (!c) setLoading(false) })
+      .finally(() => { if (!c) { setLoading(false); onFetched?.() } })
     return () => { c = true }
-  }, [instance, from, to, refreshKey])
+  }, [instance, from, to, refreshKey, onFetched])
 
   // ALL hooks BEFORE any early return (Rules of Hooks)
   const pieData = useMemo(() => {
@@ -2660,8 +2683,8 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
   const [manualTick, setManualTick] = useState(0)
   const [lastRefreshed, setLastRefreshed] = useState(new Date())
   const [agoStr, setAgoStr] = useState('just now')
-  // Stale banner — set when patterns/samples/users fetch completes
-  const [lastFetchedAt, setLastFetchedAt] = useState<Date | null>(null)
+  // Stale banner — per-tab lastFetchedAt tracking
+  const [lastFetchedAt, setLastFetchedAt] = useState<Partial<Record<Tab, Date>>>({})
   const [staleAgoStr, setStaleAgoStr] = useState('')
   const inst = selectedInstance || instances[0] || ''
 
@@ -2673,13 +2696,14 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
     return () => clearInterval(id)
   }, [lastRefreshed])
 
-  // Update stale banner display string every 10s
+  // Update stale banner display string every 10s (based on current tab's fetch time)
+  const currentTabFetchedAt = lastFetchedAt[tab] ?? null
   useEffect(() => {
-    if (!lastFetchedAt) return
-    setStaleAgoStr(fmtAgo(lastFetchedAt))
-    const id = setInterval(() => setStaleAgoStr(fmtAgo(lastFetchedAt)), 10_000)
+    if (!currentTabFetchedAt) return
+    setStaleAgoStr(fmtAgo(currentTabFetchedAt))
+    const id = setInterval(() => setStaleAgoStr(fmtAgo(currentTabFetchedAt)), 10_000)
     return () => clearInterval(id)
-  }, [lastFetchedAt])
+  }, [currentTabFetchedAt])
 
   // Stale if data is older than 5 minutes (re-evaluated on each render triggered by agoStr interval)
   const isStale = (Date.now() - lastRefreshed.getTime()) > 5 * 60 * 1000
@@ -2690,9 +2714,12 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
     setAgoStr('just now')
   }, [])
 
-  const handleDataFetched = useCallback(() => {
-    setLastFetchedAt(new Date())
+  const handleDataFetched = useCallback((t: Tab) => {
+    setLastFetchedAt(prev => ({ ...prev, [t]: new Date() }))
   }, [])
+  const handlePatternsFetched = useCallback(() => handleDataFetched('patterns'), [handleDataFetched])
+  const handleSamplesFetched = useCallback(() => handleDataFetched('samples'), [handleDataFetched])
+  const handleUsersFetched = useCallback(() => handleDataFetched('users'), [handleDataFetched])
 
   const { analyze } = useAIAnalysis(inst)
 
@@ -2801,17 +2828,25 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
             className={cn(
               'px-4 py-2 text-[12px] whitespace-nowrap transition-colors relative',
               tab === t.key
-                ? 'text-[var(--accent)] font-medium after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-[var(--accent)]'
+                ? t.key === 'antipatterns'
+                  ? 'text-purple-300 font-medium after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-purple-400'
+                  : 'text-[var(--accent)] font-medium after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-[var(--accent)]'
                 : 'text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)]',
             )}
           >
-            {t.label}
+            {t.key === 'antipatterns' ? (
+              <span className="flex items-center gap-1">
+                <Zap size={11} className="text-purple-400" />
+                {t.label}
+                <span className="ml-0.5 text-[9px] px-1 py-px rounded bg-purple-500/20 text-purple-300 border border-purple-500/30">AI</span>
+              </span>
+            ) : t.label}
           </button>
         ))}
       </div>
 
-      {/* Stale data banner — shown for patterns/samples/users tabs when fetch is >5 min old */}
-      {lastFetchedAt && (Date.now() - lastFetchedAt.getTime()) > 5 * 60_000 && (tab === 'patterns' || tab === 'samples' || tab === 'users') && (
+      {/* Stale data banner — shown for patterns/samples/users tabs when current tab's fetch is >5 min old */}
+      {currentTabFetchedAt && (Date.now() - currentTabFetchedAt.getTime()) > 5 * 60_000 && (tab === 'patterns' || tab === 'samples' || tab === 'users') && (
         <div className="flex items-center gap-2 px-3 py-1.5 mt-2 mb-0 rounded text-xs bg-amber-500/10 border border-amber-500/20 text-amber-400">
           <span>Data may be stale — fetched {staleAgoStr} ago.</span>
           <button onClick={handleManualRefresh} className="underline hover:no-underline ml-1">Refresh</button>
@@ -2835,7 +2870,7 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
               onAnalyze={handleAnalyze} onShowQuery={handleShowQuery}
               onDrillHash={handleDrillHash}
               onDrillFail={handleDrillFail}
-              onFetched={handleDataFetched}
+              onFetched={handlePatternsFetched}
             />
           )}
           {tab === 'samples' && (
@@ -2846,6 +2881,7 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
               initialUser={drillUser}
               initialErrorsOnly={drillErrorsOnly}
               onClearDrill={handleClearDrill}
+              onFetched={handleSamplesFetched}
             />
           )}
           {tab === 'live' && (
@@ -2856,6 +2892,7 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
               instance={inst} from={from} to={to} refreshKey={effectiveRefreshKey}
               onAnalyze={handleAnalyze} onShowQuery={handleShowQuery}
               onDrillUser={handleDrillUser}
+              onFetched={handleUsersFetched}
             />
           )}
           {tab === 'failures' && <FailuresTab instance={inst} from={from} to={to} refreshKey={effectiveRefreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}

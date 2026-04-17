@@ -2,7 +2,9 @@ import { useState, useEffect, useCallback } from 'react'
 import { Shield, Plus, Trash2, RefreshCw } from 'lucide-react'
 import { api } from '../lib/api'
 import { cn } from '../lib/utils'
+import { flashToast } from '../lib/notify'
 import { Card } from '../components/Card'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 import type { MaintenanceWindow, Instance } from '../types/api'
 
 /* ------------------------------------------------------------------ */
@@ -282,39 +284,37 @@ export default function Maintenance() {
                       By {w.created_by} · started {fmtTs(w.started_at)} · ends {fmtTs(w.ends_at)}
                     </div>
                   </div>
-                  {confirmDeleteId === w.id ? (
-                    <div className="shrink-0 flex items-center gap-1.5">
-                      <span className="text-xs text-[var(--dim)]">End now?</span>
-                      <button
-                        onClick={() => { handleDelete(w.id); setConfirmDeleteId(null) }}
-                        className="flex items-center gap-1 px-2.5 py-1.5 rounded text-xs font-medium text-red-400 bg-red-500/15 border border-red-500/20 hover:bg-red-500/25 transition-colors"
-                      >
-                        <Trash2 size={12} />
-                        Confirm
-                      </button>
-                      <button
-                        onClick={() => setConfirmDeleteId(null)}
-                        className="px-2.5 py-1.5 rounded text-xs font-medium text-[var(--dim)] hover:bg-[var(--hover)] border border-[var(--border)] transition-colors"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  ) : (
-                    <button
-                      onClick={() => setConfirmDeleteId(w.id)}
-                      className="shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-red-400 hover:bg-red-500/15 border border-red-500/20 transition-colors"
-                      title="End maintenance window now"
-                    >
-                      <Trash2 size={12} />
-                      End now
-                    </button>
-                  )}
+                  <button
+                    onClick={() => setConfirmDeleteId(w.id)}
+                    className="shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-red-400 hover:bg-red-500/15 border border-red-500/20 transition-colors"
+                    title="End maintenance window now"
+                  >
+                    <Trash2 size={12} />
+                    End now
+                  </button>
                 </div>
               </Card>
             ))}
           </div>
         )}
       </div>
+
+      <ConfirmDialog
+        open={!!confirmDeleteId}
+        title="Delete maintenance window"
+        description="This maintenance window will be permanently deleted."
+        confirmLabel="Delete"
+        destructive
+        onConfirm={() => {
+          if (confirmDeleteId) {
+            api.maintenance.delete(confirmDeleteId)
+              .then(() => { flashToast('Maintenance window deleted', 'done'); load() })
+              .catch(() => flashToast('Failed to delete', 'error'))
+            setConfirmDeleteId(null)
+          }
+        }}
+        onCancel={() => setConfirmDeleteId(null)}
+      />
     </div>
   )
 }

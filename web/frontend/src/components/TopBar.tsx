@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { Sun, Moon, Menu, Lock, LockOpen, X, Loader2, ExternalLink, Copy, Check, ChevronRight, Settings } from 'lucide-react'
+import { Sun, Moon, Menu, Lock, LockOpen, X, Loader2, ExternalLink, Copy, Check, ChevronRight, Settings, Keyboard } from 'lucide-react'
 import { useStore, type View } from '../hooks/useStore'
 import { cn } from '../lib/utils'
 import { api } from '../lib/api'
@@ -338,6 +338,7 @@ export function TopBar({ onMobileMenuClick }: TopBarProps) {
     view, selectedInstance, setView, rangePreset, setRangePreset, setCustomRange,
     theme, toggleTheme, authExpired, setAuthExpired,
     denseMode, setDenseMode,
+    refreshInterval,
   } = useStore()
 
   const [customFrom, setCustomFrom] = useState('')
@@ -438,6 +439,13 @@ export function TopBar({ onMobileMenuClick }: TopBarProps) {
 
           {/* Right: auth + theme + time range */}
           <div className="flex items-center gap-2">
+            {/* LIVE indicator */}
+            {refreshInterval > 0 && (
+              <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-green-500/10 border border-green-500/20">
+                <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse shrink-0" />
+                <span className="text-[10px] font-semibold text-green-400 uppercase tracking-wider hidden sm:inline">Live</span>
+              </div>
+            )}
             {/* Auth indicator */}
             <button
               onClick={() => !refreshing && setShowReAuth(true)}
@@ -512,6 +520,14 @@ export function TopBar({ onMobileMenuClick }: TopBarProps) {
                 </div>
               )}
             </div>
+
+            <button
+              onClick={() => window.dispatchEvent(new Event('ch-open-shortcuts'))}
+              className="p-1.5 rounded-md text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)] transition-colors"
+              title="Keyboard shortcuts (?)"
+            >
+              <Keyboard size={14} />
+            </button>
 
             <button
               onClick={toggleTheme}

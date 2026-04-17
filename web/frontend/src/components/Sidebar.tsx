@@ -201,10 +201,10 @@ export function Sidebar({ mobileOpen = false, onMobileClose, onOpenPalette }: Si
                       href={`?view=${item.view}`}
                       onClick={e => { e.preventDefault(); handleNavClick(item.view) }}
                       className={cn(
-                        'w-full flex items-center gap-2.5 rounded-md text-[12px] transition-colors no-underline',
+                        'w-full flex items-center gap-2.5 rounded-md text-[12px] transition-all duration-100 no-underline',
                         collapsed ? 'justify-center px-0 py-2' : 'px-3 py-1.5',
                         active
-                          ? 'bg-[var(--accent-subtle)] text-[var(--accent)] font-medium'
+                          ? 'bg-[var(--accent-subtle)] text-[var(--accent)] font-medium scale-[0.98]'
                           : 'text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)]',
                       )}
                       title={collapsed ? item.label : undefined}

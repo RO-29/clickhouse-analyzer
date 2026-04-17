@@ -220,7 +220,7 @@ function AssistantBubble({ message, isLast, onRetry }: { message: ChatMessageTyp
             <button
               type="button"
               onClick={onRetry}
-              className="mt-1 flex items-center gap-1.5 text-[11px] text-[var(--accent)] hover:underline"
+              className="mt-2 flex items-center gap-1.5 text-xs px-2 py-1 rounded border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-colors"
             >
               <RotateCcw size={11} /> Retry
             </button>

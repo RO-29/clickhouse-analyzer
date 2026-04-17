@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
-import { Bell, BellOff, BookOpen, Brain, ChevronDown, ChevronLeft, ChevronRight, Clock, HelpCircle, RefreshCw, Sparkles, Table2, Trash2, Wrench, Zap, Bookmark, X, CheckSquare, Square, CheckCheck, AlertCircle } from 'lucide-react'
+import { Bell, BellOff, BookOpen, Brain, ChevronDown, ChevronLeft, ChevronRight, CheckCircle, Clock, HelpCircle, RefreshCw, Sparkles, Table2, Trash2, Wrench, Zap, Bookmark, X, CheckSquare, Square, CheckCheck, AlertCircle } from 'lucide-react'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
@@ -26,6 +27,20 @@ const STALE_OPTIONS = [
 
 function loadStaleHours(): number {
   try { return parseInt(localStorage.getItem(STALE_LS_KEY) ?? '24', 10) || 24 } catch { return 24 }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Filter persistence                                                 */
+/* ------------------------------------------------------------------ */
+const FILTER_LS_KEY = 'ch-alerts-filter'
+interface PersistedFilter {
+  searchRaw?: string
+  severityFilter?: string
+  instanceFilter?: string
+  categoryFilter?: string
+}
+function loadPersistedFilter(): PersistedFilter {
+  try { return JSON.parse(localStorage.getItem(FILTER_LS_KEY) ?? 'null') ?? {} } catch { return {} }
 }
 
 /* ------------------------------------------------------------------ */
@@ -405,10 +420,10 @@ function AlertRow({ alert, showMeta, staleHours, snoozed, acked, onSelect }: {
   const alertIsAcked = isAcked(alert.dedup_key, acked)
 
   return (
-    <div className={cn('border-b border-[var(--border)] last:border-0', stale && 'opacity-60')}>
+    <div className={cn('group border-b border-[var(--border)] last:border-0 flex items-center', stale && 'opacity-60')}>
       <button
         onClick={() => onSelect?.(alert)}
-        className="w-full flex items-center gap-3 px-3 py-2.5 text-left text-sm hover:bg-[var(--hover)] transition-colors"
+        className="flex-1 flex items-center gap-3 px-3 py-2.5 text-left text-sm hover:bg-[var(--hover)] transition-colors min-w-0"
       >
         <ChevronRight size={14} className="shrink-0 text-[var(--dim)]" />
         {stale
@@ -432,10 +447,30 @@ function AlertRow({ alert, showMeta, staleHours, snoozed, acked, onSelect }: {
             <span className="text-xs text-[var(--dim)] shrink-0">{alert.category}</span>
           </>
         )}
-        <span className="font-medium truncate flex-1" title={alert.title}>{alert.title}</span>
+        <span className="font-medium truncate flex-1" title={alert.title}>
+          {alert.title}
+          {stale && (
+            <span className="ml-1 text-[9px] px-1 py-px rounded bg-amber-500/15 text-amber-400 border border-amber-500/20">stale</span>
+          )}
+        </span>
         <span className="text-[var(--dim)] text-xs shrink-0">{fmtTime(alert.created_at)}</span>
         {alert.resolved && <Badge className="bg-green-500/10 text-green-400 border-green-500/20">resolved</Badge>}
       </button>
+      {/* Inline hover actions */}
+      {!alert.resolved && (
+        <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 pr-2 shrink-0">
+          <button
+            onClick={e => { e.stopPropagation(); onSelect?.(alert) }}
+            className="p-1 rounded text-[var(--dim)] hover:text-amber-400 hover:bg-amber-500/10 transition-colors"
+            title="Snooze"
+          ><BellOff size={11} /></button>
+          <button
+            onClick={e => { e.stopPropagation(); onSelect?.(alert) }}
+            className="p-1 rounded text-[var(--dim)] hover:text-green-400 hover:bg-green-500/10 transition-colors"
+            title="Acknowledge"
+          ><CheckCircle size={11} /></button>
+        </div>
+      )}
     </div>
   )
 }
@@ -568,6 +603,8 @@ type ViewMode = 'grouped' | 'flat' | 'timeline'
 export default function Alerts({ refreshKey }: { refreshKey?: number }) {
   const { instances: cachedInstances, customFrom, customTo, setView, selectedInstance, alertPreset, setAlertPreset, navToDetail } = useStore()
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null)
+  const [cursorIdx, setCursorIdx] = useState(-1)
+  const rowRefs = useRef<(HTMLDivElement | null)[]>([])
   const { analyze } = useAIAnalysis(selectedInstance)
   const handleAnalyzeAlert = useCallback((alert: Alert) => {
     analyze(`Alert: ${alert.title}`, { row: alert }, { contextType: 'row', tab: 'alerts', elementId: String(alert.id) })
@@ -599,19 +636,21 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
   }, [])
   const [resolvingIds, setResolvingIds] = useState<Set<string>>(new Set())
   const [resolving, setResolving] = useState(false)
+  const [confirmResolve, setConfirmResolve] = useState<string | null>(null)
   const resolvingRef = useRef(false)
   const isFirstLoad = useRef(true)
 
   const [viewMode, setViewMode] = useState<ViewMode>('grouped')
   const [staleHours, setStaleHours] = useState<number>(loadStaleHours)
 
-  const [filterInstance, setFilterInstance] = useState(alertPreset?.instance ?? 'all')
-  const [filterSeverity, setFilterSeverity] = useState(alertPreset?.severity ?? 'all')
-  const [filterCategory, setFilterCategory] = useState('all')
+  const _pf = loadPersistedFilter()
+  const [filterInstance, setFilterInstance] = useState(alertPreset?.instance ?? _pf.instanceFilter ?? 'all')
+  const [filterSeverity, setFilterSeverity] = useState(alertPreset?.severity ?? _pf.severityFilter ?? 'all')
+  const [filterCategory, setFilterCategory] = useState(_pf.categoryFilter ?? 'all')
   const [filterType, setFilterType] = useState('all')
   const [filterStatus, setFilterStatus] = useState('all')
 
-  const [searchRaw, setSearchRaw] = useState('')
+  const [searchRaw, setSearchRaw] = useState(_pf.searchRaw ?? '')
   const searchText = parseSearchTokens(searchRaw).text
 
   const handleSearchChange = useCallback((value: string) => {
@@ -629,6 +668,28 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
     // Also strip the corresponding token from the raw search string
     setSearchRaw(prev => prev.replace(new RegExp(`\\b${key}:\\S+`, 'gi'), '').trim())
   }, [])
+
+  // Persist filter state to localStorage on every change
+  useEffect(() => {
+    try {
+      const pf: PersistedFilter = { searchRaw, severityFilter: filterSeverity, instanceFilter: filterInstance, categoryFilter: filterCategory }
+      localStorage.setItem(FILTER_LS_KEY, JSON.stringify(pf))
+    } catch {}
+  }, [searchRaw, filterSeverity, filterInstance, filterCategory])
+
+  // Search help tooltip state
+  const [showSearchHelp, setShowSearchHelp] = useState(false)
+  const searchHelpRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!showSearchHelp) return
+    function handleMouseDown(e: MouseEvent) {
+      if (searchHelpRef.current && !searchHelpRef.current.contains(e.target as Node)) {
+        setShowSearchHelp(false)
+      }
+    }
+    document.addEventListener('mousedown', handleMouseDown)
+    return () => document.removeEventListener('mousedown', handleMouseDown)
+  }, [showSearchHelp])
 
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set())
   const [flatPage, setFlatPage] = useState(0)
@@ -757,6 +818,46 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
       return true
     })
   }, [allAlerts, filterInstance, filterSeverity, filterCategory, filterType, filterStatus, staleHours, customFrom, customTo, searchText])
+
+  // Reset cursor when filter or view mode changes
+  useEffect(() => { setCursorIdx(-1) }, [filtered, viewMode])
+
+  // Advance page when cursor moves past current page boundary (flat view only)
+  useEffect(() => {
+    if (viewMode !== 'flat' || cursorIdx < 0) return
+    const page = Math.floor(cursorIdx / FLAT_PAGE_SIZE)
+    setFlatPage(page)
+  }, [cursorIdx, viewMode])
+
+  // Scroll cursor row into view (flat view only — rowRefs are only populated there)
+  useEffect(() => {
+    if (viewMode !== 'flat' || cursorIdx < 0) return
+    rowRefs.current[cursorIdx]?.scrollIntoView({ block: 'nearest' })
+  }, [cursorIdx, viewMode])
+
+  // j/k keyboard navigation (flat view only — grouped/timeline have no row refs)
+  useEffect(() => {
+    if (viewMode !== 'flat') return
+    const handler = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement).tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (e.target as HTMLElement).isContentEditable) return
+      if (e.key === 'j') {
+        e.preventDefault()
+        setCursorIdx(i => i < 0 ? 0 : Math.min(i + 1, filtered.length - 1))
+      } else if (e.key === 'k') {
+        e.preventDefault()
+        setCursorIdx(i => i < 0 ? 0 : Math.max(0, i - 1))
+      } else if (e.key === 'Enter' && cursorIdx >= 0 && filtered[cursorIdx]) {
+        e.preventDefault()
+        setSelectedAlert(filtered[cursorIdx])
+      } else if (e.key === 'Escape') {
+        setCursorIdx(-1)
+        setSelectedAlert(null)
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [filtered, cursorIdx, viewMode])
 
   const groups = useMemo(() => {
     const map = new Map<string, Alert[]>()
@@ -1100,6 +1201,27 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
               <X size={14} />
             </button>
           )}
+          {/* Search syntax help */}
+          <div className="relative" ref={searchHelpRef}>
+            <button
+              onClick={() => setShowSearchHelp(v => !v)}
+              className="text-[var(--dim)] hover:text-[var(--fg)] text-[11px] font-mono px-1"
+              title="Search syntax help"
+            >?</button>
+            {showSearchHelp && (
+              <div className="absolute right-0 top-7 z-20 bg-[var(--card)] border border-[var(--border)] rounded-lg p-3 text-xs shadow-xl w-64">
+                <div className="font-semibold mb-2 text-[var(--fg)]">Search syntax</div>
+                <div className="space-y-1 text-[var(--dim)]">
+                  <div><code className="text-[var(--accent)]">instance:prod</code> — filter by instance</div>
+                  <div><code className="text-[var(--accent)]">severity:critical</code> — critical / warn / info</div>
+                  <div><code className="text-[var(--accent)]">category:memory</code> — alert category</div>
+                  <div>Combine multiple tokens with spaces</div>
+                  <div className="text-[10px] mt-2 opacity-60">Example: <code>instance:prod severity:critical</code></div>
+                </div>
+                <button onClick={() => setShowSearchHelp(false)} className="absolute top-2 right-2 text-[var(--dim)] hover:text-[var(--fg)]">×</button>
+              </div>
+            )}
+          </div>
         </div>
         {(filterInstance !== 'all' || filterSeverity !== 'all' || filterCategory !== 'all') && (
           <div className="flex items-center gap-1.5 flex-wrap">
@@ -1216,19 +1338,27 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
               {selectedIds.size > 0 ? `${selectedIds.size} of ${filtered.length} selected` : `${filtered.length} alerts`}
             </span>
           </div>
-          {filtered.slice(flatPage * FLAT_PAGE_SIZE, (flatPage + 1) * FLAT_PAGE_SIZE).map((alert) => (
-            <div key={alert.id} className="flex items-start gap-2 pr-2">
-              <button
-                onClick={() => toggleSelectAlert(alert.id)}
-                className="mt-3 ml-4 text-[var(--dim)] hover:text-[var(--accent)] transition-colors shrink-0"
+          {filtered.slice(flatPage * FLAT_PAGE_SIZE, (flatPage + 1) * FLAT_PAGE_SIZE).map((alert, pageIdx) => {
+            const absIdx = flatPage * FLAT_PAGE_SIZE + pageIdx
+            const isCursored = absIdx === cursorIdx
+            return (
+              <div
+                key={alert.id}
+                ref={el => { rowRefs.current[absIdx] = el }}
+                className={cn('flex items-start gap-2 pr-2 transition-colors', isCursored && 'bg-[var(--accent)]/5 outline outline-1 outline-[var(--accent)]/30 outline-offset-[-1px]')}
               >
-                {selectedIds.has(alert.id) ? <CheckSquare size={12} className="text-[var(--accent)]" /> : <Square size={12} />}
-              </button>
-              <div className="flex-1 min-w-0">
-                <AlertRow alert={alert} showMeta staleHours={staleHours} snoozed={snoozed} acked={acked} onSelect={setSelectedAlert} />
+                <button
+                  onClick={() => toggleSelectAlert(alert.id)}
+                  className="mt-3 ml-4 text-[var(--dim)] hover:text-[var(--accent)] transition-colors shrink-0"
+                >
+                  {selectedIds.has(alert.id) ? <CheckSquare size={12} className="text-[var(--accent)]" /> : <Square size={12} />}
+                </button>
+                <div className="flex-1 min-w-0">
+                  <AlertRow alert={alert} showMeta staleHours={staleHours} snoozed={snoozed} acked={acked} onSelect={setSelectedAlert} />
+                </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
           {filtered.length > FLAT_PAGE_SIZE && (
             <div className="flex items-center justify-between px-3 py-2 border-t border-[var(--border)]">
               <span className="text-xs text-[var(--dim)]">
@@ -1305,7 +1435,7 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
           alert={selectedAlert}
           staleHours={staleHours}
           onClose={() => setSelectedAlert(null)}
-          onResolve={!selectedAlert.resolved ? handleResolveAlert : undefined}
+          onResolve={!selectedAlert.resolved ? (dedupKey) => setConfirmResolve(dedupKey) : undefined}
           isResolving={resolvingIds.has(selectedAlert.dedup_key)}
           onSnoozeChange={handleSnoozeChange}
           onAckChange={handleAckChange}
@@ -1313,6 +1443,20 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
           onNavToInstance={name => { navToDetail(name); setSelectedAlert(null) }}
         />
       )}
+
+      <ConfirmDialog
+        open={!!confirmResolve}
+        title="Resolve alert"
+        description="Mark this alert as resolved? It will be cleared from the active alerts list."
+        confirmLabel="Resolve"
+        onConfirm={() => {
+          if (confirmResolve) {
+            handleResolveAlert(confirmResolve)
+            setConfirmResolve(null)
+          }
+        }}
+        onCancel={() => setConfirmResolve(null)}
+      />
     </div>
   )
 }

@@ -446,6 +446,8 @@ export default function Terminal() {
   const [execTime, setExecTime] = useState<Date | null>(null)
   const [showHistory, setShowHistory] = useState(false)
   const [history, setHistory] = useState<QueryHistoryEntry[]>([])
+  const [queryHistory, setQueryHistory] = useState<Array<{sql: string; ts: number; rowCount?: number}>>([])
+  const [historyOpen, setHistoryOpen] = useState(false)
   const [historyLoading, setHistoryLoading] = useState(false)
   const [schema, setSchema] = useState<SchemaItem[]>([])
   const [showCompare, setShowCompare] = useState(false)
@@ -558,14 +560,26 @@ export default function Terminal() {
     setNodeResults(initial)
 
     // Run against all instances in parallel
-    await Promise.all(allInstances.map(async (i) => {
+    const queryText = query.trim()
+    const results = await Promise.all(allInstances.map(async (i) => {
       try {
-        const res = await api.terminal.execute(i, query.trim(), maxRows)
+        const res = await api.terminal.execute(i, queryText, maxRows)
         setNodeResults(prev => ({ ...prev, [i]: { result: res, error: null, loading: false } }))
+        return res
       } catch (e: any) {
         setNodeResults(prev => ({ ...prev, [i]: { result: null, error: e.message ?? 'Request failed', loading: false } }))
+        return null
       }
     }))
+
+    // Push to in-memory query history on any success
+    const firstSuccess = results.find(r => r !== null)
+    if (firstSuccess) {
+      const rowCount = firstSuccess.results
+        ? firstSuccess.results.reduce((s, r) => s + r.rows.length, 0)
+        : firstSuccess.rows?.length
+      setQueryHistory(prev => [{ sql: queryText, ts: Date.now(), rowCount }, ...prev].slice(0, 20))
+    }
 
     setExecTime(new Date())
     setRunning(false)
@@ -616,6 +630,38 @@ export default function Terminal() {
 
   return (
     <div className="flex gap-4 h-full">
+      {/* Left: in-memory session query history panel */}
+      {historyOpen && (
+        <div className="w-64 shrink-0 border-r border-[var(--border)] flex flex-col bg-[var(--card)] overflow-hidden">
+          <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--border)] shrink-0">
+            <span className="text-xs font-semibold">Query History</span>
+            <button onClick={() => setHistoryOpen(false)} className="text-[var(--dim)] hover:text-[var(--fg)]"><X size={13} /></button>
+          </div>
+          <div className="flex-1 overflow-auto">
+            {queryHistory.length === 0 ? (
+              <div className="text-[10px] text-[var(--dim)] text-center py-6">No queries yet</div>
+            ) : queryHistory.map((h, i) => (
+              <button
+                key={i}
+                onClick={() => { setQuery(h.sql); setHistoryOpen(false) }}
+                className="w-full text-left px-3 py-2 border-b border-[var(--border)] hover:bg-[var(--hover)] transition-colors group"
+              >
+                <div className="text-[10px] font-mono text-[var(--fg)] truncate">{h.sql.replace(/\s+/g, ' ').trim()}</div>
+                <div className="flex items-center justify-between mt-0.5">
+                  <span className="text-[9px] text-[var(--dim)]">{new Date(h.ts).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</span>
+                  {h.rowCount != null && <span className="text-[9px] text-[var(--dim)]">{h.rowCount} rows</span>}
+                </div>
+              </button>
+            ))}
+          </div>
+          {queryHistory.length > 0 && (
+            <button onClick={() => setQueryHistory([])} className="text-[10px] text-[var(--dim)] hover:text-red-400 transition-colors px-3 py-2 border-t border-[var(--border)] text-left">
+              Clear history
+            </button>
+          )}
+        </div>
+      )}
+
       <div className="flex-1 space-y-3 min-w-0">
         {/* Instance row */}
         <div className="flex items-center gap-2 flex-wrap">
@@ -740,10 +786,19 @@ export default function Terminal() {
               {MAX_ROWS_OPTIONS.map(n => <option key={n} value={n}>{fmtNum(n)}</option>)}
             </select>
             <button
+              onClick={() => setHistoryOpen(v => !v)}
+              className={cn('flex items-center gap-1.5 px-2 py-1 rounded text-xs border transition-colors', historyOpen ? 'border-[var(--accent)] text-[var(--accent)]' : 'border-[var(--border)] text-[var(--dim)] hover:text-[var(--fg)] hover:bg-[var(--hover)]')}
+              title="Query history"
+            >
+              <History size={11} />
+              History
+              {queryHistory.length > 0 && <span className="text-[9px] bg-[var(--accent)]/20 text-[var(--accent)] px-1 rounded-full">{queryHistory.length}</span>}
+            </button>
+            <button
               onClick={toggleHistory}
               className={cn('p-1.5 rounded-md transition-colors',
                 showHistory ? 'bg-[var(--accent)] text-white' : 'text-[var(--dim)] hover:text-[var(--fg)] hover:bg-[var(--hover)]')}
-              title="Query History"
+              title="Query History (server)"
             >
               <History size={16} />
             </button>

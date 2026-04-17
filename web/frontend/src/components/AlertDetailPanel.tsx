@@ -548,6 +548,19 @@ export function AlertDetailPanel({
           {/* --- Details tab --- */}
           {tab === 'details' && (
             <>
+              {/* Snooze/Ack status banners */}
+              {activeSnoozedEntry && (
+                <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300">
+                  <BellOff size={12} className="shrink-0" />
+                  <span>Snoozed until {new Date(activeSnoozedEntry.expires_at * 1000).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
+                </div>
+              )}
+              {activeAckEntry && (
+                <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-green-500/10 border border-green-500/20 text-xs text-green-300">
+                  <span className="shrink-0">✓</span>
+                  <span>Acknowledged by <strong>{activeAckEntry.acked_by}</strong> — notifications suppressed until resolved</span>
+                </div>
+              )}
               {/* Metadata grid */}
               <div className={cn('rounded-lg border p-3 grid grid-cols-2 gap-x-4 gap-y-2', SEV_BG[alert.severity] ?? 'border-[var(--border)]')}>
                 <div>
@@ -741,6 +754,7 @@ export function AlertDetailPanel({
                       <div className="text-[11px] text-[var(--dim)] mb-2">Mark that you are actively investigating this alert.</div>
                       <button
                         onClick={handleAck}
+                        title="Acknowledging suppresses notifications for this alert until it resolves. The alert remains visible."
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium text-amber-400 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 transition-colors"
                       >
                         Acknowledge

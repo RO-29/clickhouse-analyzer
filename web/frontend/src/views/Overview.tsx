@@ -1,9 +1,9 @@
 import { useEffect, useState, useCallback, useRef, type FC } from 'react'
-import { RefreshCw, Sparkles, Zap } from 'lucide-react'
+import { RefreshCw, Sparkles, Zap, AlertTriangle } from 'lucide-react'
+import { cn, fmtNum, fmtTime, scoreColor } from '../lib/utils'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
-import { fmtNum, fmtTime, scoreColor } from '../lib/utils'
 import { Card, Section } from '../components/Card'
 import { Badge } from '../components/Badge'
 import { NodeCard } from '../components/NodeCard'
@@ -196,6 +196,7 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
   }, [analyze])
 
   const [instances, setLocalInstances] = useState<Instance[]>([])
+  const [sortBy, setSortBy] = useState<'score' | 'name'>('score')
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null)
   const [loading, setLoading] = useState(true)
@@ -263,10 +264,26 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
   if (loading) return <Skeleton />
 
   if (loadError && instances.length === 0) return (
-    <div className="flex flex-col items-center gap-4 py-20 text-[var(--dim)]">
-      <svg className="w-10 h-10 opacity-30" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
-      <p className="text-sm text-red-400">{loadError}</p>
-      <button onClick={() => setManualRefreshTick(t => t + 1)} className="text-xs text-[var(--accent)] hover:underline">Retry</button>
+    <div className="flex flex-col items-center gap-4 py-16 text-center">
+      <AlertTriangle size={32} className="text-red-400 opacity-70" />
+      <div>
+        <div className="text-sm font-medium text-[var(--fg)]">Failed to load instances</div>
+        <div className="text-xs text-[var(--dim)] mt-1">{loadError}</div>
+      </div>
+      <div className="flex items-center gap-3">
+        <button
+          onClick={() => setManualRefreshTick(t => t + 1)}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--accent)] text-white text-sm hover:opacity-90 transition-opacity"
+        >
+          <RefreshCw size={14} /> Retry
+        </button>
+        <button
+          onClick={() => setView('discover')}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[var(--border)] text-sm text-[var(--dim)] hover:text-[var(--fg)] hover:bg-[var(--hover)] transition-colors"
+        >
+          Add Instance
+        </button>
+      </div>
     </div>
   )
 
@@ -294,6 +311,11 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
     : 0
   const runningQueries = instances.reduce((s, i) => s + (i.key_metrics?.['running_queries'] ?? 0), 0)
   const activeMerges = instances.reduce((s, i) => s + (i.key_metrics?.['active_merges'] ?? 0), 0)
+
+  const sortedInstances = [...instances].sort((a, b) => {
+    if (sortBy === 'score') return b.health_score - a.health_score
+    return a.name.localeCompare(b.name)
+  })
 
   const goToInstance = (name: string) => {
     setInstance(name)
@@ -327,7 +349,7 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
         <button
           onClick={() => setManualRefreshTick(t => t + 1)}
           disabled={refreshing}
-          title="Re-fetch dashboard data from the database (no new collection)"
+          title="Fetch the latest collected data from storage"
           className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] font-medium text-[var(--dim)] hover:bg-[var(--hover)] border border-[var(--border)] transition-colors disabled:opacity-50"
         >
           <RefreshCw size={10} className={refreshing ? 'animate-spin' : ''} />
@@ -336,8 +358,8 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
         <button
           onClick={handleForcePoll}
           disabled={forcingPoll}
-          title="Immediately run all collectors — updates Alerts and Slack/PagerDuty"
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] font-medium text-orange-400 hover:bg-orange-500/15 border border-orange-500/25 transition-colors disabled:opacity-50"
+          title="Run all collectors now to gather fresh ClickHouse metrics"
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] font-medium text-green-400 hover:bg-green-500/10 border border-green-500/30 transition-colors disabled:opacity-50"
         >
           <Zap size={10} className={forcingPoll ? 'animate-pulse' : ''} />
           {forcingPoll ? 'Collecting…' : forcePollMsg || 'Collect Now'}
@@ -393,14 +415,21 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
           title={`Instances · ${totalInstances}`}
           defaultOpen
           actions={
-            <span className="text-[10px] text-[var(--dim)] mr-1">
+            <div className="flex items-center gap-2">
               {healthData && (
-                <span className={`inline-flex items-center gap-1 ${healthData.status === 'ok' ? 'text-green-400' : 'text-yellow-400'}`}>
+                <span className={`inline-flex items-center gap-1 text-[10px] ${healthData.status === 'ok' ? 'text-green-400' : 'text-yellow-400'}`}>
                   <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ backgroundColor: healthData.status === 'ok' ? '#22c55e' : '#eab308' }} />
                   v{healthData.version} · up {healthData.uptime}
                 </span>
               )}
-            </span>
+              <div className="flex items-center gap-1 ml-auto">
+                {(['score', 'name'] as const).map(s => (
+                  <button key={s} onClick={() => setSortBy(s)} className={cn('text-[10px] px-1.5 py-0.5 rounded', sortBy === s ? 'bg-[var(--accent)]/15 text-[var(--accent)]' : 'text-[var(--dim)] hover:text-[var(--fg)]')}>
+                    {s === 'score' ? 'By score' : 'A–Z'}
+                  </button>
+                ))}
+              </div>
+            </div>
           }
         >
           <div className="rounded-lg border border-[var(--border)] overflow-hidden">
@@ -416,7 +445,7 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
               <span className="text-right">Alerts</span>
               <span />
             </div>
-            {instances.map(inst => (
+            {sortedInstances.map(inst => (
               <NodeCard
                 key={inst.name}
                 instance={inst}
