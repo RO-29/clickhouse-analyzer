@@ -8,7 +8,7 @@ import { api } from '../lib/api'
 import { Badge } from './Badge'
 import { SqlBlock } from './SqlBlock'
 import { useStore } from '../hooks/useStore'
-import type { Alert, Suggestion, SnoozeEntry, AckEntry } from '../types/api'
+import type { Alert, Suggestion, SnoozeEntry, AckEntry, AnomalyContext } from '../types/api'
 
 /* ------------------------------------------------------------------ */
 /*  Runbooks                                                           */
@@ -278,6 +278,92 @@ const SEV_TEXT: Record<string, string> = {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Anomaly section helpers                                            */
+/* ------------------------------------------------------------------ */
+const METRIC_MAP: [RegExp, string][] = [
+  [/memory|mem/i, 'MemoryResident'],
+  [/cpu|osc/i, 'OSUserTimeCPU'],
+  [/query|queries/i, 'Query'],
+  [/merge/i, 'Merge'],
+  [/insert/i, 'DelayedInserts'],
+  [/part/i, 'PartsCount'],
+]
+
+function deriveMetric(alert: Alert): string | null {
+  const text = `${alert.title} ${alert.category}`
+  for (const [re, metric] of METRIC_MAP) {
+    if (re.test(text)) return metric
+  }
+  return null
+}
+
+function isAnomalyAlert(alert: Alert): boolean {
+  return (
+    (alert.category ?? '').toLowerCase().includes('anomaly') ||
+    /(baseline|z=[\d.]+\u03c3)/i.test(alert.message ?? '')
+  )
+}
+
+function AnomalySparkline({ values, mean, threshold, current }: { values: number[]; mean: number; threshold: number; current: number }) {
+  if (values.length < 2) return null
+  const W = 200, H = 48, pad = 4
+  const min = Math.min(...values, mean)
+  const max = Math.max(...values, threshold)
+  const range = max - min || 1
+  const sx = (i: number) => pad + (i / (values.length - 1)) * (W - 2 * pad)
+  const sy = (v: number) => H - pad - ((v - min) / range) * (H - 2 * pad)
+  const pts = values.map((v, i) => `${sx(i)},${sy(v)}`).join(' ')
+  const meanY = sy(mean)
+  const thrY = sy(threshold)
+  const cx = sx(values.length - 1)
+  const cy = sy(current)
+  const aboveThreshold = current > threshold
+  return (
+    <svg width={W} height={H} className="overflow-visible">
+      <polyline points={pts} fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeLinejoin="round" />
+      <line x1={pad} y1={meanY} x2={W - pad} y2={meanY} stroke="#6b7280" strokeWidth="1" strokeDasharray="3 2" />
+      <line x1={pad} y1={thrY} x2={W - pad} y2={thrY} stroke="#f59e0b" strokeWidth="1" strokeDasharray="3 2" />
+      <circle cx={cx} cy={cy} r={3} fill={aboveThreshold ? '#ef4444' : '#22c55e'} />
+    </svg>
+  )
+}
+
+function AnomalySection({ alert }: { alert: Alert }) {
+  const [ctx, setCtx] = useState<AnomalyContext | null>(null)
+  const metric = useMemo(() => deriveMetric(alert), [alert])
+
+  useEffect(() => {
+    if (!metric) return
+    api.anomalyContext(alert.instance, metric).then(setCtx).catch(() => {})
+  }, [alert.instance, metric]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!isAnomalyAlert(alert)) return null
+  if (!metric || !ctx || ctx.values.length === 0) return null
+  const { z_score, mean, std_dev, current, threshold, values } = ctx
+  if (z_score < 1.5) return null
+
+  const badge = z_score >= 2.0
+    ? <span className="text-[10px] font-semibold text-red-400 bg-red-500/10 border border-red-500/20 rounded px-1.5 py-0.5">Anomaly</span>
+    : <span className="text-[10px] font-semibold text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-1.5 py-0.5">Elevated</span>
+
+  return (
+    <div className="rounded-lg border border-[var(--border)] p-3 space-y-2">
+      <div className="flex items-center gap-2">
+        <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--dim)]">Anomaly Context</div>
+        {badge}
+      </div>
+      <AnomalySparkline values={values} mean={mean} threshold={threshold} current={current} />
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-[var(--dim)]">
+        <span>Baseline: <strong className="text-[var(--text)]">{mean.toFixed(2)}</strong></span>
+        <span>σ: <strong className="text-[var(--text)]">{std_dev.toFixed(2)}</strong></span>
+        <span>Z-score: <strong className={z_score >= 2.0 ? 'text-red-400' : 'text-amber-400'}>{z_score.toFixed(1)}σ</strong></span>
+        <span>Threshold: <strong className="text-amber-400">{threshold.toFixed(2)}</strong></span>
+      </div>
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
 /*  AlertDetailPanel                                                   */
 /* ------------------------------------------------------------------ */
 type PanelTab = 'details' | 'runbook' | 'investigate' | 'actions'
@@ -501,6 +587,9 @@ export function AlertDetailPanel({
                   <AlertMessageRenderer message={alert.message} instance={alert.instance} />
                 </div>
               )}
+
+              {/* Anomaly context (shown when z-score ≥ 1.5) */}
+              <AnomalySection alert={alert} />
 
               {/* Suggestions */}
               {loadingSugg && <div className="text-[11px] text-[var(--dim)] italic">Loading suggestions…</div>}

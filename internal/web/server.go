@@ -279,6 +279,12 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 
 	// Audit log.
 	mux.HandleFunc("GET /api/audit", s.handleAuditLog)
+
+	// Anomaly context endpoint (from anomaly_context.go).
+	mux.HandleFunc("GET /api/instances/{name}/anomaly-context", s.handleAnomalyContext)
+
+	// SLO / uptime tracking.
+	mux.HandleFunc("GET /api/instances/{name}/slo", s.handleSLO)
 }
 
 // ---------------------------------------------------------------------------

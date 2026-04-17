@@ -538,3 +538,22 @@ export interface AuditEvent {
   details: string
   ts: number  // unix epoch seconds
 }
+
+export interface SLOReport {
+  uptime_pct: number
+  healthy_pct: number
+  p50_score: number
+  p95_score: number
+  total_polls: number
+  window_days: number
+}
+
+export interface AnomalyContext {
+  metric: string
+  values: number[]
+  mean: number
+  std_dev: number
+  current: number
+  z_score: number
+  threshold: number
+}

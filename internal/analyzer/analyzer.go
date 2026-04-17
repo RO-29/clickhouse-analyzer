@@ -177,12 +177,13 @@ func (a *Analyzer) updateHistory(instance string, metrics map[string]float64, ar
 
 		threshold := m + a.thresholds.AnomalyStdDevMultiplier*sd
 		if val > threshold {
+			zScore := (val - m) / sd
 			ar.CrossAlerts = append(ar.CrossAlerts, collector.Alert{
 				Instance:  instance,
 				Severity:  collector.SeverityWarn,
 				Category:  "anomaly",
 				Title:     "Anomaly detected: " + name,
-				Message:   formatAnomaly(name, val, m, sd),
+				Message:   formatAnomaly(name, val, m, sd) + fmt.Sprintf(" (baseline: %.1f, current: %.1f, z=%.1f\u03c3)", m, val, zScore),
 				DedupKey:  instance + ":anomaly:" + name,
 				Timestamp: now,
 			})

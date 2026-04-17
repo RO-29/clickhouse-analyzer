@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { ArrowLeft, HelpCircle, RefreshCw, Sparkles, Wrench, AlertTriangle, CheckCircle2 } from 'lucide-react'
+import { ArrowLeft, HelpCircle, RefreshCw, Sparkles, Wrench, AlertTriangle, CheckCircle2, Activity } from 'lucide-react'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip as RechartTooltip, ResponsiveContainer, CartesianGrid,
 } from 'recharts'
@@ -13,7 +13,7 @@ import { MetricChart } from '../components/MetricChart'
 import { HealthChecklist } from '../components/HealthChecklist'
 import { DataTable } from '../components/DataTable'
 import { AlertDetailPanel } from '../components/AlertDetailPanel'
-import type { Alert, DiskInfo, ReplicaStatus, S3Stats, MaintenanceWindow } from '../types/api'
+import type { Alert, DiskInfo, ReplicaStatus, S3Stats, MaintenanceWindow, SLOReport } from '../types/api'
 
 type DetailTab = 'summary' | 'queries' | 'storage' | 'replication' | 'history'
 
@@ -119,6 +119,9 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
   const [mergeHistory, setMergeHistory] = useState<Record<string, any>[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
 
+  const [slo, setSlo] = useState<SLOReport | null>(null)
+  const [sloWindow, setSloWindow] = useState(7)
+
   const [showActiveOnly, setShowActiveOnly] = useState(false)
   const [apLoaded, setApLoaded] = useState(false)
   const [apLoading, setApLoading] = useState(false)
@@ -193,6 +196,11 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
     }).finally(() => { if (!cancelled) setHistoryLoading(false) })
     return () => { cancelled = true }
   }, [instance, customFrom, customTo])
+
+  useEffect(() => {
+    if (!instance) return
+    api.slo(instance, sloWindow).then(setSlo).catch(() => setSlo(null))
+  }, [instance, sloWindow])
 
   if (!instance) return null
 
@@ -363,6 +371,43 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
       {activeTab === 'summary' && (
         <div className="space-y-4">
           <HealthChecklist instance={instance} refreshTrigger={currentStateRefreshTick} />
+
+          {slo && (
+            <Card className="p-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-semibold text-[var(--text-muted)] flex items-center gap-1.5">
+                  <Activity size={13} /> SLO / Uptime
+                </span>
+                <div className="flex gap-1">
+                  {[1, 7, 30].map(d => (
+                    <button key={d} onClick={() => setSloWindow(d)}
+                      className={cn('px-2 py-0.5 rounded text-xs', sloWindow === d ? 'bg-[var(--accent)] text-white' : 'bg-[var(--hover)] text-[var(--text-muted)]')}>
+                      {d === 1 ? '24h' : d === 7 ? '7d' : '30d'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <div className={cn('text-xl font-bold', slo.uptime_pct >= 99.9 ? 'text-green-400' : slo.uptime_pct >= 99 ? 'text-amber-400' : 'text-red-400')}>
+                    {slo.uptime_pct.toFixed(2)}%
+                  </div>
+                  <div className="text-xs text-[var(--text-muted)]">Uptime</div>
+                </div>
+                <div>
+                  <div className={cn('text-xl font-bold', slo.healthy_pct >= 95 ? 'text-green-400' : slo.healthy_pct >= 80 ? 'text-amber-400' : 'text-red-400')}>
+                    {slo.healthy_pct.toFixed(1)}%
+                  </div>
+                  <div className="text-xs text-[var(--text-muted)]">Healthy</div>
+                </div>
+                <div>
+                  <div className="text-xl font-bold">{Math.round(slo.p50_score)}</div>
+                  <div className="text-xs text-[var(--text-muted)]">Median score</div>
+                </div>
+              </div>
+              <div className="text-[10px] text-[var(--dim)] mt-1">{slo.total_polls} polls in last {slo.window_days}d</div>
+            </Card>
+          )}
 
           <Section title="Live Metrics" defaultOpen>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">

@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react'
-import { Bell, CheckCircle, Clock, HelpCircle, Search, XCircle } from 'lucide-react'
+import { Bell, CheckCircle, ChevronDown, ChevronRight, Clock, GitMerge, HelpCircle, Search, XCircle } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { api } from '../lib/api'
 import { cn } from '../lib/utils'

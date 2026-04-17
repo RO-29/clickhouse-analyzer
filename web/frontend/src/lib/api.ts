@@ -34,6 +34,8 @@ import type {
   SnoozeEntry,
   AckEntry,
   AuditEvent,
+  SLOReport,
+  AnomalyContext,
 } from '../types/api'
 
 const BASE = ''
@@ -242,4 +244,7 @@ export const api = {
     if (opts?.action) p.set('action', opts.action)
     return get<AuditEvent[]>(`/api/audit?${p}`)
   },
+  slo: (inst: string, windowDays = 7) => get<SLOReport>(`/api/instances/${inst}/slo?window=${windowDays}`),
+  anomalyContext: (inst: string, metric: string) =>
+    get<AnomalyContext>(`/api/instances/${inst}/anomaly-context?metric=${encodeURIComponent(metric)}`),
 }
