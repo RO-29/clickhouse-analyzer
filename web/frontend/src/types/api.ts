@@ -348,6 +348,9 @@ export interface TableScanEntry {
   disk_usage: DiskUsageEntry[]
   query_activity: TableQueryActivity
   schema_issues?: string[]
+  partition_count?: number
+  max_partition_bytes?: number
+  min_partition_bytes?: number
 }
 
 export interface TableScanResult {
@@ -357,6 +360,18 @@ export interface TableScanResult {
   time_to: string
   warnings?: string[]
   activity_rows: number
+}
+
+// Partition x disk breakdown row — one row per (partition, disk) pair
+export interface PartitionDiskRow {
+  partition: string
+  disk_name: string
+  disk_type: string   // "local" | "s3" | "hdfs" | string
+  parts_count: number
+  rows: number
+  bytes: number
+  compressed_bytes: number
+  uncompressed_bytes: number
 }
 
 // Cost Explorer

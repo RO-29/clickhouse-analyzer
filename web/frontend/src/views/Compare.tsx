@@ -43,6 +43,7 @@ interface NodeData {
   partition_key?: string
   sorting_key?: string
   col_hash?: string
+  partition_count?: number
 }
 
 type DDLCriticality = 'high' | 'critical'
@@ -947,6 +948,9 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
                                 </div>
                                 <div className="text-[var(--dim)] tabular-nums">
                                   {fmtNum(node.rows)} rows · {node.parts} parts
+                                  {node.partition_count != null && (
+                                    <> · <span className="text-[var(--dim)]">{node.partition_count} partitions</span></>
+                                  )}
                                 </div>
                                 {/* Parts detail: age + format breakdown */}
                                 {node.parts_detail && node.parts_detail.oldest_h > 0 && (

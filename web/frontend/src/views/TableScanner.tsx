@@ -2,13 +2,14 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Search, RefreshCw, ChevronDown, ChevronRight,
   Database, HardDrive, Activity, Code, AlertTriangle,
-  Sparkles, X,
+  Sparkles, X, Loader2,
 } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
 import { cn } from '../lib/utils'
-import type { TableScanResult, TableScanEntry, DiskUsageEntry, TableQueryPattern } from '../types/api'
+import type { TableScanResult, TableScanEntry, DiskUsageEntry, TableQueryPattern, PartitionDiskRow } from '../types/api'
+import { PartitionDistribution } from '../components/PartitionDistribution'
 
 /* ─── Helpers ─────────────────────────────────────────────────────────────── */
 
@@ -245,14 +246,38 @@ function QueryPatternsSection({ patterns }: { patterns: TableQueryPattern[] }) {
 
 function TableDetailModal({
   entry,
+  instance,
   onClose,
   onAnalyze,
 }: {
   entry: TableScanEntry
+  instance: string
   onClose: () => void
   onAnalyze: (entry: TableScanEntry) => void
 }) {
   const [showQuery, setShowQuery] = useState(false)
+  const [partitionsOpen, setPartitionsOpen] = useState(false)
+  const [partitionRows, setPartitionRows] = useState<PartitionDiskRow[] | null>(null)
+  const [partitionsLoading, setPartitionsLoading] = useState(false)
+  const [partitionsError, setPartitionsError] = useState<string | null>(null)
+
+  const handleTogglePartitions = useCallback(async () => {
+    const nextOpen = !partitionsOpen
+    setPartitionsOpen(nextOpen)
+    if (nextOpen && partitionRows === null && !partitionsLoading) {
+      setPartitionsLoading(true)
+      setPartitionsError(null)
+      try {
+        const rows = await api.tablePartitions(instance, entry.database, entry.table)
+        setPartitionRows(rows)
+      } catch (e: any) {
+        setPartitionsError(e?.message ?? 'Failed to load partitions')
+      } finally {
+        setPartitionsLoading(false)
+      }
+    }
+  }, [partitionsOpen, partitionRows, partitionsLoading, instance, entry.database, entry.table])
+
   const act = entry.query_activity
   const lastSel = fmtActivityTs(act.last_select)
   const lastIns = fmtActivityTs(act.last_insert)
@@ -406,6 +431,27 @@ function TableDetailModal({
                 {entry.schema_issues.map(issue => (
                   <IssueBadge key={issue} issue={issue} />
                 ))}
+                {entry.partition_count != null &&
+                  entry.max_partition_bytes != null &&
+                  entry.max_partition_bytes > 3 * (entry.total_bytes / Math.max(entry.partition_count, 1)) && (
+                  <span className="px-2 py-0.5 rounded text-[10px] bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                    Partition skew detected
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+          {/* Partition skew standalone (when no other schema issues) */}
+          {!(entry.schema_issues && entry.schema_issues.length > 0) &&
+            entry.partition_count != null &&
+            entry.max_partition_bytes != null &&
+            entry.max_partition_bytes > 3 * (entry.total_bytes / Math.max(entry.partition_count, 1)) && (
+            <div className="space-y-2">
+              <div className="text-xs font-semibold uppercase tracking-wider text-[var(--dim)]">Schema Issues</div>
+              <div className="flex flex-wrap gap-1.5">
+                <span className="px-2 py-0.5 rounded text-[10px] bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                  Partition skew detected
+                </span>
               </div>
             </div>
           )}
@@ -419,6 +465,34 @@ function TableDetailModal({
           {entry.disk_usage && entry.disk_usage.length > 0 && (
             <DiskUsageSection disks={entry.disk_usage} />
           )}
+
+          {/* Partitions collapsible section */}
+          <div className="space-y-2">
+            <button
+              onClick={handleTogglePartitions}
+              className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-[var(--dim)] hover:text-[var(--fg)] transition-colors"
+            >
+              <HardDrive size={12} />
+              Partitions {entry.partition_count != null ? `(${entry.partition_count})` : ''}
+              {partitionsOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+            </button>
+            {partitionsOpen && (
+              <div>
+                {partitionsLoading && (
+                  <div className="flex items-center gap-2 py-3 text-xs text-[var(--dim)]">
+                    <Loader2 size={13} className="animate-spin" />
+                    Loading partition data…
+                  </div>
+                )}
+                {partitionsError && (
+                  <div className="text-xs text-red-400 py-2">{partitionsError}</div>
+                )}
+                {partitionRows && !partitionsLoading && (
+                  <PartitionDistribution rows={partitionRows} />
+                )}
+              </div>
+            )}
+          </div>
 
           {/* CREATE TABLE DDL — full, no height limit */}
           {entry.create_query && (
@@ -539,6 +613,11 @@ function TableRow({
       {/* Parts */}
       <td className={cn('px-2 py-1.5 text-[11px] font-mono text-right tabular-nums text-[var(--dim)]', hl('parts'))}>
         {entry.parts_count > 0 ? entry.parts_count.toLocaleString() : '—'}
+      </td>
+
+      {/* Partitions */}
+      <td className="px-2 py-1.5 text-[11px] font-mono text-right tabular-nums text-[var(--dim)]">
+        {entry.partition_count != null ? entry.partition_count.toLocaleString() : '—'}
       </td>
 
       {/* Status */}
@@ -907,6 +986,7 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
                   <ColHeader label="Rows"    col="rows"    sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
                   <ColHeader label="Size"    col="bytes"   sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
                   <ColHeader label="Parts"   col="parts"   sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
+                  <th className="px-2 py-2 text-[10px] font-semibold text-[var(--dim)] uppercase tracking-wider text-right">Partitions</th>
                   <th className="px-2 py-2 text-[10px] font-semibold text-[var(--dim)] uppercase tracking-wider text-center">Status</th>
                   <ColHeader label="SELECTs" col="selects" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} className="text-blue-400/70" />
                   <ColHeader label="INSERTs" col="inserts" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} className="text-green-400/70" />
@@ -948,6 +1028,7 @@ export default function TableScanner({ refreshKey }: TableScannerProps) {
       {modalEntry && (
         <TableDetailModal
           entry={modalEntry}
+          instance={instance}
           onClose={() => setModalEntry(null)}
           onAnalyze={handleAnalyze}
         />

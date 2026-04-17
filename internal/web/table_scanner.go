@@ -36,8 +36,11 @@ type tableScanEntry struct {
 	SamplingKey   string             `json:"sampling_key"`
 	TotalRows     uint64             `json:"total_rows"`
 	TotalBytes    uint64             `json:"total_bytes"`
-	PartsCount    uint64             `json:"parts_count"`
-	CreateQuery   string             `json:"create_query"`
+	PartsCount        uint64             `json:"parts_count"`
+	PartitionCount    int64              `json:"partition_count"`
+	MaxPartitionBytes uint64             `json:"max_partition_bytes"`
+	MinPartitionBytes uint64             `json:"min_partition_bytes"`
+	CreateQuery       string             `json:"create_query"`
 	DiskUsage     []diskUsageEntry   `json:"disk_usage"`
 	QueryActivity tableQueryActivity `json:"query_activity"`
 	SchemaIssues  []string           `json:"schema_issues,omitempty"`
@@ -134,20 +137,22 @@ func (s *Server) handleTableScan(w http.ResponseWriter, r *http.Request) {
 	// selectCond is the query_log condition for SELECT-like queries.
 	selectCond := `(upper(left(ltrim(query), 6)) = 'SELECT' OR upper(left(ltrim(query), 4)) = 'WITH')`
 
-	// ── Run four queries in parallel ─────────────────────────────────────────
+	// ── Run five queries in parallel ─────────────────────────────────────────
 	var (
 		tableRows   []map[string]interface{}
 		diskRows    []map[string]interface{}
 		qlogRows    []map[string]interface{}
 		patternRows []map[string]interface{}
+		partAggRows []map[string]any
 		tableErr    error
 		diskErr     error
 		qlogErr     error
 		patternErr  error
+		partAggErr  error
 		wg          sync.WaitGroup
 	)
 
-	wg.Add(4)
+	wg.Add(5)
 
 	// 1. Table schema + meta from system.tables
 	go func() {
@@ -257,6 +262,26 @@ LIMIT 1000
 `, fromStr, toStr))
 	}()
 
+	// 5. Partition aggregate stats per table
+	go func() {
+		defer wg.Done()
+		partAggRows, partAggErr = client.Query(ctx, `
+SELECT
+    database,
+    table,
+    count(DISTINCT partition) AS partition_count,
+    max(pb) AS max_partition_bytes,
+    min(pb) AS min_partition_bytes
+FROM (
+    SELECT database, table, partition, sum(bytes_on_disk) AS pb
+    FROM system.parts
+    WHERE active = 1
+    GROUP BY database, table, partition
+) sub
+GROUP BY database, table
+`)
+	}()
+
 	wg.Wait()
 
 	if tableErr != nil {
@@ -276,6 +301,30 @@ LIMIT 1000
 	if patternErr != nil {
 		slog.Warn("table-scan: patterns query failed", "err", patternErr)
 		// Non-fatal — patterns section will just be empty.
+	}
+	if partAggErr != nil {
+		slog.Warn("table-scan: partition agg query failed", "err", partAggErr)
+		// Non-fatal — partition fields will be zero.
+	}
+
+	// ── Build partition aggregate index ──────────────────────────────────────
+	type partAggKey struct{ db, tbl string }
+	type partAggVal struct {
+		count    int64
+		maxBytes uint64
+		minBytes uint64
+	}
+	partAggMap := map[partAggKey]partAggVal{}
+	if partAggErr == nil {
+		for _, row := range partAggRows {
+			db := strVal(row["database"])
+			tbl := strVal(row["table"])
+			partAggMap[partAggKey{db, tbl}] = partAggVal{
+				count:    int64Val(row["partition_count"]),
+				maxBytes: uint64Val(row["max_partition_bytes"]),
+				minBytes: uint64Val(row["min_partition_bytes"]),
+			}
+		}
 	}
 
 	// ── Fetch disk types from system.disks ────────────────────────────────────
@@ -410,22 +459,26 @@ LIMIT 1000
 			issues = append(issues, "no_recent_inserts")
 		}
 
+		pa := partAggMap[partAggKey{db, tbl}]
 		entries = append(entries, tableScanEntry{
-			Database:      db,
-			Table:         tbl,
-			Engine:        engine,
-			StoragePolicy: strVal(row["storage_policy"]),
-			SortingKey:    sortingKey,
-			PrimaryKey:    strVal(row["primary_key"]),
-			PartitionKey:  partitionKey,
-			SamplingKey:   strVal(row["sampling_key"]),
-			TotalRows:     totalRows,
-			TotalBytes:    uint64Val(row["total_bytes"]),
-			PartsCount:    partsCount,
-			CreateQuery:   strVal(row["create_table_query"]),
-			DiskUsage:     diskByTable[diskKey{db, tbl}],
-			QueryActivity: activity,
-			SchemaIssues:  issues,
+			Database:          db,
+			Table:             tbl,
+			Engine:            engine,
+			StoragePolicy:     strVal(row["storage_policy"]),
+			SortingKey:        sortingKey,
+			PrimaryKey:        strVal(row["primary_key"]),
+			PartitionKey:      partitionKey,
+			SamplingKey:       strVal(row["sampling_key"]),
+			TotalRows:         totalRows,
+			TotalBytes:        uint64Val(row["total_bytes"]),
+			PartsCount:        partsCount,
+			PartitionCount:    pa.count,
+			MaxPartitionBytes: pa.maxBytes,
+			MinPartitionBytes: pa.minBytes,
+			CreateQuery:       strVal(row["create_table_query"]),
+			DiskUsage:         diskByTable[diskKey{db, tbl}],
+			QueryActivity:     activity,
+			SchemaIssues:      issues,
 		})
 	}
 

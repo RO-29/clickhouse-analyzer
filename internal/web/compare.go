@@ -45,16 +45,17 @@ type cmpQueryStats struct {
 
 // cmpTableRaw is the internal accumulation struct per instance per table.
 type cmpTableRaw struct {
-	Rows         float64
-	Bytes        float64
-	Size         string
-	Parts        float64
-	PKBytes      float64
-	MarksBytes   float64
-	OldestHours  float64
-	AvgPartBytes float64
-	WideParts    int
-	CompactParts int
+	Rows           float64
+	Bytes          float64
+	Size           string
+	Parts          float64
+	PKBytes        float64
+	MarksBytes     float64
+	OldestHours    float64
+	AvgPartBytes   float64
+	WideParts      int
+	CompactParts   int
+	PartitionCount int64
 }
 
 // cmpInstanceData holds everything collected from one instance.
@@ -95,7 +96,7 @@ func (s *Server) handleCompareTables(w http.ResponseWriter, r *http.Request) {
 			return fmt.Errorf("query tables: %w", err)
 		}
 
-		// ── Q2: extended parts query (with age + format type) ────────
+		// ── Q2: extended parts query (with age + format type + partition count) ─
 		partsRows, err := client.Query(ctx, `
 			SELECT database, `+"`table`"+` as table_name,
 				count() as parts,
@@ -104,7 +105,8 @@ func (s *Server) handleCompareTables(w http.ResponseWriter, r *http.Request) {
 				toUInt64(dateDiff('hour', min(modification_time), now())) as oldest_h,
 				round(avg(bytes_on_disk)) as avg_part_bytes,
 				countIf(part_type = 'Wide') as wide_parts,
-				countIf(part_type = 'Compact') as compact_parts
+				countIf(part_type = 'Compact') as compact_parts,
+				count(DISTINCT partition) as partition_count
 			FROM system.parts WHERE active
 			GROUP BY database, table_name
 		`)
@@ -118,7 +120,8 @@ func (s *Server) handleCompareTables(w http.ResponseWriter, r *http.Request) {
 					toUInt64(dateDiff('hour', min(modification_time), now())) as oldest_h,
 					round(avg(bytes_on_disk)) as avg_part_bytes,
 					0 as wide_parts,
-					0 as compact_parts
+					0 as compact_parts,
+					count(DISTINCT partition) as partition_count
 				FROM system.parts WHERE active
 				GROUP BY database, table_name
 			`)
@@ -222,6 +225,7 @@ func (s *Server) handleCompareTables(w http.ResponseWriter, r *http.Request) {
 				ti.AvgPartBytes = toFloat64(row["avg_part_bytes"])
 				ti.WideParts = int(toFloat64(row["wide_parts"]))
 				ti.CompactParts = int(toFloat64(row["compact_parts"]))
+				ti.PartitionCount = int64(toFloat64(row["partition_count"]))
 				data.tables[key] = ti
 			}
 		}
@@ -254,16 +258,17 @@ func (s *Server) handleCompareTables(w http.ResponseWriter, r *http.Request) {
 
 	// ── output types ─────────────────────────────────────────────────
 	type nodeInfo struct {
-		Rows         float64         `json:"rows"`
-		Bytes        float64         `json:"bytes"`
-		Size         string          `json:"size"`
-		Parts        float64         `json:"parts"`
-		PKBytes      float64         `json:"pk_bytes"`
-		MarksBytes   float64         `json:"marks_bytes"`
-		DiskDist     []cmpDiskSlice  `json:"disk_dist,omitempty"`
-		PartsDetail  *cmpPartsDetail `json:"parts_detail,omitempty"`
-		S3Pct        float64         `json:"s3_pct"`
-		QueryStats   *cmpQueryStats  `json:"query_stats,omitempty"`
+		Rows           float64         `json:"rows"`
+		Bytes          float64         `json:"bytes"`
+		Size           string          `json:"size"`
+		Parts          float64         `json:"parts"`
+		PKBytes        float64         `json:"pk_bytes"`
+		MarksBytes     float64         `json:"marks_bytes"`
+		DiskDist       []cmpDiskSlice  `json:"disk_dist,omitempty"`
+		PartsDetail    *cmpPartsDetail `json:"parts_detail,omitempty"`
+		S3Pct          float64         `json:"s3_pct"`
+		QueryStats     *cmpQueryStats  `json:"query_stats,omitempty"`
+		PartitionCount int64           `json:"partition_count"`
 		// DDL fields — exposed so the frontend can recompute diff for only the
 		// selected nodes (the pre-computed DDLCriticality covers all instances).
 		PartitionKey string `json:"partition_key,omitempty"`
@@ -333,17 +338,18 @@ func (s *Server) handleCompareTables(w http.ResponseWriter, r *http.Request) {
 
 			sk := data.tblStruct[key]
 			ni := nodeInfo{
-				Rows:         ti.Rows,
-				Bytes:        ti.Bytes,
-				Size:         ti.Size,
-				Parts:        ti.Parts,
-				PKBytes:      ti.PKBytes,
-				MarksBytes:   ti.MarksBytes,
-				DiskDist:     data.diskDist[key],
-				S3Pct:        s3Pct,
-				PartitionKey: sk[0],
-				SortingKey:   sk[1],
-				ColHash:      cmpColHash(data.columns[key]),
+				Rows:           ti.Rows,
+				Bytes:          ti.Bytes,
+				Size:           ti.Size,
+				Parts:          ti.Parts,
+				PKBytes:        ti.PKBytes,
+				MarksBytes:     ti.MarksBytes,
+				DiskDist:       data.diskDist[key],
+				S3Pct:          s3Pct,
+				PartitionCount: ti.PartitionCount,
+				PartitionKey:   sk[0],
+				SortingKey:     sk[1],
+				ColHash:        cmpColHash(data.columns[key]),
 			}
 			if ti.Parts > 0 {
 				ni.PartsDetail = &cmpPartsDetail{

@@ -24,6 +24,7 @@ import type {
   Suggestion,
   DiskInfo,
   TableScanResult,
+  PartitionDiskRow,
   CostReport,
   CostOverview,
   ReplicaStatus,
@@ -177,6 +178,8 @@ export const api = {
     tableAntiPatterns: (inst: string) => get<any[]>(`/api/instances/${inst}/advisor/table-antipatterns`),
   },
   tableDetail: (inst: string, db: string, table: string) => get<any>(`/api/instances/${inst}/table-detail/${db}/${table}`),
+  tablePartitions: (inst: string, db: string, table: string) =>
+    get<PartitionDiskRow[]>(`/api/instances/${inst}/table-partitions?db=${encodeURIComponent(db)}&table=${encodeURIComponent(table)}`),
   tableScan: (inst: string, from?: number, to?: number, includeSystem?: boolean, db?: string) => {
     const params = new URLSearchParams()
     if (from) params.set('from', String(from))

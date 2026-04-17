@@ -214,6 +214,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Table scanner endpoints (from table_scanner.go).
 	mux.HandleFunc("GET /api/instances/{name}/table-scan", s.handleTableScan)
 	mux.HandleFunc("GET /api/instances/{name}/table-scan-debug", s.handleTableScanDebug)
+	mux.HandleFunc("GET /api/instances/{name}/table-partitions", s.handleTablePartitions)
 
 	// Advisor endpoints (from advisor.go).
 	mux.HandleFunc("GET /api/instances/{name}/advisor/compression", s.handleAdvisorCompression)
