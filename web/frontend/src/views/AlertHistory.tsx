@@ -63,6 +63,141 @@ const SEV_BORDER: Record<string, string> = {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Incident grouping                                                 */
+/* ------------------------------------------------------------------ */
+
+type IncidentGroup = {
+  key: string
+  alerts: Alert[]
+  isGroup: boolean
+  worstSeverity: string
+  startTime: number
+  instance: string
+  category: string
+}
+
+function IncidentRow({ incident, onSelect }: { incident: IncidentGroup; onSelect: (a: Alert) => void }) {
+  const [expanded, setExpanded] = useState(false)
+
+  if (!incident.isGroup) {
+    const alert = incident.alerts[0]
+    return (
+      <div
+        className={cn(
+          'border rounded-lg overflow-hidden transition-colors cursor-pointer hover:bg-[var(--hover)]/50',
+          SEV_BORDER[alert.severity] ?? 'border-[var(--border)]',
+        )}
+        onClick={() => onSelect(alert)}
+      >
+        <div className="flex items-start gap-3 p-3">
+          <div className={cn('w-2 h-2 rounded-full mt-[5px] flex-shrink-0', SEV_DOT[alert.severity] ?? 'bg-[var(--text-muted)]')} />
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className={cn('text-sm font-medium truncate', SEV_TEXT[alert.severity])} title={alert.title}>
+                {alert.title}
+              </span>
+              {alert.resolved ? (
+                <span className="flex items-center gap-0.5 text-xs text-[#22c55e]">
+                  <CheckCircle className="w-3 h-3" /> resolved
+                </span>
+              ) : (
+                <span className="text-xs font-medium text-[#ef4444]">firing</span>
+              )}
+            </div>
+            <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+              <span className="text-xs text-[var(--text-muted)]">{alert.instance}</span>
+              <Badge className="text-[var(--dim)] border-[var(--border)]">{alert.category}</Badge>
+              <span className="text-xs text-[var(--text-muted)]">{fmtTs(alert.created_at)}</span>
+              {alert.duration_s > 0 && (
+                <span className="text-xs text-[var(--text-muted)] flex items-center gap-0.5">
+                  <Clock className="w-3 h-3" />
+                  {fmtDuration(alert.duration_s)}
+                </span>
+              )}
+            </div>
+          </div>
+          <span className="text-[10px] text-[var(--dim)] shrink-0">→</span>
+        </div>
+      </div>
+    )
+  }
+
+  const allResolved = incident.alerts.every(a => a.resolved)
+
+  return (
+    <div className={cn('border rounded-lg overflow-hidden', SEV_BORDER[incident.worstSeverity] ?? 'border-[var(--border)]')}>
+      <div
+        className="flex items-start gap-3 p-3 cursor-pointer hover:bg-[var(--hover)]/50 transition-colors"
+        onClick={() => setExpanded(e => !e)}
+      >
+        <div className={cn('w-2 h-2 rounded-full mt-[5px] flex-shrink-0', SEV_DOT[incident.worstSeverity] ?? 'bg-[var(--text-muted)]')} />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className={cn('text-xs font-semibold px-1.5 py-0.5 rounded', SEV_DOT[incident.worstSeverity], 'text-white')}>
+              {incident.alerts.length} alerts
+            </span>
+            <span className="text-sm font-medium">{incident.category}</span>
+            <span className="text-xs text-[var(--text-muted)]">→</span>
+            <span className="text-xs text-[var(--text-muted)]">{incident.instance}</span>
+            <span className="text-xs text-[var(--text-muted)]">— {fmtTs(incident.startTime)}</span>
+            {allResolved && (
+              <span className="flex items-center gap-0.5 text-xs text-[#22c55e]">
+                <CheckCircle className="w-3 h-3" /> resolved
+              </span>
+            )}
+          </div>
+        </div>
+        {expanded ? <ChevronDown size={14} className="shrink-0 text-[var(--text-muted)]" /> : <ChevronRight size={14} className="shrink-0 text-[var(--text-muted)]" />}
+      </div>
+      {expanded && (
+        <div className="ml-4 pl-3 border-l border-[var(--border)] pb-2 space-y-1">
+          {incident.alerts.map(alert => (
+            <div
+              key={alert.id}
+              className={cn(
+                'border rounded-lg overflow-hidden transition-colors cursor-pointer hover:bg-[var(--hover)]/50',
+                SEV_BORDER[alert.severity] ?? 'border-[var(--border)]',
+              )}
+              onClick={() => onSelect(alert)}
+            >
+              <div className="flex items-start gap-3 p-3">
+                <div className={cn('w-2 h-2 rounded-full mt-[5px] flex-shrink-0', SEV_DOT[alert.severity] ?? 'bg-[var(--text-muted)]')} />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className={cn('text-sm font-medium truncate', SEV_TEXT[alert.severity])} title={alert.title}>
+                      {alert.title}
+                    </span>
+                    {alert.resolved ? (
+                      <span className="flex items-center gap-0.5 text-xs text-[#22c55e]">
+                        <CheckCircle className="w-3 h-3" /> resolved
+                      </span>
+                    ) : (
+                      <span className="text-xs font-medium text-[#ef4444]">firing</span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                    <span className="text-xs text-[var(--text-muted)]">{alert.instance}</span>
+                    <Badge className="text-[var(--dim)] border-[var(--border)]">{alert.category}</Badge>
+                    <span className="text-xs text-[var(--text-muted)]">{fmtTs(alert.created_at)}</span>
+                    {alert.duration_s > 0 && (
+                      <span className="text-xs text-[var(--text-muted)] flex items-center gap-0.5">
+                        <Clock className="w-3 h-3" />
+                        {fmtDuration(alert.duration_s)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <span className="text-[10px] text-[var(--dim)] shrink-0">→</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
 /*  NotifyStatusBanner — shows configured notification channels       */
 /* ------------------------------------------------------------------ */
 
@@ -119,6 +254,7 @@ export default function AlertHistory({ refreshKey }: { refreshKey?: number }) {
   const [activeOnly, setActiveOnly] = useState(false)
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null)
   const [refreshTick, setRefreshTick] = useState(0)
+  const [groupIncidents, setGroupIncidents] = useState(false)
 
   // Fetch history + stats whenever range / instance filter / tick changes
   useEffect(() => {
@@ -172,6 +308,29 @@ export default function AlertHistory({ refreshKey }: { refreshKey?: number }) {
     return Array.from(map.entries()).map(([label, items]) => ({ label, items }))
   }, [filtered])
 
+  const incidents = useMemo((): IncidentGroup[] | null => {
+    if (!groupIncidents) return null
+    const buckets = new Map<string, Alert[]>()
+    for (const a of filtered) {
+      const bucket = Math.floor(a.created_at / 900) // 900s = 15 min
+      const key = `${a.instance}::${a.category}::${bucket}`
+      if (!buckets.has(key)) buckets.set(key, [])
+      buckets.get(key)!.push(a)
+    }
+    return Array.from(buckets.entries())
+      .map(([key, alerts]) => ({
+        key,
+        alerts,
+        isGroup: alerts.length >= 2,
+        worstSeverity: alerts.some(a => a.severity === 'critical') ? 'critical'
+          : alerts.some(a => a.severity === 'warn') ? 'warn' : 'info',
+        startTime: Math.min(...alerts.map(a => a.created_at)),
+        instance: alerts[0].instance,
+        category: alerts[0].category,
+      }))
+      .sort((a, b) => b.startTime - a.startTime)
+  }, [filtered, groupIncidents])
+
   const allCategories = useMemo(() => {
     const cats = new Set(alerts.map(a => a.category))
     return Array.from(cats).sort()
@@ -214,6 +373,19 @@ export default function AlertHistory({ refreshKey }: { refreshKey?: number }) {
                 )}
               >{o.label}</button>
             ))}
+            <button
+              onClick={() => setGroupIncidents(g => !g)}
+              title={groupIncidents ? 'Show flat list' : 'Group as incidents'}
+              className={cn(
+                'flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium transition-colors',
+                groupIncidents
+                  ? 'bg-[var(--accent)] text-white'
+                  : 'bg-[var(--hover)] text-[var(--text-muted)] hover:text-[var(--text)]'
+              )}
+            >
+              <GitMerge size={12} />
+              {groupIncidents ? 'Incidents' : 'Group'}
+            </button>
           </div>
         </div>
       </div>
@@ -331,13 +503,17 @@ export default function AlertHistory({ refreshKey }: { refreshKey?: number }) {
         <Card className="p-10 text-center text-[var(--text-muted)]">
           <Bell className="w-10 h-10 mx-auto mb-3 opacity-20" />
           <div className="text-sm">No alerts in this time range</div>
-          {(severityFilter || categoryFilter || search || activeOnly) && (
+          {(severityFilter || categoryFilter || search || activeOnly || groupIncidents) && (
             <button
-              onClick={() => { setSeverityFilter(''); setCategoryFilter(''); setSearch(''); setActiveOnly(false) }}
+              onClick={() => { setSeverityFilter(''); setCategoryFilter(''); setSearch(''); setActiveOnly(false); setGroupIncidents(false) }}
               className="mt-2 text-xs text-[var(--accent)] hover:underline"
             >Clear filters</button>
           )}
         </Card>
+      ) : groupIncidents && incidents ? (
+        <div className="space-y-1">
+          {incidents.map(inc => <IncidentRow key={inc.key} incident={inc} onSelect={setSelectedAlert} />)}
+        </div>
       ) : (
         <div className="space-y-5">
           {groups.map(({ label, items }) => (

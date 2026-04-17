@@ -7,6 +7,7 @@ import { api } from '../lib/api'
 import { fmtBytes, fmtNum, fmtDuration, cn } from '../lib/utils'
 import { Card } from '../components/Card'
 import { DataTable } from '../components/DataTable'
+import { MultiInstanceChart } from '../components/MultiInstanceChart'
 import type { CompareQueryPatternsResult } from '../types/api'
 
 /* ------------------------------------------------------------------ */
@@ -1554,6 +1555,79 @@ function CrossQueryView({ from, to }: { from: number; to: number }) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Timeline metrics list                                             */
+/* ------------------------------------------------------------------ */
+const TIMELINE_METRICS = [
+  'MemoryResident',
+  'OSMemoryTotal',
+  'LoadAverage1',
+  'Query',
+  'Merge',
+  'PartMutation',
+  'MemoryTracking',
+  'MarkCacheBytes',
+  'CGroupMemoryUsed',
+  'OSMemoryAvailable',
+]
+
+const BYTES_METRICS = new Set([
+  'MemoryResident', 'OSMemoryTotal', 'MemoryTracking', 'MarkCacheBytes',
+  'CGroupMemoryUsed', 'OSMemoryAvailable',
+])
+
+function TimelineView({ from, to }: { from: number; to: number }) {
+  const [metric, setMetric] = useState(TIMELINE_METRICS[0])
+  const [data, setData] = useState<{ metric: string; series: Array<{ instance: string; color: string; points: Array<{ ts: number; value: number }> }> } | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+    api.compare.timeline(metric, from, to)
+      .then(d => { if (!cancelled) setData(d) })
+      .catch(e => { if (!cancelled) setError(e.message) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [metric, from, to])
+
+  const yFormat = BYTES_METRICS.has(metric) ? 'bytes' : 'number'
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-3">
+        <label className="text-xs text-[var(--dim)] uppercase tracking-wider font-medium shrink-0">Metric</label>
+        <select
+          value={metric}
+          onChange={e => setMetric(e.target.value)}
+          className="rounded border border-[var(--border)] bg-[var(--card)] px-2 py-1 text-xs focus:outline-none focus:border-[var(--accent)]"
+        >
+          {TIMELINE_METRICS.map(m => (
+            <option key={m} value={m}>{m}</option>
+          ))}
+        </select>
+        {loading && <Loader2 size={13} className="animate-spin text-[var(--dim)]" />}
+      </div>
+
+      {error && <ErrorMsg msg={error} />}
+
+      {!loading && !error && data && (
+        data.series.every(s => s.points.length === 0)
+          ? <EmptyMsg msg="No data for the selected time range" />
+          : <MultiInstanceChart series={data.series} title={metric} height={300} yFormat={yFormat as any} />
+      )}
+
+      {loading && !data && (
+        <div className="h-[300px] flex items-center justify-center text-[var(--dim)] text-sm">
+          Loading…
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
 /*  Main Compare                                                      */
 /* ------------------------------------------------------------------ */
 export default function Compare() {
@@ -1573,7 +1647,7 @@ export default function Compare() {
   const [tablesError, setTablesError] = useState<string | null>(null)
   const [settingsError, setSettingsError] = useState<string | null>(null)
 
-  const [tab, setTab] = useState<'tables' | 'settings' | 'metrics' | 'memory' | 'diff' | 'queries'>('tables')
+  const [tab, setTab] = useState<'tables' | 'settings' | 'metrics' | 'memory' | 'diff' | 'queries' | 'timeline'>('tables')
 
   const [baseline, setBaseline] = useState<string>(() => {
     try { return localStorage.getItem('compare-baseline') ?? '' } catch { return '' }
@@ -1641,6 +1715,7 @@ export default function Compare() {
           <TabButton active={tab === 'memory'} label="Memory" onClick={() => setTab('memory')} />
           <TabButton active={tab === 'diff'} label="Diff" onClick={() => setTab('diff')} />
           <TabButton active={tab === 'queries'} label="Queries" onClick={() => setTab('queries')} />
+          <TabButton active={tab === 'timeline'} label="Timeline" onClick={() => setTab('timeline')} />
         </div>
         <button
           onClick={() => handleAnalyze({ baseline: effectiveBaseline, instances, tab, tablesData, settingsData })}
@@ -1652,7 +1727,7 @@ export default function Compare() {
       </div>
 
       {/* ---- Node pills (baseline selector) — only for Settings/Metrics/Memory tabs ---- */}
-      {tab !== 'tables' && tab !== 'diff' && tab !== 'queries' && (
+      {tab !== 'tables' && tab !== 'diff' && tab !== 'queries' && tab !== 'timeline' && (
         <div>
           <div className="text-xs text-[var(--dim)] mb-2">Click any node to set as comparison baseline</div>
           <div className="flex flex-wrap gap-3">
@@ -1705,6 +1780,9 @@ export default function Compare() {
       )}
       {tab === 'queries' && (
         <CrossQueryView from={from} to={to} />
+      )}
+      {tab === 'timeline' && (
+        <TimelineView from={from} to={to} />
       )}
     </div>
   )

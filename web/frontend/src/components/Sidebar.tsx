@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import {
   LayoutDashboard, Bell, BellDot, Search, GitCompareArrows, Lightbulb, TerminalSquare, FileText, Database,
   Sun, Moon, ChevronsLeft, ChevronsRight, Sparkles, RefreshCw, ScanSearch, DollarSign, Shield, PlayCircle, Compass,
-  Rows3, Command, Copy, ClipboardList,
+  Rows3, Command, Copy, ClipboardList, SlidersHorizontal,
 } from 'lucide-react'
 import { useStore, type View } from '../hooks/useStore'
 import { cn, scoreColor } from '../lib/utils'
@@ -16,6 +16,7 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
   {
     label: 'Monitoring',
     items: [
+      { view: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
       { view: 'overview', label: 'Overview', icon: LayoutDashboard },
       { view: 'alerts', label: 'Alerts', icon: Bell },
       { view: 'history', label: 'Alert History', icon: BellDot },
@@ -37,6 +38,7 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
       { view: 'terminal', label: 'Terminal', icon: TerminalSquare },
       { view: 'runcheck', label: 'Run Checks', icon: PlayCircle },
       { view: 'maintenance', label: 'Maintenance', icon: Shield },
+      { view: 'thresholds', label: 'Thresholds', icon: SlidersHorizontal },
     ],
   },
   {

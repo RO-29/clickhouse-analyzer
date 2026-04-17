@@ -4,6 +4,7 @@ import { useStore, type View } from '../hooks/useStore'
 import { cn } from '../lib/utils'
 
 const VIEW_TITLES: Record<View, string> = {
+  dashboard: 'Dashboard',
   overview: 'Overview',
   detail: 'Instance Detail',
   alerts: 'Alerts',
@@ -21,6 +22,7 @@ const VIEW_TITLES: Record<View, string> = {
   runcheck: 'Run Checks',
   discover: 'Feature Guide',
   audit: 'Audit Log',
+  thresholds: 'Alert Thresholds',
 }
 
 const PRESETS = ['15m', '1h', '6h', '24h', '7d']

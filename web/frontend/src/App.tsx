@@ -3,6 +3,7 @@ import { StoreProvider, useStore } from './hooks/useStore'
 import { Sidebar } from './components/Sidebar'
 import { TopBar } from './components/TopBar'
 import { CommandPalette } from './components/CommandPalette'
+import Dashboard from './views/Dashboard'
 import Overview from './views/Overview'
 import Detail from './views/Detail'
 import Alerts from './views/Alerts'
@@ -20,6 +21,7 @@ import AlertHistory from './views/AlertHistory'
 import RunCheck from './views/RunCheck'
 import Discover from './views/Discover'
 import AuditLog from './views/AuditLog'
+import ThresholdEditor from './views/ThresholdEditor'
 import { TableDetail } from './components/TableDetail'
 import { AIAnalysisPanel } from './components/AIAnalysisPanel'
 import { NotificationToasts } from './components/NotificationToasts'
@@ -93,6 +95,7 @@ function Layout() {
   }, [refreshInterval])
 
   const views: Record<string, React.ReactNode> = {
+    dashboard: <Dashboard />,
     discover: <Discover />,
     overview: <Overview refreshKey={tick} />,
     detail: <Detail refreshKey={tick} />,
@@ -106,6 +109,7 @@ function Layout() {
     maintenance: <Maintenance />,
     runcheck: <RunCheck />,
     audit: <AuditLog refreshKey={tick} />,
+    thresholds: <ThresholdEditor />,
     terminal: <Terminal />,
     logs: <AppLogs refreshKey={tick} />,
     chlogs: <CHLogs refreshKey={tick} />,

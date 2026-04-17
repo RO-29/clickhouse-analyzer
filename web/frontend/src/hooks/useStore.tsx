@@ -2,7 +2,7 @@ import { createContext, useContext, useState, useCallback, useEffect, type React
 import { presetToRange } from '../lib/utils'
 import type { ChatSession } from '../types/api'
 
-export type View = 'overview' | 'detail' | 'alerts' | 'history' | 'explore' | 'compare' | 'advisor' | 'terminal' | 'logs' | 'chlogs' | 'analyzer' | 'scanner' | 'cost' | 'maintenance' | 'runcheck' | 'discover' | 'audit'
+export type View = 'dashboard' | 'overview' | 'detail' | 'alerts' | 'history' | 'explore' | 'compare' | 'advisor' | 'terminal' | 'logs' | 'chlogs' | 'analyzer' | 'scanner' | 'cost' | 'maintenance' | 'runcheck' | 'discover' | 'audit' | 'thresholds'
 
 export interface Store {
   // State
@@ -79,7 +79,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [view, setViewState] = useState<View>(() => {
     const params = new URLSearchParams(window.location.search)
     const v = params.get('view') as View | null
-    const valid: View[] = ['overview','detail','alerts','explore','compare','advisor','terminal','logs','chlogs','analyzer','scanner','cost','maintenance','audit']
+    const valid: View[] = ['dashboard','overview','detail','alerts','explore','compare','advisor','terminal','logs','chlogs','analyzer','scanner','cost','maintenance','audit','thresholds']
     return v && valid.includes(v) ? v : 'overview'
   })
   const [selectedInstance, setSelectedInstanceRaw] = useState(() => {
@@ -296,7 +296,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const handlePopState = () => {
       const p = new URLSearchParams(window.location.search)
       const v = p.get('view') as View | null
-      const valid: View[] = ['overview','detail','alerts','history','explore','compare','advisor','terminal','logs','chlogs','analyzer','scanner','cost','maintenance','runcheck','discover','audit']
+      const valid: View[] = ['dashboard','overview','detail','alerts','history','explore','compare','advisor','terminal','logs','chlogs','analyzer','scanner','cost','maintenance','runcheck','discover','audit','thresholds']
       if (v && valid.includes(v)) setViewState(v)
       setSelectedInstanceRaw(p.get('instance') ?? '')
       const f = Number(p.get('from'))

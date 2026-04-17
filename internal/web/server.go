@@ -50,6 +50,10 @@ type Server struct {
 	authStdinMu sync.Mutex
 	authStdin   io.WriteCloser
 	authPid     int // PID of the running claude auth login process
+
+	// Threshold override persistence.
+	thresholdsMu           sync.RWMutex
+	thresholdsOverridePath string
 }
 
 // New creates a new web Server.
@@ -100,6 +104,12 @@ func (s *Server) SetVersion(v string) {
 // Called from main after the schedule store is initialised.
 func (s *Server) SetScheduleStore(ss *ScheduleStore) {
 	s.scheduleStore = ss
+}
+
+// SetThresholdsOverridePath sets the path where threshold overrides are persisted.
+// Called from main before the server starts.
+func (s *Server) SetThresholdsOverridePath(path string) {
+	s.thresholdsOverridePath = path
 }
 
 // Start begins serving HTTP traffic. It blocks until the server is shut down.
@@ -184,6 +194,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/compare/query-stats", s.handleCompareQueryStats)
 	mux.HandleFunc("GET /api/compare/settings", s.handleCompareSettings)
 	mux.HandleFunc("GET /api/compare/metrics", s.handleCompareMetrics)
+	mux.HandleFunc("GET /api/compare/metrics-timeline", s.handleCompareMetricsTimeline)
 	mux.HandleFunc("GET /api/compare/query-patterns", s.handleCompareQueryPatterns)
 	mux.HandleFunc("GET /api/instances/{name}/table-memory", s.handleTableMemory)
 	mux.HandleFunc("GET /api/instances/{name}/cache-stats", s.handleCacheStats)
@@ -285,6 +296,10 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 
 	// SLO / uptime tracking.
 	mux.HandleFunc("GET /api/instances/{name}/slo", s.handleSLO)
+
+	// Alert threshold editor.
+	mux.HandleFunc("GET /api/thresholds", s.handleGetThresholds)
+	mux.HandleFunc("POST /api/thresholds", s.handlePostThresholds)
 }
 
 // ---------------------------------------------------------------------------

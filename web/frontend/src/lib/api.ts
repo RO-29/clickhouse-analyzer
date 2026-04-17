@@ -36,6 +36,7 @@ import type {
   AuditEvent,
   SLOReport,
   AnomalyContext,
+  ThresholdsConfig,
 } from '../types/api'
 
 const BASE = ''
@@ -159,6 +160,8 @@ export const api = {
       const qs = p.toString()
       return get<CompareQueryPatternsResult[]>(`/api/compare/query-patterns${qs ? '?' + qs : ''}`)
     },
+    timeline: (metric: string, from: number, to: number, points = 60) =>
+      get<{ metric: string; series: Array<{ instance: string; color: string; points: Array<{ ts: number; value: number }> }> }>(`/api/compare/metrics-timeline?metric=${encodeURIComponent(metric)}&from=${from}&to=${to}&points=${points}`),
   },
   tableMemory: (inst: string) => get<any[]>(`/api/instances/${inst}/table-memory`),
   cacheStats: (inst: string) => get<any>(`/api/instances/${inst}/cache-stats`),
@@ -247,4 +250,8 @@ export const api = {
   slo: (inst: string, windowDays = 7) => get<SLOReport>(`/api/instances/${inst}/slo?window=${windowDays}`),
   anomalyContext: (inst: string, metric: string) =>
     get<AnomalyContext>(`/api/instances/${inst}/anomaly-context?metric=${encodeURIComponent(metric)}`),
+  thresholds: {
+    get: () => get<ThresholdsConfig>('/api/thresholds'),
+    save: (t: ThresholdsConfig) => post<ThresholdsConfig>('/api/thresholds', t),
+  },
 }

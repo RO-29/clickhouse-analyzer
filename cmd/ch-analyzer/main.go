@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -321,6 +322,15 @@ func main() {
 		webServer.SetScheduleStore(scheduleStore)
 		webServer.SetForcePollCh(forcePollCh)
 		webServer.SetVersion(version)
+		// Threshold overrides — live-editable via the dashboard.
+		thresholdsOverridePath := "/var/lib/ch-analyzer/thresholds.json"
+		webServer.SetThresholdsOverridePath(thresholdsOverridePath)
+		if data, err := os.ReadFile(thresholdsOverridePath); err == nil {
+			var override config.ThresholdsConfig
+			if err := json.Unmarshal(data, &override); err == nil {
+				cfg.Thresholds = override
+			}
+		}
 		go func() {
 			if err := webServer.Start(ctx); err != nil {
 				slog.Error("web server error", "error", err)

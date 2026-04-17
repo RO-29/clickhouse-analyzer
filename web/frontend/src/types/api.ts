@@ -557,3 +557,80 @@ export interface AnomalyContext {
   z_score: number
   threshold: number
 }
+
+// ThresholdsConfig mirrors the Go ThresholdsJSON wire format.
+// Duration fields are expressed as floating-point seconds.
+export interface ThresholdsConfig {
+  memory: {
+    warn_percent: number
+    critical_percent: number
+    rss_warn_percent: number
+    rss_critical_percent: number
+  }
+  cpu: {
+    warn_percent: number
+    critical_percent: number
+  }
+  queries: {
+    long_running_threshold_secs: number
+    long_running_warn_threshold_secs: number
+    max_concurrent: number
+    warn_concurrent: number
+  }
+  parts: {
+    warn_count: number
+    critical_count: number
+    warn_per_partition: number
+  }
+  merges: {
+    max_active: number
+    warn_active: number
+  }
+  mutations: {
+    stuck_threshold_secs: number
+  }
+  inserts: {
+    throughput_drop_percent: number
+    small_insert_threshold: number
+    small_insert_warn_count: number
+  }
+  disk: {
+    warn_percent: number
+    critical_percent: number
+  }
+  s3: {
+    latency_warn_secs: number
+    latency_critical_secs: number
+    max_concurrent_reads: number
+  }
+  replication: {
+    lag_warn_secs: number
+    lag_critical_secs: number
+  }
+  dictionaries: {
+    reload_fail_threshold: number
+  }
+  mv: {
+    lag_warn_secs: number
+    bloat_ratio_warn: number
+  }
+  background_pool: {
+    warn_percent: number
+    critical_percent: number
+  }
+  cache_health: {
+    mark_hit_rate_warn_percent: number
+    mark_hit_rate_critical_percent: number
+    min_queries_for_alert: number
+  }
+  query_latency: {
+    spike_warn_multiplier: number
+    spike_critical_multiplier: number
+    min_baseline_ms: number
+    min_query_count: number
+  }
+  freshness: {
+    gap_minutes: number
+    min_daily_inserts: number
+  }
+}
