@@ -995,7 +995,6 @@ export default function RunCheck() {
             )}
           </div>
         </div>
-      </div>
       </>)}
     </div>
   )
