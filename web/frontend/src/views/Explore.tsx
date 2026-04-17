@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef, type ChangeEvent } from 'react'
-import { Sparkles, X, Copy, Play, Maximize2, Skull, RefreshCw, ChevronDown, ChevronRight, Wrench, ArrowRight, BarChart2 } from 'lucide-react'
+import { Sparkles, X, Copy, Play, Maximize2, Skull, RefreshCw, ChevronDown, ChevronRight, Wrench, ArrowRight, BarChart2, AlertTriangle, ExternalLink } from 'lucide-react'
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, Cell, PieChart, Pie, Legend } from 'recharts'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
@@ -983,6 +983,7 @@ interface SamplesTabProps extends TabProps {
 }
 
 function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, initialUser, initialErrorsOnly, onClearDrill }: SamplesTabProps) {
+  const { setView, setSelectedInstance } = useStore()
   const [samples, setSamples] = useState<QuerySample[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -1051,6 +1052,11 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
     if (ms > 5000) return 'text-orange-400'
     if (ms > 1000) return 'text-yellow-400'
     return 'text-[var(--fg)]'
+  }
+
+  const openInCHLogs = (inst: string, _sample: QuerySample) => {
+    setSelectedInstance(inst)
+    setView('chlogs')
   }
 
   return (
@@ -1244,6 +1250,14 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
                   <span className="truncate min-w-0" title={String(s.query_text ?? '')}>
                     <SqlHighlight text={String(s.query_text ?? '')} maxLen={80} />
                   </span>
+                  <button
+                    onClick={e => { e.stopPropagation(); openInCHLogs(instance, s) }}
+                    className="ml-auto flex items-center gap-1 shrink-0 text-[10px] text-[var(--accent)] hover:underline"
+                    title={`Open CH Logs for ${instance} around this query's time`}
+                  >
+                    <ExternalLink size={10} />
+                    CH Logs
+                  </button>
                 </button>
                 {isOpen && (
                   <div className="border-t border-[var(--border)] bg-[var(--surface)] px-4 py-3 space-y-3">
@@ -1288,6 +1302,17 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
                         title="Full query"
                       >
                         <Maximize2 size={11} />
+                      </button>
+                    </div>
+                    {/* Navigation actions */}
+                    <div className="flex items-center gap-2 pt-1">
+                      <button
+                        onClick={() => openInCHLogs(instance, s)}
+                        className="flex items-center gap-1.5 px-2 py-1 rounded text-xs bg-[var(--hover)] hover:bg-[var(--accent)]/10 text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
+                        title={`Open CH Logs for ${instance} around this query's time`}
+                      >
+                        <ExternalLink size={12} />
+                        Open in CH Logs
                       </button>
                     </div>
                   </div>
@@ -2642,6 +2667,9 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
     return () => clearInterval(id)
   }, [lastRefreshed])
 
+  // Stale if data is older than 5 minutes (re-evaluated on each render triggered by agoStr interval)
+  const isStale = (Date.now() - lastRefreshed.getTime()) > 5 * 60 * 1000
+
   const handleManualRefresh = useCallback(() => {
     setManualTick(t => t + 1)
     setLastRefreshed(new Date())
@@ -2722,7 +2750,21 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
           <RefreshCw size={11} />
           Refresh
         </button>
-        <span className="text-[11px] text-[var(--dim)] hidden sm:block">Updated {agoStr}</span>
+        <span className={cn(
+          'text-[11px] hidden sm:flex items-center gap-1',
+          isStale ? 'text-amber-400' : 'text-[var(--dim)]'
+        )}>
+          {isStale && <AlertTriangle size={11} className="shrink-0" />}
+          Updated {agoStr}
+          {isStale && (
+            <button
+              onClick={handleManualRefresh}
+              className="underline hover:no-underline"
+            >
+              Refresh now
+            </button>
+          )}
+        </span>
         <button
           onClick={() => setView('analyzer')}
           className="ml-auto inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] font-medium text-[var(--accent)] hover:bg-[var(--accent-subtle)] border border-[var(--accent)]/20 transition-colors"

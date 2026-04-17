@@ -510,3 +510,31 @@ export interface RunCheckResult {
 export interface RunCheckResponse {
   results: RunCheckResult[]
 }
+
+export interface SnoozeEntry {
+  id: string
+  dedup_key: string
+  instance: string
+  reason: string
+  snoozed_by: string
+  snoozed_at: number // unix epoch
+  expires_at: number // unix epoch
+}
+
+export interface AckEntry {
+  id: string
+  dedup_key: string
+  instance: string
+  reason: string
+  acked_by: string
+  acked_at: number // unix epoch
+}
+
+export interface AuditEvent {
+  id: string
+  instance: string
+  action: string
+  actor: string
+  details: string
+  ts: number  // unix epoch seconds
+}

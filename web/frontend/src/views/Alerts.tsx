@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
-import { Bell, BellOff, BookOpen, Brain, ChevronDown, ChevronLeft, ChevronRight, Clock, RefreshCw, Sparkles, Table2, Trash2, Wrench, Zap, Bookmark, X, CheckSquare, Square, CheckCheck, AlertCircle } from 'lucide-react'
+import { Bell, BellOff, BookOpen, Brain, ChevronDown, ChevronLeft, ChevronRight, Clock, HelpCircle, RefreshCw, Sparkles, Table2, Trash2, Wrench, Zap, Bookmark, X, CheckSquare, Square, CheckCheck, AlertCircle } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
@@ -54,62 +54,21 @@ function isStale(a: Alert, staleHours: number): boolean {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Snooze — localStorage-based, no backend needed                    */
+/*  Snooze/Ack — now handled server-side via AlertDetailPanel         */
 /* ------------------------------------------------------------------ */
-const SNOOZE_LS_KEY = 'ch-snoozed-alerts'
-
-function loadSnoozed(): Record<string, number> {
-  try { return JSON.parse(localStorage.getItem(SNOOZE_LS_KEY) ?? '{}') } catch { return {} }
-}
-
-function snoozeAlert(dedupKey: string, hours: number) {
-  const snoozed = loadSnoozed()
-  snoozed[dedupKey] = Math.floor(Date.now() / 1000) + hours * 3600
-  // Prune expired entries
-  const now = Math.floor(Date.now() / 1000)
-  Object.keys(snoozed).forEach(k => { if (snoozed[k] < now) delete snoozed[k] })
-  try { localStorage.setItem(SNOOZE_LS_KEY, JSON.stringify(snoozed)) } catch {}
-}
-
-function unsnoozeAlert(dedupKey: string) {
-  const snoozed = loadSnoozed()
-  delete snoozed[dedupKey]
-  try { localStorage.setItem(SNOOZE_LS_KEY, JSON.stringify(snoozed)) } catch {}
-}
 
 function isSnoozed(dedupKey: string, snoozed: Record<string, number>): boolean {
   const exp = snoozed[dedupKey]
-  return exp != null && exp > Math.floor(Date.now() / 1000)
+  return exp != null && exp > Date.now() / 1000
 }
 
 function snoozeUntil(dedupKey: string, snoozed: Record<string, number>): number | null {
   const exp = snoozed[dedupKey]
-  return (exp != null && exp > Math.floor(Date.now() / 1000)) ? exp : null
-}
-
-/* ------------------------------------------------------------------ */
-/*  Acknowledge — localStorage-based, no backend needed               */
-/* ------------------------------------------------------------------ */
-const ACK_LS_KEY = 'ch-acked-alerts'
-
-function loadAcked(): Record<string, { by: string; note: string; at: number }> {
-  try { return JSON.parse(localStorage.getItem(ACK_LS_KEY) ?? '{}') } catch { return {} }
-}
-
-function ackAlert(dedupKey: string, by: string, note: string) {
-  const acked = loadAcked()
-  acked[dedupKey] = { by, at: Math.floor(Date.now() / 1000), note }
-  try { localStorage.setItem(ACK_LS_KEY, JSON.stringify(acked)) } catch {}
-}
-
-function unackAlert(dedupKey: string) {
-  const acked = loadAcked()
-  delete acked[dedupKey]
-  try { localStorage.setItem(ACK_LS_KEY, JSON.stringify(acked)) } catch {}
+  return exp != null && exp > Date.now() / 1000 ? exp : null
 }
 
 function isAcked(dedupKey: string, acked: Record<string, any>): boolean {
-  return !!acked[dedupKey]
+  return dedupKey in acked
 }
 
 /* ------------------------------------------------------------------ */
@@ -606,6 +565,7 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
       setForcingPoll(false)
     }
   }, [])
+  const [resolvingIds, setResolvingIds] = useState<Set<string>>(new Set())
   const [resolving, setResolving] = useState(false)
   const resolvingRef = useRef(false)
   const isFirstLoad = useRef(true)
@@ -632,15 +592,33 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [bulkResolving, setBulkResolving] = useState(false)
 
-  // Snooze state — tick forces re-reads from localStorage
-  const [snoozeTick, setSnoozeTick] = useState(0)
-  const snoozed = useMemo(() => loadSnoozed(), [snoozeTick]) // eslint-disable-line react-hooks/exhaustive-deps
-  const handleSnoozeChange = useCallback(() => setSnoozeTick(t => t + 1), [])
+  // Snooze/ack — fetched from server, refreshed every 30s
+  const [snoozed, setSnoozed] = useState<Record<string, number>>({})
+  const [acked, setAcked] = useState<Record<string, any>>({})
 
-  // Ack state — tick forces re-reads from localStorage
-  const [ackTick, setAckTick] = useState(0)
-  const acked = useMemo(() => loadAcked(), [ackTick]) // eslint-disable-line react-hooks/exhaustive-deps
-  const handleAckChange = useCallback(() => setAckTick(t => t + 1), [])
+  const refreshSnoozeAck = useCallback(async () => {
+    try {
+      const [snoozes, acks] = await Promise.all([api.snooze.list(), api.ack.list()])
+      const now = Date.now() / 1000
+      const snoozedMap: Record<string, number> = {}
+      for (const s of snoozes) {
+        if (s.expires_at > now) snoozedMap[s.dedup_key] = s.expires_at
+      }
+      setSnoozed(snoozedMap)
+      const ackedMap: Record<string, any> = {}
+      for (const a of acks) ackedMap[a.dedup_key] = a
+      setAcked(ackedMap)
+    } catch {}
+  }, [])
+
+  useEffect(() => {
+    refreshSnoozeAck()
+    const id = setInterval(refreshSnoozeAck, 30_000)
+    return () => clearInterval(id)
+  }, [refreshSnoozeAck])
+
+  const handleSnoozeChange = useCallback(() => { refreshSnoozeAck() }, [refreshSnoozeAck])
+  const handleAckChange = useCallback(() => { refreshSnoozeAck() }, [refreshSnoozeAck])
 
   // Consume the preset once on mount, then clear it so navigating back doesn't re-apply
   useEffect(() => {
@@ -719,7 +697,7 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
       }
       return true
     })
-  }, [allAlerts, filterInstance, filterSeverity, filterCategory, filterType, filterStatus, staleHours, customFrom, customTo, snoozed])
+  }, [allAlerts, filterInstance, filterSeverity, filterCategory, filterType, filterStatus, staleHours, customFrom, customTo])
 
   const groups = useMemo(() => {
     const map = new Map<string, Alert[]>()
@@ -756,10 +734,7 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
   const firingSub = firing > 0 ? firingParts.join(' · ') : undefined
   const staleCount = filtered.filter((a) => isStale(a, staleHours)).length
   const resolved = filtered.filter((a) => a.resolved).length
-  const snoozedCount = useMemo(
-    () => allAlerts.filter((a) => !a.resolved && isSnoozed(a.dedup_key, snoozed)).length,
-    [allAlerts, snoozed],
-  )
+  const snoozedCount = Object.keys(snoozed).length
 
   // Total stale across ALL (unfiltered) for the dismiss button
   const totalStaleUnfiltered = useMemo(
@@ -768,6 +743,8 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
   )
 
   const handleResolveAlert = useCallback(async (dedupKey: string) => {
+    if (resolvingIds.has(dedupKey)) return  // prevent double-fire
+    setResolvingIds(prev => new Set([...prev, dedupKey]))
     try {
       await api.alerts.resolve(dedupKey)
       const [active, history] = await Promise.all([api.alerts.active(), api.alerts.history()])
@@ -776,8 +753,10 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
       flashToast('Alert resolved', 'done')
     } catch (e: any) {
       flashToast(e.message ?? 'Resolve failed', 'error')
+    } finally {
+      setResolvingIds(prev => { const s = new Set(prev); s.delete(dedupKey); return s })
     }
-  }, [])
+  }, [resolvingIds])
 
   const handleResolveStale = useCallback(async () => {
     if (!totalStaleUnfiltered) return
@@ -853,14 +832,6 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
       flashToast(e.message ?? 'Bulk resolve failed', 'error')
     } finally { setBulkResolving(false) }
   }, [selectedIds, filtered])
-
-  const bulkSnoozeSelected = useCallback((hours: number) => {
-    const items = filtered.filter(a => selectedIds.has(a.id) && a.dedup_key)
-    items.forEach(a => snoozeAlert(a.dedup_key, hours))
-    handleSnoozeChange()
-    setSelectedIds(new Set())
-    flashToast(`${items.length} alert${items.length !== 1 ? 's' : ''} snoozed for ${hours}h`, 'done')
-  }, [selectedIds, filtered, handleSnoozeChange])
 
   const Select = ({ value, onChange, options, label }: {
     value: string; onChange: (v: string) => void
@@ -940,6 +911,16 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
           })}
         </div>
       )}
+      {/* ---- Page header ---- */}
+      <div className="flex items-center gap-2">
+        <h2 className="text-lg font-semibold flex items-center gap-2">
+          <Bell className="w-5 h-5" /> Alerts
+        </h2>
+        <button onClick={() => setView('discover')} title="About alert severity levels" className="text-[var(--dim)] hover:text-[var(--text)] transition-colors">
+          <HelpCircle size={13} />
+        </button>
+      </div>
+
       {/* ---- Stat cards + actions ---- */}
       <div className="flex items-start gap-4">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 flex-1">
@@ -1098,9 +1079,6 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
             {bulkResolving ? <RefreshCw size={10} className="animate-spin" /> : <CheckCheck size={10} />}
             Resolve selected
           </button>
-          <button onClick={() => bulkSnoozeSelected(4)} className="flex items-center gap-1 px-3 py-1.5 rounded text-[11px] font-medium text-yellow-400 bg-yellow-500/10 hover:bg-yellow-500/20 border border-yellow-500/20 transition-colors">
-            <BellOff size={10} /> Snooze 4h
-          </button>
           <button onClick={clearSelection} className="text-[11px] text-[var(--dim)] hover:text-[var(--text)] transition-colors">Clear</button>
         </div>
       )}
@@ -1225,6 +1203,7 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
           staleHours={staleHours}
           onClose={() => setSelectedAlert(null)}
           onResolve={!selectedAlert.resolved ? handleResolveAlert : undefined}
+          isResolving={resolvingIds.has(selectedAlert.dedup_key)}
           onSnoozeChange={handleSnoozeChange}
           onAckChange={handleAckChange}
           onAnalyze={alert => { handleAnalyzeAlert(alert); setSelectedAlert(null) }}

@@ -39,9 +39,12 @@ type Server struct {
 	logs          *LogBuffer
 	queryHistory  *QueryHistory
 	maintenance   *alerter.MaintenanceStore
+	snoozeStore   *alerter.SnoozeStore
+	ackStore      *alerter.AckStore
 	startTime     time.Time
 	version       string
 	forcePollCh   chan struct{} // signals main loop to run an immediate poll
+	scheduleStore *ScheduleStore
 
 	// Active auth-login session state.
 	authStdinMu sync.Mutex
@@ -70,6 +73,18 @@ func (s *Server) SetMaintenanceStore(ms *alerter.MaintenanceStore) {
 	s.maintenance = ms
 }
 
+// SetSnoozeStore sets the snooze store for the server.
+// Called from main after the snooze store is initialised.
+func (s *Server) SetSnoozeStore(ss *alerter.SnoozeStore) {
+	s.snoozeStore = ss
+}
+
+// SetAckStore sets the acknowledgment store for the server.
+// Called from main after the ack store is initialised.
+func (s *Server) SetAckStore(as *alerter.AckStore) {
+	s.ackStore = as
+}
+
 // SetForcePollCh gives the server a channel it can signal to trigger an
 // immediate background poll in the main loop.
 func (s *Server) SetForcePollCh(ch chan struct{}) {
@@ -79,6 +94,12 @@ func (s *Server) SetForcePollCh(ch chan struct{}) {
 // SetVersion sets the binary version string shown in /health.
 func (s *Server) SetVersion(v string) {
 	s.version = v
+}
+
+// SetScheduleStore sets the schedule store for the server.
+// Called from main after the schedule store is initialised.
+func (s *Server) SetScheduleStore(ss *ScheduleStore) {
+	s.scheduleStore = ss
 }
 
 // Start begins serving HTTP traffic. It blocks until the server is shut down.
@@ -195,6 +216,9 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/instances/{name}/advisor/table-antipatterns", s.handleAdvisorTableAntiPatterns)
 	mux.HandleFunc("GET /api/instances/{name}/table-detail/{db}/{table}", s.handleTableDetail)
 
+	// Health score trend endpoint (from health_trend.go).
+	mux.HandleFunc("GET /api/instances/{name}/health-trend", s.handleHealthTrend)
+
 	// Historical analysis endpoints (from history.go).
 	mux.HandleFunc("GET /api/instances/{name}/health-check", s.handleHealthCheck)
 	mux.HandleFunc("GET /api/instances/{name}/query-patterns", s.handleQueryPatterns)
@@ -228,15 +252,33 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/maintenance", s.handleMaintenanceList)
 	mux.HandleFunc("POST /api/maintenance", s.handleMaintenanceCreate)
 	mux.HandleFunc("DELETE /api/maintenance/{id}", s.handleMaintenanceDelete)
+	mux.HandleFunc("GET /api/alerts/snoozes", s.handleSnoozeList)
+	mux.HandleFunc("POST /api/alerts/snooze", s.handleSnoozeCreate)
+	mux.HandleFunc("DELETE /api/alerts/snooze/{id}", s.handleSnoozeDelete)
+	mux.HandleFunc("GET /api/alerts/acks", s.handleAckList)
+	mux.HandleFunc("POST /api/alerts/ack", s.handleAckCreate)
+	mux.HandleFunc("DELETE /api/alerts/ack/{id}", s.handleAckDelete)
+
+	// Notification channel status.
+	mux.HandleFunc("GET /api/notify/status", s.handleNotifyStatus)
 
 	// Collector registry and ad-hoc run endpoints (from runcheck.go).
 	mux.HandleFunc("GET /api/collectors", s.handleGetCollectors)
 	mux.HandleFunc("POST /api/run-check", s.handleRunCheck)
 	mux.HandleFunc("POST /api/force-poll", s.handleForcePoll)
 
+	// Schedule endpoints (from schedule.go).
+	mux.HandleFunc("GET /api/schedules", s.handleScheduleList)
+	mux.HandleFunc("POST /api/schedules", s.handleScheduleCreate)
+	mux.HandleFunc("DELETE /api/schedules/{id}", s.handleScheduleDelete)
+	mux.HandleFunc("PUT /api/schedules/{id}/enabled", s.handleScheduleSetEnabled)
+
 	// Alert stats and parts age for Overview / Explore.
 	mux.HandleFunc("GET /api/alerts/stats", s.handleAlertStats)
 	mux.HandleFunc("GET /api/instances/{name}/parts-age", s.handlePartsAge)
+
+	// Audit log.
+	mux.HandleFunc("GET /api/audit", s.handleAuditLog)
 }
 
 // ---------------------------------------------------------------------------
@@ -1265,6 +1307,12 @@ func (s *Server) handleResolveAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slog.Info("alert resolved via API", "dedup_key", body.DedupKey)
+
+	// Audit log — best-effort, derive instance from dedup_key.
+	instance := extractInstanceFromDedupKey(body.DedupKey)
+	actor := r.RemoteAddr
+	_ = s.store.LogAction(r.Context(), instance, "alert_resolve", actor, body.DedupKey)
+
 	writeJSON(w, http.StatusOK, map[string]string{"status": "resolved"})
 }
 

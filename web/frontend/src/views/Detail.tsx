@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { ArrowLeft, RefreshCw, Sparkles, Wrench, AlertTriangle, CheckCircle2 } from 'lucide-react'
+import { ArrowLeft, HelpCircle, RefreshCw, Sparkles, Wrench, AlertTriangle, CheckCircle2 } from 'lucide-react'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip as RechartTooltip, ResponsiveContainer, CartesianGrid,
 } from 'recharts'
@@ -110,6 +110,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
   const [replicas, setReplicas] = useState<ReplicaStatus[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
+  const [loadedAt, setLoadedAt] = useState<Date | null>(null)
   const [currentStateRefreshTick, setCurrentStateRefreshTick] = useState(0)
   const isFirstLoad = useRef(true)
 
@@ -159,6 +160,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
           setCacheStats(cs)
           setTableMemory(tm ?? [])
           setReplicas(repl as ReplicaStatus[])
+          setLoadedAt(new Date())
         }
       } catch {
         // keep empty
@@ -291,7 +293,15 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
           </button>
           <span className="text-[var(--dim)] opacity-40 text-sm">/</span>
           <h2 className="text-sm font-semibold truncate" title={instance}>{instance}</h2>
+          <button onClick={() => setView('discover')} title="What is the health score?" className="text-[var(--dim)] hover:text-[var(--text)] transition-colors shrink-0">
+            <HelpCircle size={13} />
+          </button>
         </div>
+        {loadedAt && !refreshing && (
+          <span className="text-[11px] text-[var(--dim)] hidden sm:block">
+            Updated {loadedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+          </span>
+        )}
         {refreshing && (
           <div className="flex items-center gap-1.5 text-[11px] text-[var(--dim)]">
             <RefreshCw size={10} className="animate-spin" /> Refreshing…
@@ -370,7 +380,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
           {activeAlerts.length > 0 && (
             <Section title={`Active Alerts · ${activeAlerts.length}`} defaultOpen>
               <Card noPad>
-                <DataTable columns={alertCols} data={activeAlerts.sort((a, b) => b.created_at - a.created_at)} pageSize={20} onRowClick={row => setSelectedAlert(row as Alert)} />
+                <DataTable columns={alertCols} data={activeAlerts.sort((a, b) => b.created_at - a.created_at)} pageSize={20} onRowClick={row => setSelectedAlert(row as Alert)} showColumnToggle={true} storageKey="detail-active-alerts" />
               </Card>
             </Section>
           )}
@@ -383,7 +393,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
           {queries.length > 0 ? (
             <Section title={`Running Queries · ${queries.length}`} defaultOpen badge={<span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/15 text-green-400 border border-green-500/20">live</span>}>
               <Card noPad>
-                <DataTable columns={queryCols} data={queries} maxHeight="280px" />
+                <DataTable columns={queryCols} data={queries} maxHeight="280px" showColumnToggle={true} storageKey="detail-running-queries" />
               </Card>
             </Section>
           ) : (
@@ -538,7 +548,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
           {tables.length > 0 && (
             <Section title={`Tables · ${tables.length}`} defaultOpen>
               <Card noPad>
-                <DataTable columns={tableCols} data={tables} maxHeight="300px" />
+                <DataTable columns={tableCols} data={tables} maxHeight="300px" showColumnToggle={true} storageKey="detail-tables" />
               </Card>
             </Section>
           )}
@@ -566,7 +576,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
           {mvs.length > 0 && (
             <Section title={`Materialized Views · ${mvs.length}`} defaultOpen={false}>
               <Card noPad>
-                <DataTable columns={mvCols} data={mvs} maxHeight="250px" />
+                <DataTable columns={mvCols} data={mvs} maxHeight="250px" showColumnToggle={true} storageKey="detail-mvs" />
               </Card>
             </Section>
           )}
@@ -708,6 +718,8 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
                   ]}
                   data={queryPatterns}
                   maxHeight="240px"
+                  showColumnToggle={true}
+                  storageKey="detail-query-patterns"
                 />
               </Card>
             </Section>
@@ -725,6 +737,8 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
                   ]}
                   data={queryFailures}
                   maxHeight="200px"
+                  showColumnToggle={true}
+                  storageKey="detail-query-failures"
                 />
               </Card>
             </Section>

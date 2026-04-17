@@ -4,7 +4,9 @@ package slackapp
 
 import (
 	"context"
+	golog "log"
 	"log/slog"
+	"os"
 	"sync"
 
 	"github.com/rohitjain/ch-analyzer/internal/alerter"
@@ -40,7 +42,11 @@ func New(cfg config.SlackConfig, webAddr string, alertMgr *alerter.AlertManager,
 		cfg.BotToken,
 		slack.OptionAppLevelToken(cfg.AppToken),
 	)
-	socket := socketmode.New(client)
+	stdLogger := golog.New(os.Stderr, "socketmode: ", golog.LstdFlags|golog.Lshortfile)
+	socket := socketmode.New(client,
+		socketmode.OptionDebug(true),
+		socketmode.OptionLog(stdLogger),
+	)
 
 	return &App{
 		client:         client,

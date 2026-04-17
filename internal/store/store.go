@@ -70,8 +70,34 @@ func New(manager *chclient.Manager, database string) (*Store, error) {
 	// Migrate: add updated_at column to existing alerts tables (no-op on new installs).
 	s.migrateAlertUpdatedAt()
 
+	// Create health_snapshots table on every instance.
+	s.InitHealthSnapshots()
+
 	slog.Info("store initialized", "backend", "clickhouse-distributed", "database", database, "instances", manager.Len())
 	return s, nil
+}
+
+// InitHealthSnapshots creates the health_snapshots table on all CH instances.
+// Safe to call on existing installs — CREATE TABLE IF NOT EXISTS is idempotent.
+func (s *Store) InitHealthSnapshots() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sql := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.health_snapshots (
+  instance    LowCardinality(String),
+  score       Float32,
+  criticals   UInt16,
+  warns       UInt16,
+  infos       UInt16,
+  ts          DateTime DEFAULT now()
+) ENGINE = MergeTree()
+ORDER BY (instance, ts)
+TTL ts + INTERVAL 30 DAY`, s.database)
+	s.manager.ForEach(func(name string, client *chclient.Client) error {
+		if _, err := client.QuerySingleValue(ctx, sql); err != nil {
+			slog.Warn("health_snapshots: create table failed", "instance", name, "err", err)
+		}
+		return nil
+	})
 }
 
 // migrateAlertUpdatedAt adds the updated_at column to existing alerts tables.
@@ -511,6 +537,91 @@ func (s *Store) GetDigestSnapshots(instance string, from, to time.Time) ([]Diges
 
 // Prune is a no-op — ClickHouse TTL handles retention.
 func (s *Store) Prune(retention time.Duration) error { return nil }
+
+// ---------------------------------------------------------------------------
+// Health Snapshots
+// ---------------------------------------------------------------------------
+
+// HealthSnapshot is a single health-score data point returned by GetHealthTrend.
+type HealthSnapshot struct {
+	Timestamp time.Time `json:"ts"`
+	Score     float32   `json:"score"`
+	Criticals int       `json:"criticals"`
+	Warns     int       `json:"warns"`
+}
+
+// RecordHealthSnapshot stores a score snapshot for the given instance.
+// score = max(0, 100 - criticals*15 - warns*5).
+func (s *Store) RecordHealthSnapshot(ctx context.Context, instance string, score float32, criticals, warns, infos int) error {
+	client := s.clientFor(instance)
+	if client == nil {
+		return fmt.Errorf("no client for instance %s", instance)
+	}
+
+	sql := fmt.Sprintf(`INSERT INTO %s.health_snapshots (instance, score, criticals, warns, infos) VALUES ('%s', %f, %d, %d, %d)`,
+		s.database, escape(instance), score, criticals, warns, infos)
+
+	if _, err := client.QuerySingleValue(ctx, sql); err != nil {
+		return fmt.Errorf("store: record health snapshot: %w", err)
+	}
+	return nil
+}
+
+// GetHealthTrend returns bucketed (ts, score, criticals, warns) pairs for the given instance and time range.
+// Returns up to ~200 points, bucketed based on range width.
+func (s *Store) GetHealthTrend(ctx context.Context, instance string, from, to time.Time) ([]HealthSnapshot, error) {
+	client := s.clientFor(instance)
+	if client == nil {
+		return nil, fmt.Errorf("no client for instance %s", instance)
+	}
+
+	rangeSeconds := to.Unix() - from.Unix()
+	if rangeSeconds <= 0 {
+		return nil, nil
+	}
+
+	// Choose bucket size: ~200 points, min 5 minutes, max 4 hours.
+	bucketSize := rangeSeconds / 200
+	if bucketSize < 300 {
+		bucketSize = 300 // minimum 5 minutes
+	}
+	if bucketSize > 14400 {
+		bucketSize = 14400 // maximum 4 hours
+	}
+
+	sql := fmt.Sprintf(`SELECT
+		toDateTime(intDiv(toUInt32(ts), %d) * %d) AS bucket_ts,
+		avg(score) AS avg_score,
+		sum(criticals) AS sum_criticals,
+		sum(warns) AS sum_warns
+	FROM %s.health_snapshots
+	WHERE instance = '%s'
+	AND ts >= '%s' AND ts <= '%s'
+	GROUP BY bucket_ts
+	ORDER BY bucket_ts ASC
+	LIMIT 200`,
+		bucketSize, bucketSize,
+		s.database, escape(instance),
+		from.Format("2006-01-02 15:04:05"), to.Format("2006-01-02 15:04:05"))
+
+	rows, err := client.Query(ctx, sql)
+	if err != nil {
+		return nil, fmt.Errorf("store: get health trend: %w", err)
+	}
+
+	var result []HealthSnapshot
+	for _, row := range rows {
+		tsStr := getString(row, "bucket_ts")
+		t, _ := time.Parse("2006-01-02 15:04:05", tsStr)
+		result = append(result, HealthSnapshot{
+			Timestamp: t,
+			Score:     float32(getFloat(row, "avg_score")),
+			Criticals: int(getFloat(row, "sum_criticals")),
+			Warns:     int(getFloat(row, "sum_warns")),
+		})
+	}
+	return result, nil
+}
 
 // ---------------------------------------------------------------------------
 // Helpers

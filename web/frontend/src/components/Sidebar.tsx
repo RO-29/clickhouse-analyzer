@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import {
   LayoutDashboard, Bell, BellDot, Search, GitCompareArrows, Lightbulb, TerminalSquare, FileText, Database,
   Sun, Moon, ChevronsLeft, ChevronsRight, Sparkles, RefreshCw, ScanSearch, DollarSign, Shield, PlayCircle, Compass,
-  Rows3, Command, Copy,
+  Rows3, Command, Copy, ClipboardList,
 } from 'lucide-react'
 import { useStore, type View } from '../hooks/useStore'
 import { cn, scoreColor } from '../lib/utils'
@@ -19,6 +19,7 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
       { view: 'overview', label: 'Overview', icon: LayoutDashboard },
       { view: 'alerts', label: 'Alerts', icon: Bell },
       { view: 'history', label: 'Alert History', icon: BellDot },
+      { view: 'audit', label: 'Audit Log', icon: ClipboardList },
     ],
   },
   {
@@ -194,13 +195,37 @@ export function Sidebar({ mobileOpen = false, onMobileClose, onOpenPalette }: Si
                           <span className="absolute -top-1 -right-1 w-1.5 h-1.5 rounded-full bg-orange-400 animate-pulse" />
                         )}
                       </span>
-                      {!collapsed && <span>{item.label}</span>}
+                      {!collapsed && (
+                        item.view === 'discover' ? (
+                          <span className="flex items-center gap-2">
+                            <span>{item.label}</span>
+                            <span className="text-[9px] px-1 py-0.5 rounded bg-[var(--accent)]/15 text-[var(--accent)] font-semibold uppercase tracking-wide">
+                              Guide
+                            </span>
+                          </span>
+                        ) : (
+                          <span>{item.label}</span>
+                        )
+                      )}
                     </a>
                   )
                 })}
               </div>
             </div>
           ))}
+
+          {/* Onboarding nudge when no instances */}
+          {instances.length === 0 && !collapsed && (
+            <div className="mx-2 mb-2 px-3 py-2 rounded-lg border border-[var(--accent)]/20 bg-[var(--accent)]/5 text-xs text-[var(--text-muted)]">
+              <div className="font-medium text-[var(--accent)] mb-0.5">No instances configured</div>
+              <div className="text-[var(--dim)] leading-relaxed">
+                Add ClickHouse instances to your config file and restart.{' '}
+                <button onClick={() => setView('discover')} className="text-[var(--accent)] hover:underline">
+                  View setup guide →
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Instances section */}
           {instances.length > 0 && (

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   PlayCircle, ChevronDown, ChevronRight, AlertTriangle, CheckCircle2,
   XCircle, BarChart2, Clock, Loader2, Code2, Database, Info, RefreshCw, CalendarRange,
+  Timer, Plus, Trash2, ToggleLeft, ToggleRight,
 } from 'lucide-react'
 import { api } from '../lib/api'
 import { cn } from '../lib/utils'
@@ -25,6 +26,23 @@ function alertSummary(alerts: RunCheckAlert[]) {
     else acc.info++
     return acc
   }, { critical: 0, warn: 0, info: 0 })
+}
+
+function getCheckErrorHint(errorMsg: string): string | null {
+  const e = errorMsg.toLowerCase()
+  if (e.includes('connect') || e.includes('refused') || e.includes('timeout') || e.includes('unreachable')) {
+    return 'Instance may be down or unreachable. Check network connectivity and firewall rules.'
+  }
+  if (e.includes('auth') || e.includes('403') || e.includes('401') || e.includes('password') || e.includes('access denied')) {
+    return 'Authentication failed. Verify credentials in config file have read access to system tables.'
+  }
+  if (e.includes('system.') || e.includes('unknown table') || e.includes('no such table')) {
+    return 'This check requires access to ClickHouse system tables. Ensure the user has sufficient privileges.'
+  }
+  if (e.includes('memory') || e.includes('quota')) {
+    return 'Query hit a resource limit. Try running against a less loaded instance.'
+  }
+  return null
 }
 
 function groupByCategory(metas: CollectorMeta[]): Record<string, CollectorMeta[]> {
@@ -126,7 +144,14 @@ function ResultCard({ result }: { result: RunCheckResult }) {
         {hasError && (
           <div className="flex items-start gap-2 text-sm text-red-400 bg-red-500/10 rounded-lg p-3 border border-red-500/20">
             <XCircle size={14} className="shrink-0 mt-0.5" />
-            <code className="text-xs font-mono">{result.error}</code>
+            <div>
+              <code className="text-xs font-mono">{result.error}</code>
+              {getCheckErrorHint(result.error!) && (
+                <div className="text-[11px] text-amber-400/80 mt-1 flex items-center gap-1">
+                  <span>💡</span> {getCheckErrorHint(result.error!)}
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -265,6 +290,25 @@ export default function RunCheck() {
   const [advisorData, setAdvisorData] = useState<{ queryAP: any[]; tableAP: any[] } | null>(null)
   const [advisorError, setAdvisorError] = useState('')
 
+  // Schedule state
+  const [schedules, setSchedules] = useState<any[]>([])
+  const [scheduleOpen, setScheduleOpen] = useState(false)
+  const [newSchedInst, setNewSchedInst] = useState('')
+  const [newSchedCollector, setNewSchedCollector] = useState('')
+  const [newSchedInterval, setNewSchedInterval] = useState(5)
+  const [schedFormOpen, setSchedFormOpen] = useState(false)
+  const [schedError, setSchedError] = useState('')
+  const [schedLoading, setSchedLoading] = useState(false)
+
+  const loadSchedules = useCallback(async () => {
+    try {
+      const list = await api.schedules.list()
+      setSchedules(list ?? [])
+    } catch {
+      // non-fatal
+    }
+  }, [])
+
   // Time range state
   const [preset, setPreset] = useState(0)          // minutes; 0 = live, -1 = custom
   const [customFrom, setCustomFrom] = useState(() => toLocalDatetimeInput(new Date(Date.now() - 3600_000)))
@@ -291,7 +335,8 @@ export default function RunCheck() {
       setCollectorMetas(collectors as CollectorMeta[])
       setInstanceList((overview as any[]).map((d: any) => d.name))
     })
-  }, [])
+    loadSchedules()
+  }, [loadSchedules])
 
   const toggleCollector = (name: string) => {
     setSelectedCollectors(prev => {
@@ -588,7 +633,16 @@ export default function RunCheck() {
       {initError && (
         <div className="flex items-center gap-2 text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3">
           <XCircle size={16} />
-          Failed to load: {initError}
+          <div className="flex-1">
+            <div>Failed to load: {initError}</div>
+            <div className="text-xs text-red-300/70 mt-0.5">
+              {initError.toLowerCase().includes('connect') || initError.toLowerCase().includes('refused') || initError.toLowerCase().includes('timeout')
+                ? 'Check that CH Analyzer backend is running and reachable.'
+                : initError.toLowerCase().includes('auth') || initError.toLowerCase().includes('403') || initError.toLowerCase().includes('401')
+                ? 'Authentication failed. Check your credentials in the config file.'
+                : 'Try refreshing the page. If this persists, check the application logs.'}
+            </div>
+          </div>
         </div>
       )}
       {error && (
@@ -738,6 +792,182 @@ export default function RunCheck() {
             </div>
           )
         })()}
+      </div>
+
+      {/* ── Schedules ──────────────────────────────────────────────────────────── */}
+      <div className="border-t border-[var(--border)] pt-6 space-y-4">
+        <button
+          onClick={() => { setScheduleOpen(o => !o); if (!scheduleOpen) loadSchedules() }}
+          className="flex items-center gap-2 w-full text-left"
+        >
+          <Timer size={14} className="text-[var(--dim)]" />
+          <span className="text-sm font-semibold text-[var(--text)]">Scheduled Checks</span>
+          {schedules.length > 0 && (
+            <span className="text-[11px] font-medium text-[var(--accent)] bg-[var(--accent)]/10 border border-[var(--accent)]/20 rounded-full px-2 py-0.5">
+              {schedules.length}
+            </span>
+          )}
+          {scheduleOpen ? <ChevronDown size={13} className="ml-auto text-[var(--dim)]" /> : <ChevronRight size={13} className="ml-auto text-[var(--dim)]" />}
+        </button>
+
+        {scheduleOpen && (
+          <div className="space-y-3">
+            <p className="text-xs text-[var(--dim)]">
+              Automatically run a collector against an instance at a fixed interval. The schedule runner checks every 30 seconds.
+            </p>
+
+            {/* Existing schedules */}
+            {schedules.length === 0 ? (
+              <p className="text-xs text-[var(--dim)] italic">No schedules configured.</p>
+            ) : (
+              <div className="rounded-xl border border-[var(--border)] overflow-hidden">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="bg-[var(--surface)] border-b border-[var(--border)]">
+                      <th className="text-left px-3 py-2 text-[var(--dim)] font-medium">Instance</th>
+                      <th className="text-left px-3 py-2 text-[var(--dim)] font-medium">Collector</th>
+                      <th className="text-left px-3 py-2 text-[var(--dim)] font-medium">Interval</th>
+                      <th className="text-left px-3 py-2 text-[var(--dim)] font-medium">Last Run</th>
+                      <th className="text-right px-3 py-2 text-[var(--dim)] font-medium">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {schedules.map((sc, i) => (
+                      <tr key={sc.id} className={cn('border-b border-[var(--border)] last:border-0', i % 2 === 0 ? '' : 'bg-[var(--surface)]/30')}>
+                        <td className="px-3 py-2 font-mono text-[var(--text)]">{sc.instance}</td>
+                        <td className="px-3 py-2 text-[var(--text)]">{sc.collector_name}</td>
+                        <td className="px-3 py-2 text-[var(--dim)]">{sc.interval_mins}m</td>
+                        <td className="px-3 py-2 text-[var(--dim)]">
+                          {sc.last_run_at && sc.last_run_at !== '0001-01-01T00:00:00Z'
+                            ? new Date(sc.last_run_at).toLocaleString()
+                            : <span className="opacity-40">never</span>}
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              title={sc.enabled ? 'Disable' : 'Enable'}
+                              onClick={async () => {
+                                try {
+                                  await api.schedules.setEnabled(sc.id, !sc.enabled)
+                                  await loadSchedules()
+                                } catch {}
+                              }}
+                              className="text-[var(--dim)] hover:text-[var(--accent)] transition-colors"
+                            >
+                              {sc.enabled
+                                ? <ToggleRight size={16} className="text-[var(--accent)]" />
+                                : <ToggleLeft size={16} />}
+                            </button>
+                            <button
+                              title="Delete"
+                              onClick={async () => {
+                                try {
+                                  await api.schedules.delete(sc.id)
+                                  await loadSchedules()
+                                } catch {}
+                              }}
+                              className="text-[var(--dim)] hover:text-red-400 transition-colors"
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* New schedule form */}
+            {!schedFormOpen ? (
+              <button
+                onClick={() => setSchedFormOpen(true)}
+                className="flex items-center gap-1.5 text-xs text-[var(--accent)] hover:opacity-70 font-medium"
+              >
+                <Plus size={13} /> New Schedule
+              </button>
+            ) : (
+              <div className="bg-[var(--card)] border border-[var(--border)] rounded-xl p-4 space-y-3">
+                <p className="text-xs font-semibold text-[var(--text)]">New Schedule</p>
+                <div className="flex flex-wrap gap-3 items-end">
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[11px] text-[var(--dim)]">Instance</span>
+                    <select
+                      value={newSchedInst}
+                      onChange={e => setNewSchedInst(e.target.value)}
+                      className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5 text-xs focus:outline-none focus:border-[var(--accent)]"
+                    >
+                      <option value="">Select…</option>
+                      {instanceList.map(i => <option key={i} value={i}>{i}</option>)}
+                    </select>
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[11px] text-[var(--dim)]">Collector</span>
+                    <select
+                      value={newSchedCollector}
+                      onChange={e => setNewSchedCollector(e.target.value)}
+                      className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5 text-xs focus:outline-none focus:border-[var(--accent)]"
+                    >
+                      <option value="">Select…</option>
+                      {collectorMetas.map(m => <option key={m.name} value={m.name}>{m.display_name}</option>)}
+                    </select>
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[11px] text-[var(--dim)]">Interval</span>
+                    <select
+                      value={newSchedInterval}
+                      onChange={e => setNewSchedInterval(Number(e.target.value))}
+                      className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5 text-xs focus:outline-none focus:border-[var(--accent)]"
+                    >
+                      <option value={5}>5m</option>
+                      <option value={15}>15m</option>
+                      <option value={30}>30m</option>
+                      <option value={60}>1h</option>
+                      <option value={360}>6h</option>
+                      <option value={1440}>24h</option>
+                    </select>
+                  </label>
+                  <button
+                    disabled={!newSchedInst || !newSchedCollector || schedLoading}
+                    onClick={async () => {
+                      if (!newSchedInst || !newSchedCollector) return
+                      setSchedLoading(true); setSchedError('')
+                      try {
+                        await api.schedules.create(newSchedInst, newSchedCollector, newSchedInterval)
+                        await loadSchedules()
+                        setSchedFormOpen(false)
+                        setNewSchedInst('')
+                        setNewSchedCollector('')
+                        setNewSchedInterval(5)
+                      } catch (e: any) {
+                        setSchedError(e?.message ?? 'Failed to create schedule')
+                      } finally {
+                        setSchedLoading(false)
+                      }
+                    }}
+                    className={cn(
+                      'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all',
+                      !newSchedInst || !newSchedCollector || schedLoading
+                        ? 'bg-[var(--surface)] text-[var(--dim)] cursor-not-allowed'
+                        : 'bg-[var(--accent)] text-white hover:opacity-90',
+                    )}
+                  >
+                    {schedLoading ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
+                    Add
+                  </button>
+                  <button
+                    onClick={() => { setSchedFormOpen(false); setSchedError('') }}
+                    className="text-xs text-[var(--dim)] hover:text-[var(--text)]"
+                  >
+                    Cancel
+                  </button>
+                </div>
+                {schedError && <p className="text-xs text-red-400">{schedError}</p>}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )

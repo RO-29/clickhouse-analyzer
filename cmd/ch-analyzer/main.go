@@ -160,6 +160,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer metricStore.Close()
+	metricStore.InitAuditLog()
 
 	// Initialize analyzer
 	az := analyzer.New(analyzer.AnalyzerThresholds{
@@ -221,6 +222,31 @@ func main() {
 	}
 	maintenanceStore.SetPersistPath(maintFile)
 	alertMgrOpts = append(alertMgrOpts, alerter.WithMaintenance(maintenanceStore))
+
+	// Snooze store (shared with web server).
+	snoozeFile := "/var/lib/ch-analyzer/snoozes.json"
+	if err := os.MkdirAll("/var/lib/ch-analyzer", 0755); err != nil {
+		snoozeFile = os.TempDir() + "/ch-analyzer-snoozes.json"
+		slog.Warn("cannot create /var/lib/ch-analyzer, using temp dir for snooze persistence", "path", snoozeFile)
+	}
+	snoozeStore := alerter.NewSnoozeStore(snoozeFile)
+	alertMgrOpts = append(alertMgrOpts, alerter.WithSnooze(snoozeStore))
+
+	// Ack store (shared with web server).
+	ackFile := "/var/lib/ch-analyzer/acks.json"
+	if err := os.MkdirAll("/var/lib/ch-analyzer", 0755); err != nil {
+		ackFile = os.TempDir() + "/ch-analyzer-acks.json"
+		slog.Warn("cannot create /var/lib/ch-analyzer, using temp dir for ack persistence", "path", ackFile)
+	}
+	ackStore := alerter.NewAckStore(ackFile)
+
+	// Schedule store (shared with web server).
+	scheduleFile := "/var/lib/ch-analyzer/schedules.json"
+	if err := os.MkdirAll("/var/lib/ch-analyzer", 0755); err != nil {
+		scheduleFile = os.TempDir() + "/ch-analyzer-schedules.json"
+		slog.Warn("cannot create /var/lib/ch-analyzer, using temp dir for schedule persistence", "path", scheduleFile)
+	}
+	scheduleStore := web.NewScheduleStore(scheduleFile)
 
 	alertMgr := alerter.NewAlertManager(slackNotifier, storeAdapter, alertMgrOpts...)
 	alertMgr.Start(ctx)
@@ -290,6 +316,9 @@ func main() {
 	if cfg.Web.Enabled {
 		webServer = web.New(cfg.Web.ListenAddr, cfg, metricStore, az, clientMgr, logBuffer)
 		webServer.SetMaintenanceStore(maintenanceStore)
+		webServer.SetSnoozeStore(snoozeStore)
+		webServer.SetAckStore(ackStore)
+		webServer.SetScheduleStore(scheduleStore)
 		webServer.SetForcePollCh(forcePollCh)
 		webServer.SetVersion(version)
 		go func() {
@@ -325,6 +354,46 @@ func main() {
 			app.Run(ctx)
 		}()
 	}
+
+	// Schedule runner: every 30 s check if any schedule is due and run its collector.
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				due := scheduleStore.Due()
+				for _, sched := range due {
+					sched := sched // capture
+					go func() {
+						client := clientMgr.Get(sched.Instance)
+						if client == nil {
+							slog.Warn("schedule: instance not found, skipping", "schedule", sched.ID, "instance", sched.Instance)
+							scheduleStore.UpdateLastRun(sched.ID)
+							return
+						}
+						coll, ok := collector.BuildCollectorFromConfig(sched.CollectorName, cfg)
+						if !ok {
+							slog.Warn("schedule: unknown collector, skipping", "schedule", sched.ID, "collector", sched.CollectorName)
+							scheduleStore.UpdateLastRun(sched.ID)
+							return
+						}
+						runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+						defer cancel()
+						_, err := coll.Collect(runCtx, client)
+						if err != nil {
+							slog.Warn("schedule: collector run failed", "schedule", sched.ID, "collector", sched.CollectorName, "instance", sched.Instance, "error", err)
+						} else {
+							slog.Info("schedule: collector ran successfully", "schedule", sched.ID, "collector", sched.CollectorName, "instance", sched.Instance)
+						}
+						scheduleStore.UpdateLastRun(sched.ID)
+					}()
+				}
+			}
+		}
+	}()
 
 	// Note: no pruner needed — ClickHouse TTL handles retention automatically.
 
@@ -561,6 +630,7 @@ func runCollectionCB(
 
 		// Update prometheus — done after alert processing so active_alerts
 		// reflects the current in-memory alert state.
+		alertCounts := alertMgr.ActiveAlertCountsForInstance(instanceName)
 		if promExporter != nil {
 			var collectorMetrics []collector.Metric
 			for _, r := range allResults {
@@ -569,7 +639,6 @@ func runCollectionCB(
 			collectorMetrics = append(collectorMetrics, analysisResult.Metrics...)
 
 			// Emit active_alerts{severity=...} for each severity level.
-			alertCounts := alertMgr.ActiveAlertCountsForInstance(instanceName)
 			now := time.Now()
 			for sev, count := range alertCounts {
 				collectorMetrics = append(collectorMetrics, collector.Metric{
@@ -582,6 +651,22 @@ func runCollectionCB(
 			}
 
 			promExporter.Update(collectorMetrics)
+		}
+
+		// Record health snapshot for trend tracking.
+		{
+			criticals := alertCounts["critical"]
+			warns := alertCounts["warn"]
+			infos := alertCounts["info"]
+			score := float32(100) - float32(criticals)*15 - float32(warns)*5
+			if score < 0 {
+				score = 0
+			}
+			snapCtx, snapCancel := context.WithTimeout(ctx, 5*time.Second)
+			if err := metricStore.RecordHealthSnapshot(snapCtx, instanceName, score, criticals, warns, infos); err != nil {
+				slog.Debug("failed to record health snapshot", "instance", instanceName, "err", err)
+			}
+			snapCancel()
 		}
 
 		slog.Debug("collection complete",

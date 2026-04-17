@@ -19,6 +19,7 @@ import Maintenance from './views/Maintenance'
 import AlertHistory from './views/AlertHistory'
 import RunCheck from './views/RunCheck'
 import Discover from './views/Discover'
+import AuditLog from './views/AuditLog'
 import { TableDetail } from './components/TableDetail'
 import { AIAnalysisPanel } from './components/AIAnalysisPanel'
 import { NotificationToasts } from './components/NotificationToasts'
@@ -104,6 +105,7 @@ function Layout() {
     cost: <CostExplorer />,
     maintenance: <Maintenance />,
     runcheck: <RunCheck />,
+    audit: <AuditLog refreshKey={tick} />,
     terminal: <Terminal />,
     logs: <AppLogs refreshKey={tick} />,
     chlogs: <CHLogs refreshKey={tick} />,

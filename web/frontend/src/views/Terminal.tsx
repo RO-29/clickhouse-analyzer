@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { Play, History, X, Loader2, Download, BarChart2, ScatterChart, PieChart, LineChart, LayoutGrid, Plus, Columns2, ChevronDown } from 'lucide-react'
+import { Play, History, X, Loader2, Download, BarChart2, ScatterChart, PieChart, LineChart, LayoutGrid, Plus, Columns2, ChevronDown, Bookmark, BookmarkPlus } from 'lucide-react'
 import { Line, Bar, Doughnut, Scatter } from 'react-chartjs-2'
 import {
   Chart as ChartJS,
@@ -30,6 +30,33 @@ ChartJS.register(
 )
 
 const MAX_ROWS_OPTIONS = [100, 500, 1000, 5000]
+
+const STARTER_QUERIES = [
+  {
+    label: 'Top slow queries (last 1h)',
+    sql: `SELECT normalized_query_hash, count() as cnt, avg(query_duration_ms) as avg_ms, max(query_duration_ms) as max_ms, any(query) as sample\nFROM system.query_log\nWHERE event_time >= now() - INTERVAL 1 HOUR AND type = 'QueryFinish'\nGROUP BY normalized_query_hash\nORDER BY avg_ms DESC\nLIMIT 20`,
+  },
+  {
+    label: 'Active queries right now',
+    sql: `SELECT query_id, user, elapsed, memory_usage, query\nFROM system.processes\nORDER BY elapsed DESC`,
+  },
+  {
+    label: 'Table disk usage',
+    sql: `SELECT database, table, formatReadableSize(sum(bytes_on_disk)) as size, sum(rows) as rows, count() as parts\nFROM system.parts\nWHERE active\nGROUP BY database, table\nORDER BY sum(bytes_on_disk) DESC\nLIMIT 20`,
+  },
+  {
+    label: 'Recent errors (last 1h)',
+    sql: `SELECT event_time, user, exception_code, exception, query\nFROM system.query_log\nWHERE event_time >= now() - INTERVAL 1 HOUR AND type = 'ExceptionWhileProcessing'\nORDER BY event_time DESC\nLIMIT 50`,
+  },
+  {
+    label: 'Merge queue',
+    sql: `SELECT database, table, count() as merges, sum(rows_read) as rows_read\nFROM system.merges\nGROUP BY database, table\nORDER BY merges DESC`,
+  },
+  {
+    label: 'Replication lag',
+    sql: `SELECT database, table, is_leader, queue_size, absolute_delay\nFROM system.replicas\nORDER BY absolute_delay DESC`,
+  },
+]
 
 const CHART_COLORS = [
   '#3b82f6', '#22c55e', '#eab308', '#ef4444', '#a855f7',
@@ -401,6 +428,13 @@ function NodePane({ instance, result, error, loading, onRemove }: NodePaneProps)
 
 type NodeResult = { result: QueryResult | null; error: string | null; loading: boolean }
 
+interface BookmarkEntry {
+  id: string
+  name: string
+  query: string
+  savedAt: number
+}
+
 export default function Terminal() {
   const { instances, selectedInstance, setSelectedInstance, terminalQuery, terminalInstance } = useStore()
   const [inst, setInst] = useState(() => terminalInstance || selectedInstance || instances[0] || '')
@@ -417,6 +451,33 @@ export default function Terminal() {
   const [showCompare, setShowCompare] = useState(false)
   const compareRef = useRef<HTMLDivElement>(null)
   const editorRef = useRef<SqlEditorHandle>(null)
+
+  const [bookmarks, setBookmarks] = useState<BookmarkEntry[]>(() => {
+    try { return JSON.parse(localStorage.getItem('ch-terminal-bookmarks') ?? '[]') } catch { return [] }
+  })
+  const [showBookmarks, setShowBookmarks] = useState(false)
+  const [bookmarkName, setBookmarkName] = useState('')
+
+  function saveBookmark() {
+    if (!query.trim()) return
+    const name = bookmarkName.trim() || `Query ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+    const b: BookmarkEntry = { id: Date.now().toString(), name, query, savedAt: Date.now() }
+    const next = [b, ...bookmarks].slice(0, 30)
+    setBookmarks(next)
+    localStorage.setItem('ch-terminal-bookmarks', JSON.stringify(next))
+    setBookmarkName('')
+  }
+
+  function deleteBookmark(id: string) {
+    const next = bookmarks.filter(b => b.id !== id)
+    setBookmarks(next)
+    localStorage.setItem('ch-terminal-bookmarks', JSON.stringify(next))
+  }
+
+  function loadBookmark(b: BookmarkEntry) {
+    setQuery(b.query)
+    setShowBookmarks(false)
+  }
 
   const allInstances = useMemo(() => [inst, ...splitInstances].filter(Boolean), [inst, splitInstances])
 
@@ -489,6 +550,7 @@ export default function Terminal() {
   const execute = useCallback(async () => {
     if (!query.trim() || allInstances.length === 0) return
     setRunning(true)
+    setExecTime(null)
 
     // Mark all instances as loading
     const initial: Record<string, NodeResult> = {}
@@ -635,6 +697,40 @@ export default function Terminal() {
           </button>
           <span className="text-xs text-[var(--dim)]">Ctrl+Enter to run · Ctrl+L to clear</span>
           <div className="ml-auto flex items-center gap-3">
+            {query.trim() && (
+              <div className="flex items-center gap-1">
+                <input
+                  type="text"
+                  value={bookmarkName}
+                  onChange={e => setBookmarkName(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && saveBookmark()}
+                  placeholder="Snippet name…"
+                  className="text-xs bg-[var(--hover)] border border-[var(--border)] rounded px-2 py-1 outline-none focus:border-[var(--accent)] w-32"
+                />
+                <button
+                  onClick={saveBookmark}
+                  title="Save as snippet"
+                  className="p-1.5 rounded-md text-[var(--dim)] hover:text-[var(--accent)] hover:bg-[var(--hover)] transition-colors"
+                >
+                  <BookmarkPlus size={14} />
+                </button>
+              </div>
+            )}
+            <div className="relative">
+              <button
+                onClick={() => setShowBookmarks(s => !s)}
+                title="Saved snippets"
+                className={cn('p-1.5 rounded-md transition-colors',
+                  showBookmarks ? 'bg-[var(--accent)] text-white' : 'text-[var(--dim)] hover:text-[var(--fg)] hover:bg-[var(--hover)]')}
+              >
+                <Bookmark size={16} />
+                {bookmarks.length > 0 && (
+                  <span className="absolute -top-1 -right-1 text-[9px] bg-[var(--accent)] text-white rounded-full w-3.5 h-3.5 flex items-center justify-center leading-none">
+                    {bookmarks.length > 9 ? '9+' : bookmarks.length}
+                  </span>
+                )}
+              </button>
+            </div>
             <label className="text-xs text-[var(--dim)]">Max rows</label>
             <select
               value={maxRows}
@@ -654,12 +750,63 @@ export default function Terminal() {
           </div>
         </div>
 
+        {/* Bookmarks panel */}
+        {showBookmarks && (
+          <div className="border border-[var(--border)] rounded-lg bg-[var(--card)] p-3 space-y-1">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-semibold text-[var(--text-muted)]">Saved Snippets</span>
+              <button onClick={() => setShowBookmarks(false)} className="text-[var(--dim)] hover:text-[var(--fg)]">
+                <X size={12} />
+              </button>
+            </div>
+            {bookmarks.length === 0 ? (
+              <div className="text-xs text-[var(--dim)] text-center py-4">No saved snippets yet</div>
+            ) : (
+              bookmarks.map(b => (
+                <div key={b.id} className="group flex items-center gap-2 px-2 py-1.5 rounded hover:bg-[var(--hover)] cursor-pointer"
+                  onClick={() => loadBookmark(b)}>
+                  <Bookmark size={11} className="text-[var(--accent)] shrink-0" />
+                  <span className="flex-1 text-xs truncate" title={b.query}>{b.name}</span>
+                  <span className="text-[10px] text-[var(--dim)] shrink-0">
+                    {new Date(b.savedAt).toLocaleDateString([], { month: 'short', day: 'numeric' })}
+                  </span>
+                  <button onClick={e => { e.stopPropagation(); deleteBookmark(b.id) }}
+                    className="opacity-0 group-hover:opacity-100 text-[var(--dim)] hover:text-red-400 transition-opacity">
+                    <X size={11} />
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+
+        {/* Starter queries — shown when editor is empty and no results yet */}
+        {!query.trim() && !hasResults && (
+          <div className="border border-[var(--border)] rounded-lg overflow-hidden">
+            <div className="px-3 py-2 bg-[var(--surface)] border-b border-[var(--border)]">
+              <span className="text-[11px] font-semibold text-[var(--dim)] uppercase tracking-wider">Example Queries</span>
+            </div>
+            <div className="divide-y divide-[var(--border)]">
+              {STARTER_QUERIES.map(q => (
+                <button
+                  key={q.label}
+                  onClick={() => setQuery(q.sql)}
+                  className="w-full text-left px-3 py-2.5 hover:bg-[var(--hover)] transition-colors"
+                >
+                  <div className="text-[12px] font-medium text-[var(--text)]">{q.label}</div>
+                  <div className="text-[10px] text-[var(--dim)] font-mono mt-0.5 truncate">{q.sql.split('\\n')[0]}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Results — split view or single column */}
         {hasResults && (
           <>
           {execTime && !running && (
             <div className="flex items-center gap-2 text-[11px] text-[var(--dim)]">
-              <span>Executed at {execTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+              <span>Results from {execTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
             </div>
           )}
           <div className={cn('flex gap-4', isSplit ? 'flex-row items-start' : 'flex-col')}>

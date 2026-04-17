@@ -159,11 +159,13 @@ export function DataTable({
   return (
     <div
       ref={containerRef}
-      className="overflow-auto relative"
-      style={{ maxHeight: maxHeight ?? undefined }}
+      className="relative"
       tabIndex={keyboardNav ? 0 : undefined}
       onFocus={() => keyboardNav && focusedRow === null && setFocusedRow(0)}
     >
+      {/* Scroll hint overlay — static gradient on right edge for mobile */}
+      <div className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-[var(--card)] to-transparent sm:hidden z-10" />
+      <div className="overflow-auto relative" style={{ maxHeight: maxHeight ?? undefined }}>
       <table className="w-full min-w-[500px]">
         <thead className="sticky top-0 bg-[var(--card)] z-10">
           <tr className="border-b border-[var(--border)]">
@@ -269,6 +271,7 @@ export function DataTable({
           })}
         </tbody>
       </table>
+      </div>{/* end overflow-auto scroll wrapper */}
 
       {/* Pagination */}
       {pageSize && totalPages > 1 && (

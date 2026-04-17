@@ -596,12 +596,23 @@ interface TableScannerProps {
 }
 
 export default function TableScanner({ refreshKey }: TableScannerProps) {
-  const { selectedInstance, instances } = useStore()
+  const { selectedInstance, instances, scannerSearch, setScannerSearch } = useStore()
   const [instance, setInstance] = useState(() => selectedInstance || '')
   const [result, setResult] = useState<TableScanResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [filter, setFilter] = useState('')
+  const [filter, setFilter] = useState(() => {
+    if (scannerSearch) {
+      // consume the one-time navigation search
+      return scannerSearch
+    }
+    return ''
+  })
+
+  useEffect(() => {
+    if (scannerSearch) setScannerSearch('')
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   const [rangePreset, setRangePreset] = useState(604800)
   const [sortCol, setSortCol] = useState<SortCol>('bytes')
   const [sortDir, setSortDir] = useState<SortDir>('desc')

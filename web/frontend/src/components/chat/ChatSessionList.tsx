@@ -168,7 +168,7 @@ export function ChatSessionList({
                   >
                     <div className="flex items-center gap-2 min-w-0">
                       <StatusDot status={status} />
-                      <span className="truncate flex-1 text-xs leading-snug">
+                      <span className="truncate flex-1 text-xs leading-snug" title={session.name || 'Untitled'}>
                         {session.name || 'Untitled'}
                       </span>
                       <span

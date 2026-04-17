@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { ClipboardCopy, AlertCircle, Check, ChevronDown, ChevronRight, FlaskConical } from 'lucide-react'
+import { ClipboardCopy, AlertCircle, Check, ChevronDown, ChevronRight, FlaskConical, RotateCcw } from 'lucide-react'
 import { marked } from 'marked'
 import { cn } from '../../lib/utils'
 import type { ChatMessage as ChatMessageType } from '../../types/api'
@@ -133,6 +133,7 @@ function EvidencePanel({ evidence }: { evidence: NonNullable<ChatMessageType['ev
 interface ChatMessageProps {
   message: ChatMessageType
   isLast: boolean
+  onRetry?: () => void
 }
 
 /* ─── User bubble ─────────────────────────────────────────────────────────── */
@@ -160,7 +161,7 @@ function UserBubble({ message }: { message: ChatMessageType }) {
 
 /* ─── Assistant bubble ────────────────────────────────────────────────────── */
 
-function AssistantBubble({ message, isLast }: { message: ChatMessageType; isLast: boolean }) {
+function AssistantBubble({ message, isLast, onRetry }: { message: ChatMessageType; isLast: boolean; onRetry?: () => void }) {
   const [copied, setCopied] = useState(false)
 
   const isStreaming = message.status === 'streaming'
@@ -210,10 +211,21 @@ function AssistantBubble({ message, isLast }: { message: ChatMessageType; isLast
 
       {/* Error state */}
       {isError && (
-        <div className="flex items-start gap-2 px-3 py-2 rounded-lg border border-red-500/30 bg-red-500/10 text-sm text-red-400">
-          <AlertCircle size={14} className="shrink-0 mt-0.5" />
-          <span>{message.content || 'An error occurred.'}</span>
-        </div>
+        <>
+          <div className="flex items-start gap-2 px-3 py-2 rounded-lg border border-red-500/30 bg-red-500/10 text-sm text-red-400">
+            <AlertCircle size={14} className="shrink-0 mt-0.5" />
+            <span>{message.content || 'An error occurred.'}</span>
+          </div>
+          {isLast && onRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="mt-1 flex items-center gap-1.5 text-[11px] text-[var(--accent)] hover:underline"
+            >
+              <RotateCcw size={11} /> Retry
+            </button>
+          )}
+        </>
       )}
 
       {/* Markdown content */}
@@ -266,7 +278,7 @@ function AssistantBubble({ message, isLast }: { message: ChatMessageType; isLast
 
 /* ─── Export ─────────────────────────────────────────────────────────────── */
 
-export function ChatMessage({ message, isLast }: ChatMessageProps) {
+export function ChatMessage({ message, isLast, onRetry }: ChatMessageProps) {
   return (
     <>
       <style>{MESSAGE_STYLES}</style>
@@ -284,7 +296,7 @@ export function ChatMessage({ message, isLast }: ChatMessageProps) {
           {message.role === 'user' ? (
             <UserBubble message={message} />
           ) : (
-            <AssistantBubble message={message} isLast={isLast} />
+            <AssistantBubble message={message} isLast={isLast} onRetry={onRetry} />
           )}
         </div>
       </div>

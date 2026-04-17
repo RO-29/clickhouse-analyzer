@@ -1,51 +1,14 @@
 import { useState, useMemo, useEffect, useCallback } from 'react'
 import {
   X, Bell, BellOff, BookOpen, Sparkles, Table2, ChevronRight,
-  AlertTriangle, Clock, Hash, Server, Tag, Search,
+  Clock, Server, Tag, Search,
 } from 'lucide-react'
 import { cn, fmtTime } from '../lib/utils'
 import { api } from '../lib/api'
 import { Badge } from './Badge'
 import { SqlBlock } from './SqlBlock'
 import { useStore } from '../hooks/useStore'
-import type { Alert, Suggestion } from '../types/api'
-
-/* ------------------------------------------------------------------ */
-/*  Snooze helpers (mirrored from Alerts.tsx — localStorage-based)    */
-/* ------------------------------------------------------------------ */
-const SNOOZE_LS_KEY = 'ch-snoozed-alerts'
-const ACK_LS_KEY = 'ch-acked-alerts'
-
-function loadSnoozed(): Record<string, number> {
-  try { return JSON.parse(localStorage.getItem(SNOOZE_LS_KEY) ?? '{}') } catch { return {} }
-}
-function loadAcked(): Record<string, { by: string; note: string; at: number }> {
-  try { return JSON.parse(localStorage.getItem(ACK_LS_KEY) ?? '{}') } catch { return {} }
-}
-function snoozeAlert(dedupKey: string, hours: number) {
-  const snoozed = loadSnoozed()
-  snoozed[dedupKey] = Math.floor(Date.now() / 1000) + hours * 3600
-  const now = Math.floor(Date.now() / 1000)
-  Object.keys(snoozed).forEach(k => { if (snoozed[k] < now) delete snoozed[k] })
-  try { localStorage.setItem(SNOOZE_LS_KEY, JSON.stringify(snoozed)) } catch {}
-}
-function unsnoozeAlert(dedupKey: string) {
-  const s = loadSnoozed(); delete s[dedupKey]
-  try { localStorage.setItem(SNOOZE_LS_KEY, JSON.stringify(s)) } catch {}
-}
-function ackAlert(dedupKey: string, by: string, note: string) {
-  const a = loadAcked()
-  a[dedupKey] = { by, at: Math.floor(Date.now() / 1000), note }
-  try { localStorage.setItem(ACK_LS_KEY, JSON.stringify(a)) } catch {}
-}
-function unackAlert(dedupKey: string) {
-  const a = loadAcked(); delete a[dedupKey]
-  try { localStorage.setItem(ACK_LS_KEY, JSON.stringify(a)) } catch {}
-}
-function snoozeUntil(dedupKey: string, snoozed: Record<string, number>): number | null {
-  const exp = snoozed[dedupKey]
-  return (exp != null && exp > Math.floor(Date.now() / 1000)) ? exp : null
-}
+import type { Alert, Suggestion, SnoozeEntry, AckEntry } from '../types/api'
 
 /* ------------------------------------------------------------------ */
 /*  Runbooks                                                           */
@@ -324,6 +287,7 @@ export interface AlertDetailPanelProps {
   staleHours?: number
   onClose: () => void
   onResolve?: (dedupKey: string) => void
+  isResolving?: boolean
   onSnoozeChange?: () => void
   onAckChange?: () => void
   onAnalyze?: (alert: Alert) => void
@@ -335,6 +299,7 @@ export function AlertDetailPanel({
   staleHours = 24,
   onClose,
   onResolve,
+  isResolving = false,
   onSnoozeChange,
   onAckChange,
   onAnalyze,
@@ -345,17 +310,18 @@ export function AlertDetailPanel({
   const [suggestions, setSuggestions] = useState<Suggestion | null>(null)
   const [loadingSugg, setLoadingSugg] = useState(false)
   const [suggError, setSuggError] = useState<string | null>(null)
-  const [showAckForm, setShowAckForm] = useState(false)
-  const [ackBy, setAckBy] = useState('user')
-  const [ackNote, setAckNote] = useState('')
-  const [snoozeTick, setSnoozeTick] = useState(0)
-  const [ackTick, setAckTick] = useState(0)
-  const snoozed = useMemo(() => loadSnoozed(), [snoozeTick]) // eslint-disable-line react-hooks/exhaustive-deps
-  const acked = useMemo(() => loadAcked(), [ackTick]) // eslint-disable-line react-hooks/exhaustive-deps
+  const [refreshTick, setRefreshTick] = useState(0)
+  const [snoozeEntries, setSnoozeEntries] = useState<SnoozeEntry[]>([])
+  const [ackEntries, setAckEntries] = useState<AckEntry[]>([])
 
-  const snoozedUntil = snoozeUntil(alert.dedup_key, snoozed)
-  const alertIsAcked = !!acked[alert.dedup_key]
-  const ackedInfo = acked[alert.dedup_key] as { by: string; note: string; at: number } | undefined
+  const activeSnoozedEntry = useMemo(
+    () => snoozeEntries.find(s => s.dedup_key === alert.dedup_key && s.expires_at > Math.floor(Date.now() / 1000)) ?? null,
+    [snoozeEntries, alert.dedup_key],
+  )
+  const activeAckEntry = useMemo(
+    () => ackEntries.find(a => a.dedup_key === alert.dedup_key) ?? null,
+    [ackEntries, alert.dedup_key],
+  )
 
   const runbook = useMemo(() => getRunbook(alert), [alert])
   const invSql = useMemo(() => investigationSql(alert), [alert])
@@ -366,6 +332,13 @@ export function AlertDetailPanel({
     const updatedAt = alert.updated_at ?? alert.created_at
     return (Date.now() / 1000 - updatedAt) > staleHours * 3600
   }, [alert, staleHours])
+
+  // Fetch snooze + ack lists from server on mount and after actions
+  useEffect(() => {
+    Promise.all([api.snooze.list(), api.ack.list()])
+      .then(([snoozes, acks]) => { setSnoozeEntries(snoozes); setAckEntries(acks) })
+      .catch(() => {}) // non-fatal — just leave empty
+  }, [refreshTick]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load suggestions when details tab is active
   useEffect(() => {
@@ -382,30 +355,31 @@ export function AlertDetailPanel({
     return () => document.removeEventListener('keydown', handler)
   }, [onClose])
 
-  const handleSnooze = useCallback((hours: number) => {
-    snoozeAlert(alert.dedup_key, hours)
-    setSnoozeTick(t => t + 1)
+  const handleSnooze = useCallback(async (durationMinutes: number) => {
+    await api.snooze.create(alert.dedup_key, alert.instance, '', durationMinutes)
+    setRefreshTick(t => t + 1)
     onSnoozeChange?.()
-  }, [alert.dedup_key, onSnoozeChange])
+  }, [alert.dedup_key, alert.instance, onSnoozeChange])
 
-  const handleUnsnooze = useCallback(() => {
-    unsnoozeAlert(alert.dedup_key)
-    setSnoozeTick(t => t + 1)
+  const handleUnsnooze = useCallback(async () => {
+    if (!activeSnoozedEntry) return
+    await api.snooze.delete(activeSnoozedEntry.id)
+    setRefreshTick(t => t + 1)
     onSnoozeChange?.()
-  }, [alert.dedup_key, onSnoozeChange])
+  }, [activeSnoozedEntry, onSnoozeChange])
 
-  const handleAck = useCallback(() => {
-    ackAlert(alert.dedup_key, ackBy || 'user', ackNote)
-    setShowAckForm(false)
-    setAckTick(t => t + 1)
+  const handleAck = useCallback(async () => {
+    await api.ack.create(alert.dedup_key, alert.instance, '')
+    setRefreshTick(t => t + 1)
     onAckChange?.()
-  }, [alert.dedup_key, ackBy, ackNote, onAckChange])
+  }, [alert.dedup_key, alert.instance, onAckChange])
 
-  const handleUnack = useCallback(() => {
-    unackAlert(alert.dedup_key)
-    setAckTick(t => t + 1)
+  const handleUnack = useCallback(async () => {
+    if (!activeAckEntry) return
+    await api.ack.delete(activeAckEntry.id)
+    setRefreshTick(t => t + 1)
     onAckChange?.()
-  }, [alert.dedup_key, onAckChange])
+  }, [activeAckEntry, onAckChange])
 
   const TABS: { id: PanelTab; label: string }[] = [
     { id: 'details', label: 'Details' },
@@ -423,7 +397,7 @@ export function AlertDetailPanel({
       />
 
       {/* Panel */}
-      <div className="fixed right-0 top-0 h-full z-50 w-[45vw] min-w-[480px] max-w-[95vw] bg-[var(--card)] border-l border-[var(--border)] flex flex-col shadow-2xl">
+      <div className="fixed right-0 top-0 h-full z-50 w-full sm:w-[45vw] sm:min-w-[480px] max-w-full bg-[var(--card)] border-l border-[var(--border)] flex flex-col shadow-2xl">
 
         {/* Header */}
         <div className={cn(
@@ -440,12 +414,12 @@ export function AlertDetailPanel({
               {isStale && !alert.resolved && (
                 <span className="text-[10px] text-[var(--dim)] bg-[var(--border)] border border-[var(--border)] rounded px-1.5 py-0.5">stale</span>
               )}
-              {snoozedUntil && (
+              {activeSnoozedEntry && (
                 <span className="inline-flex items-center gap-1 text-[10px] text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-1.5 py-0.5">
                   <BellOff size={9} /> snoozed
                 </span>
               )}
-              {alertIsAcked && (
+              {activeAckEntry && (
                 <span className="text-[10px] text-green-400 bg-green-500/10 border border-green-500/20 rounded px-1.5 py-0.5">investigating</span>
               )}
             </div>
@@ -648,11 +622,42 @@ export function AlertDetailPanel({
                   <div className="text-[11px] font-semibold text-[var(--text)] mb-1">Resolve</div>
                   <div className="text-[11px] text-[var(--dim)] mb-2">Mark this alert as resolved. It will no longer appear in the active alerts list.</div>
                   <button
-                    onClick={() => { onResolve(alert.dedup_key); onClose() }}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium text-green-400 bg-green-500/10 hover:bg-green-500/20 border border-green-500/20 transition-colors"
+                    onClick={() => { if (!isResolving) { onResolve(alert.dedup_key); onClose() } }}
+                    disabled={isResolving}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium text-green-400 bg-green-500/10 hover:bg-green-500/20 border border-green-500/20 transition-colors disabled:opacity-50"
                   >
-                    Mark resolved
+                    {isResolving ? <><Clock size={11} className="animate-spin" /> Resolving…</> : 'Mark resolved'}
                   </button>
+                </div>
+              )}
+
+              {/* Acknowledge */}
+              {!alert.resolved && (
+                <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 p-3">
+                  <div className="text-[11px] font-semibold text-amber-400 mb-1">Acknowledge</div>
+                  {activeAckEntry ? (
+                    <div className="space-y-2">
+                      <div className="text-[11px] text-amber-400">
+                        Acknowledged by <strong>{activeAckEntry.acked_by}</strong>
+                      </div>
+                      <button
+                        onClick={handleUnack}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium text-amber-400 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 transition-colors"
+                      >
+                        Remove ACK
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <div className="text-[11px] text-[var(--dim)] mb-2">Mark that you are actively investigating this alert.</div>
+                      <button
+                        onClick={handleAck}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium text-amber-400 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 transition-colors"
+                      >
+                        Acknowledge
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -660,10 +665,10 @@ export function AlertDetailPanel({
               {!alert.resolved && (
                 <div className="rounded-lg border border-[var(--border)] p-3">
                   <div className="text-[11px] font-semibold text-[var(--text)] mb-1">Snooze</div>
-                  {snoozedUntil ? (
+                  {activeSnoozedEntry ? (
                     <div className="space-y-2">
                       <div className="text-[11px] text-amber-400 flex items-center gap-1.5">
-                        <BellOff size={11} /> Snoozed until {fmtTime(snoozedUntil)}
+                        <BellOff size={11} /> Snoozed until {fmtTime(activeSnoozedEntry.expires_at)}
                       </div>
                       <button
                         onClick={handleUnsnooze}
@@ -676,78 +681,16 @@ export function AlertDetailPanel({
                     <div className="space-y-2">
                       <div className="text-[11px] text-[var(--dim)] mb-2">Temporarily hide this alert for the selected duration.</div>
                       <div className="flex gap-2 flex-wrap">
-                        {[{ label: '4h', hours: 4 }, { label: '24h', hours: 24 }, { label: '7d', hours: 168 }].map(opt => (
+                        {[{ label: '15m', minutes: 15 }, { label: '1h', minutes: 60 }, { label: '4h', minutes: 240 }, { label: '24h', minutes: 1440 }].map(opt => (
                           <button
-                            key={opt.hours}
-                            onClick={() => handleSnooze(opt.hours)}
+                            key={opt.minutes}
+                            onClick={() => handleSnooze(opt.minutes)}
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium text-amber-400 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 transition-colors"
                           >
                             <BellOff size={11} /> Snooze {opt.label}
                           </button>
                         ))}
                       </div>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Acknowledge */}
-              {!alert.resolved && (
-                <div className="rounded-lg border border-[var(--border)] p-3">
-                  <div className="text-[11px] font-semibold text-[var(--text)] mb-1">Acknowledge</div>
-                  {alertIsAcked && ackedInfo ? (
-                    <div className="space-y-2">
-                      <div className="text-[11px] text-green-400">
-                        Acknowledged by <strong>{ackedInfo.by}</strong>
-                        {ackedInfo.note && <span className="text-[var(--dim)]"> — {ackedInfo.note}</span>}
-                      </div>
-                      <button
-                        onClick={handleUnack}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium text-green-400 bg-green-500/10 hover:bg-green-500/20 border border-green-500/20 transition-colors"
-                      >
-                        Unacknowledge
-                      </button>
-                    </div>
-                  ) : showAckForm ? (
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <input
-                          type="text"
-                          value={ackBy}
-                          onChange={e => setAckBy(e.target.value)}
-                          placeholder="By"
-                          className="bg-[var(--surface)] border border-[var(--border)] rounded px-2 py-1 text-[11px] w-24 focus:outline-none focus:border-[var(--accent)]"
-                        />
-                        <input
-                          type="text"
-                          value={ackNote}
-                          onChange={e => setAckNote(e.target.value)}
-                          placeholder="Note (optional)"
-                          className="bg-[var(--surface)] border border-[var(--border)] rounded px-2 py-1 text-[11px] w-40 focus:outline-none focus:border-[var(--accent)]"
-                        />
-                        <button
-                          onClick={handleAck}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium text-green-400 bg-green-500/10 hover:bg-green-500/20 border border-green-500/20 transition-colors"
-                        >
-                          Confirm
-                        </button>
-                        <button
-                          onClick={() => setShowAckForm(false)}
-                          className="text-[11px] text-[var(--dim)] hover:text-[var(--text)] transition-colors"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="space-y-2">
-                      <div className="text-[11px] text-[var(--dim)] mb-2">Mark that you are actively investigating this alert.</div>
-                      <button
-                        onClick={() => setShowAckForm(true)}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium text-green-400 bg-green-500/10 hover:bg-green-500/20 border border-green-500/20 transition-colors"
-                      >
-                        Acknowledge
-                      </button>
                     </div>
                   )}
                 </div>

@@ -2,7 +2,7 @@ import { createContext, useContext, useState, useCallback, useEffect, type React
 import { presetToRange } from '../lib/utils'
 import type { ChatSession } from '../types/api'
 
-export type View = 'overview' | 'detail' | 'alerts' | 'history' | 'explore' | 'compare' | 'advisor' | 'terminal' | 'logs' | 'chlogs' | 'analyzer' | 'scanner' | 'cost' | 'maintenance' | 'runcheck' | 'discover'
+export type View = 'overview' | 'detail' | 'alerts' | 'history' | 'explore' | 'compare' | 'advisor' | 'terminal' | 'logs' | 'chlogs' | 'analyzer' | 'scanner' | 'cost' | 'maintenance' | 'runcheck' | 'discover' | 'audit'
 
 export interface Store {
   // State
@@ -28,6 +28,7 @@ export interface Store {
   activeChatId: string | null
   aiPanelOpen: boolean
   denseMode: boolean
+  scannerSearch: string
 
   // Actions
   setView: (v: View) => void
@@ -48,6 +49,7 @@ export interface Store {
   setAlertPreset: (preset: { severity?: string; instance?: string } | null) => void
   navToTerminal: (query: string, instance: string) => void
   navToExploreWithRange: (instance: string, from: number, to: number) => void
+  navToScanner: (instance: string, search: string) => void
   openTableDetail: (instance: string, database: string, table: string) => void
   closeTableDetail: () => void
   setChatSessions: (updater: ChatSession[] | ((prev: ChatSession[]) => ChatSession[])) => void
@@ -56,6 +58,7 @@ export interface Store {
   authExpired: boolean
   setAuthExpired: (v: boolean) => void
   setDenseMode: (v: boolean) => void
+  setScannerSearch: (s: string) => void
 }
 
 const StoreContext = createContext<Store | null>(null)
@@ -76,7 +79,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [view, setViewState] = useState<View>(() => {
     const params = new URLSearchParams(window.location.search)
     const v = params.get('view') as View | null
-    const valid: View[] = ['overview','detail','alerts','explore','compare','advisor','terminal','logs','chlogs','analyzer','scanner','cost','maintenance']
+    const valid: View[] = ['overview','detail','alerts','explore','compare','advisor','terminal','logs','chlogs','analyzer','scanner','cost','maintenance','audit']
     return v && valid.includes(v) ? v : 'overview'
   })
   const [selectedInstance, setSelectedInstanceRaw] = useState(() => {
@@ -160,6 +163,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [aiPanelOpen, setAiPanelOpen] = useState(false)
   const [authExpired, setAuthExpired] = useState(false)
   const [denseMode, setDenseModeRaw] = useState(() => localStorage.getItem('ch-dense') === '1')
+  const [scannerSearch, setScannerSearchState] = useState('')
+  const setScannerSearch = useCallback((s: string) => setScannerSearchState(s), [])
   const setDenseMode = useCallback((v: boolean) => {
     setDenseModeRaw(v)
     localStorage.setItem('ch-dense', v ? '1' : '0')
@@ -237,6 +242,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setView('terminal')
   }, [])
 
+  const navToScanner = useCallback((instance: string, search: string) => {
+    setSelectedInstanceRaw(instance)
+    setScannerSearchState(search)
+    setViewState('scanner')
+  }, [])
+
   const openTableDetail = useCallback((instance: string, database: string, table: string) => {
     // Skip system/internal tables and metric name false positives
     if (!database || !table || database === 'system' || database === 'INFORMATION_SCHEMA' || database === 'information_schema' || database === 'ch_analyzer') return
@@ -274,9 +285,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     aiPanelOpen, setAiPanelOpen,
     authExpired, setAuthExpired,
     navToDetail, navToAlerts, alertPreset, setAlertPreset,
-    navToTerminal, navToExploreWithRange,
+    navToTerminal, navToExploreWithRange, navToScanner,
     openTableDetail, closeTableDetail,
     denseMode, setDenseMode,
+    scannerSearch, setScannerSearch,
   }
 
   // ── Browser back/forward button support ──────────────────────────────────
@@ -284,7 +296,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const handlePopState = () => {
       const p = new URLSearchParams(window.location.search)
       const v = p.get('view') as View | null
-      const valid: View[] = ['overview','detail','alerts','history','explore','compare','advisor','terminal','logs','chlogs','analyzer','scanner','cost','maintenance','runcheck','discover']
+      const valid: View[] = ['overview','detail','alerts','history','explore','compare','advisor','terminal','logs','chlogs','analyzer','scanner','cost','maintenance','runcheck','discover','audit']
       if (v && valid.includes(v)) setViewState(v)
       setSelectedInstanceRaw(p.get('instance') ?? '')
       const f = Number(p.get('from'))

@@ -1372,7 +1372,7 @@ function MemoryView({ baseline, instances }: { baseline: string; instances: stri
             )}
             {sorted.length > 0 && (
               <Card title="Per-Table Memory">
-                <DataTable columns={tableCols} data={sorted} maxHeight="400px" />
+                <DataTable columns={tableCols} data={sorted} maxHeight="400px" showColumnToggle={true} storageKey="compare-memory-tables" />
               </Card>
             )}
           </div>

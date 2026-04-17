@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react'
-import { Bell, CheckCircle, Clock, Search, XCircle } from 'lucide-react'
+import { Bell, CheckCircle, Clock, HelpCircle, Search, XCircle } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { api } from '../lib/api'
 import { cn } from '../lib/utils'
@@ -63,6 +63,44 @@ const SEV_BORDER: Record<string, string> = {
 }
 
 /* ------------------------------------------------------------------ */
+/*  NotifyStatusBanner — shows configured notification channels       */
+/* ------------------------------------------------------------------ */
+
+type NotifyStatusData = {
+  slack: { configured: boolean; channel: string; has_token: boolean }
+  pagerduty: { configured: boolean }
+  webhook: { configured: boolean; url: string }
+}
+
+function NotifyStatusBanner() {
+  const [status, setStatus] = useState<NotifyStatusData | null>(null)
+  useEffect(() => {
+    api.notifyStatus().then(setStatus).catch(() => {})
+  }, [])
+  if (!status) return null
+
+  const channels = [
+    { key: 'slack', label: 'Slack', configured: status.slack.configured, channel: status.slack.channel },
+    { key: 'pagerduty', label: 'PagerDuty', configured: status.pagerduty.configured, channel: '' },
+    { key: 'webhook', label: 'Webhook', configured: status.webhook.configured, channel: '' },
+  ]
+  const configured = channels.filter(c => c.configured)
+  if (configured.length === 0) return null // don't clutter if nothing configured
+
+  return (
+    <div className="flex items-center gap-2 text-xs text-[var(--dim)]">
+      <span>Channels:</span>
+      {configured.map(ch => (
+        <span key={ch.key} className="flex items-center gap-1">
+          <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />
+          {ch.label}{ch.key === 'slack' && ch.channel ? ` ${ch.channel}` : ''}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
 /*  AlertHistory view                                                 */
 /* ------------------------------------------------------------------ */
 
@@ -80,8 +118,9 @@ export default function AlertHistory({ refreshKey }: { refreshKey?: number }) {
   const [search, setSearch] = useState('')
   const [activeOnly, setActiveOnly] = useState(false)
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null)
+  const [refreshTick, setRefreshTick] = useState(0)
 
-  // Fetch history + stats whenever range / instance filter changes
+  // Fetch history + stats whenever range / instance filter / tick changes
   useEffect(() => {
     setLoading(true)
     setLoadError(null)
@@ -94,7 +133,15 @@ export default function AlertHistory({ refreshKey }: { refreshKey?: number }) {
       .then(([h, s]) => { setAlerts(h); setStats(s); setLastRefreshed(new Date()) })
       .catch((e: any) => { setAlerts([]); setStats(null); setLoadError(e?.message ?? 'Failed to load alert history') })
       .finally(() => setLoading(false))
-  }, [refreshKey, rangeHours, instanceFilter])
+  }, [refreshKey, rangeHours, instanceFilter, refreshTick])
+
+  // Auto-refresh every 60s
+  useEffect(() => {
+    const id = setInterval(() => {
+      setRefreshTick(t => t + 1)
+    }, 60_000)
+    return () => clearInterval(id)
+  }, [])
 
   // Severity / category / search / active filters applied in memory
   const filtered = useMemo(() => {
@@ -136,33 +183,38 @@ export default function AlertHistory({ refreshKey }: { refreshKey?: number }) {
         <div className="flex items-center gap-3 px-4 py-3 rounded-lg border border-red-500/30 bg-red-500/10 text-sm text-red-400">
           <XCircle className="w-4 h-4 shrink-0" />
           <span className="flex-1">{loadError}</span>
+          <button onClick={() => setLoadError(null)} className="text-xs hover:underline opacity-70 shrink-0">Dismiss</button>
         </div>
       )}
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-2">
         <h2 className="text-lg font-semibold flex items-center gap-2">
           <Bell className="w-5 h-5" /> Alert History
+          <button onClick={() => setView('discover')} title="About alert severity levels" className="text-[var(--dim)] hover:text-[var(--text)] transition-colors">
+            <HelpCircle size={13} />
+          </button>
         </h2>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <NotifyStatusBanner />
           {lastRefreshed && !loading && (
             <span className="text-[11px] text-[var(--dim)] hidden sm:block">
               Updated {lastRefreshed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
             </span>
           )}
-        <div className="flex items-center gap-1">
-          {RANGE_OPTIONS.map(o => (
-            <button
-              key={o.hours}
-              onClick={() => setRangeHours(o.hours)}
-              className={cn(
-                'px-3 py-1 rounded text-sm font-medium transition-colors',
-                rangeHours === o.hours
-                  ? 'bg-[var(--accent)] text-white'
-                  : 'bg-[var(--hover)] text-[var(--text-muted)] hover:text-[var(--text)]'
-              )}
-            >{o.label}</button>
-          ))}
-        </div>
+          <div className="flex items-center gap-1">
+            {RANGE_OPTIONS.map(o => (
+              <button
+                key={o.hours}
+                onClick={() => setRangeHours(o.hours)}
+                className={cn(
+                  'px-3 py-1 rounded text-sm font-medium transition-colors',
+                  rangeHours === o.hours
+                    ? 'bg-[var(--accent)] text-white'
+                    : 'bg-[var(--hover)] text-[var(--text-muted)] hover:text-[var(--text)]'
+                )}
+              >{o.label}</button>
+            ))}
+          </div>
         </div>
       </div>
 

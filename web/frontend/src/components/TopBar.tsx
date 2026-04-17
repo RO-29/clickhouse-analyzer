@@ -20,6 +20,7 @@ const VIEW_TITLES: Record<View, string> = {
   maintenance: 'Maintenance Windows',
   runcheck: 'Run Checks',
   discover: 'Feature Guide',
+  audit: 'Audit Log',
 }
 
 const PRESETS = ['15m', '1h', '6h', '24h', '7d']
@@ -433,6 +434,26 @@ export function TopBar({ onMobileMenuClick }: TopBarProps) {
             >
               {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
             </button>
+
+            {showTimeRange && (
+              /* Mobile: compact preset pills only */
+              <div className="flex md:hidden items-center gap-0.5 bg-[var(--surface)] rounded-md border border-[var(--border)] p-0.5">
+                {PRESETS.map(p => (
+                  <button
+                    key={p}
+                    onClick={() => setRangePreset(p)}
+                    className={cn(
+                      'px-1.5 py-1 rounded text-[10px] font-medium transition-colors',
+                      rangePreset === p
+                        ? 'bg-[var(--accent)] text-white'
+                        : 'text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--hover)]',
+                    )}
+                  >
+                    {p}
+                  </button>
+                ))}
+              </div>
+            )}
 
             {showTimeRange && (
               <div className="hidden md:flex items-center gap-2">

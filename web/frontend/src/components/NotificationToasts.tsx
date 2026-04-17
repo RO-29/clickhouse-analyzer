@@ -101,7 +101,7 @@ export function NotificationToasts() {
             title={notif.sessionId ? 'Click to open analysis' : undefined}
           >
             <p className="text-xs font-semibold text-[var(--text)]">{notif.title}</p>
-            <p className="text-xs text-[var(--dim)] truncate">{notif.body}</p>
+            <p className="text-xs text-[var(--dim)] truncate" title={notif.body}>{notif.body}</p>
             <p className="text-[10px] text-[var(--dim)] opacity-50 mt-0.5">{fmtTime(notif.timestamp)}</p>
           </button>
 

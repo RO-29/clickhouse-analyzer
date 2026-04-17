@@ -331,10 +331,28 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
             <span />
           </div>
           {instances.length === 0 ? (
-            <div className="flex flex-col items-center gap-3 px-4 py-12 text-[var(--dim)]">
-              <svg className="w-10 h-10 opacity-25" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" /></svg>
-              <p className="text-sm font-medium">No instances configured</p>
-              <p className="text-xs opacity-60 text-center max-w-xs">Add ClickHouse instance connection strings to your config file to start monitoring</p>
+            <div className="flex flex-col items-center gap-4 px-4 py-12 text-[var(--dim)]">
+              <svg className="w-10 h-10 opacity-25" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
+              </svg>
+              <div className="text-center">
+                <p className="text-sm font-semibold text-[var(--text)]">No instances configured</p>
+                <p className="text-xs opacity-60 mt-1">Add a ClickHouse instance to your config file to start monitoring</p>
+              </div>
+              <div className="w-full max-w-md">
+                <div className="text-[10px] text-[var(--dim)] uppercase tracking-wider mb-1.5 px-1">Example config</div>
+                <pre className="bg-[var(--surface)] border border-[var(--border)] rounded-lg px-4 py-3 text-[11px] font-mono text-[var(--text)] overflow-x-auto whitespace-pre leading-relaxed">
+{`instances:
+  - name: "my-clickhouse"
+    host: "localhost"
+    port: 9000
+    user: "default"
+    password: ""`}
+                </pre>
+              </div>
+              <p className="text-[11px] text-[var(--dim)] text-center max-w-xs">
+                Restart CH Analyzer after saving the config. The instance will appear here within seconds.
+              </p>
             </div>
           ) : (
             instances.map(inst => (
@@ -358,7 +376,7 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
           defaultOpen={freshAlerts.length <= 20}
         >
           <Card noPad>
-            <DataTable columns={alertCols} data={freshAlerts} pageSize={50} onRowClick={row => setSelectedAlert(row as Alert)} dense={denseMode} />
+            <DataTable columns={alertCols} data={freshAlerts} pageSize={50} onRowClick={row => setSelectedAlert(row as Alert)} dense={denseMode} showColumnToggle={true} storageKey="overview-alerts" />
           </Card>
         </Section>
       )}

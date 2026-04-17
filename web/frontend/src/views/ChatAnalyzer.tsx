@@ -549,13 +549,20 @@ export default function ChatAnalyzer() {
 
             {/* Message list */}
             <div className="flex-1 overflow-y-auto px-6 py-4 space-y-6">
-              {activeSession.messages.map((msg, i) => (
-                <ChatMessage
-                  key={msg.id}
-                  message={msg}
-                  isLast={i === activeSession.messages.length - 1}
-                />
-              ))}
+              {activeSession.messages.map((msg, i) => {
+                const isLast = i === activeSession.messages.length - 1
+                const lastUserMsg = isLast && msg.role === 'assistant' && msg.status === 'error'
+                  ? [...activeSession.messages].reverse().find(m => m.role === 'user')
+                  : undefined
+                return (
+                  <ChatMessage
+                    key={msg.id}
+                    message={msg}
+                    isLast={isLast}
+                    onRetry={lastUserMsg ? () => handleSend(lastUserMsg.content) : undefined}
+                  />
+                )
+              })}
               <div ref={messagesEndRef} />
             </div>
           </>

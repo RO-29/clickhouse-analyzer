@@ -31,6 +31,9 @@ import type {
   HealthResponse,
   CollectorMeta,
   RunCheckResponse,
+  SnoozeEntry,
+  AckEntry,
+  AuditEvent,
 } from '../types/api'
 
 const BASE = ''
@@ -194,10 +197,49 @@ export const api = {
       post<MaintenanceWindow>('/api/maintenance', { instance, reason, duration_minutes: durationMinutes, created_by: createdBy ?? 'user' }),
     delete: (id: string) => fetch(`/api/maintenance/${id}`, { method: 'DELETE' }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`) }),
   },
+  snooze: {
+    list: () => get<SnoozeEntry[]>('/api/alerts/snoozes'),
+    create: (dedupKey: string, instance: string, reason: string, durationMinutes: number) =>
+      post<SnoozeEntry>('/api/alerts/snooze', { dedup_key: dedupKey, instance, reason, snoozed_by: 'user', duration_minutes: durationMinutes }),
+    delete: (id: string) => fetch(`/api/alerts/snooze/${id}`, { method: 'DELETE' }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`) }),
+  },
+  ack: {
+    list: () => get<AckEntry[]>('/api/alerts/acks'),
+    create: (dedupKey: string, instance: string, reason: string) =>
+      post<AckEntry>('/api/alerts/ack', { dedup_key: dedupKey, instance, reason, acked_by: 'user' }),
+    delete: (id: string) => fetch(`/api/alerts/ack/${id}`, { method: 'DELETE' }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`) }),
+  },
+  healthTrend: (inst: string, from: number, to: number) =>
+    get<Array<{ ts: string; score: number; criticals: number; warns: number }>>(`/api/instances/${inst}/health-trend?from=${from}&to=${to}`),
+  notifyStatus: () => get<{
+    slack: { configured: boolean; channel: string; has_token: boolean }
+    pagerduty: { configured: boolean }
+    webhook: { configured: boolean; url: string }
+  }>('/api/notify/status'),
   health: () => get<HealthResponse>('/health'),
   collectors: () => get<CollectorMeta[]>('/api/collectors'),
   runCheck: (collectors: string[], instances: string[], from?: number, to?: number) =>
     post<RunCheckResponse>('/api/run-check', { collectors, instances, from, to }),
   forcePoll: () => post<{ status: string }>('/api/force-poll', {}),
+  schedules: {
+    list: () => get<any[]>('/api/schedules'),
+    create: (instance: string, collectorName: string, intervalMins: number) =>
+      post<any>('/api/schedules', { instance, collector_name: collectorName, interval_mins: intervalMins }),
+    delete: (id: string) => fetch(`/api/schedules/${id}`, { method: 'DELETE' }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`) }),
+    setEnabled: (id: string, enabled: boolean) =>
+      fetch(`/api/schedules/${id}/enabled`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`) }),
+  },
   partsAge: (inst: string) => get<PartsAgeEntry[]>(`/api/instances/${inst}/parts-age`),
+  audit: (opts?: { from?: number; to?: number; instance?: string; action?: string; limit?: number }) => {
+    const p = new URLSearchParams({ limit: String(opts?.limit ?? 200) })
+    if (opts?.from) p.set('from', String(opts.from))
+    if (opts?.to) p.set('to', String(opts.to))
+    if (opts?.instance) p.set('instance', opts.instance)
+    if (opts?.action) p.set('action', opts.action)
+    return get<AuditEvent[]>(`/api/audit?${p}`)
+  },
 }

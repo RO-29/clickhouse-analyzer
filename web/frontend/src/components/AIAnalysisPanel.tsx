@@ -145,7 +145,7 @@ function SessionCard({
 
       {/* Instance badge */}
       {session.instance && (
-        <div className="mt-1 text-[10px] text-purple-400/70 truncate">{session.instance}</div>
+        <div className="mt-1 text-[10px] text-purple-400/70 truncate" title={session.instance}>{session.instance}</div>
       )}
     </div>
   )
@@ -379,7 +379,7 @@ export function AIAnalysisPanel({
                   {/* Session title bar */}
                   <div className="flex-none px-4 py-2 border-b border-[var(--border)] flex items-center gap-2 bg-[var(--card)]">
                     <Sparkles size={12} className="text-purple-400 flex-none" />
-                    <span className="text-xs font-semibold text-[var(--text)] flex-1 truncate">{activeSession.name}</span>
+                    <span className="text-xs font-semibold text-[var(--text)] flex-1 truncate" title={activeSession.name}>{activeSession.name}</span>
                     {activeSession.instance && (
                       <span className="text-[10px] text-[var(--dim)] flex-none">{activeSession.instance}</span>
                     )}

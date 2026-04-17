@@ -128,6 +128,7 @@ function PricingPanel({ pricing }: { pricing: CostReport['pricing'] }) {
 /* ─── Per-instance detail ─────────────────────────────────────────────────── */
 
 function InstanceCostDetail({ instance }: { instance: string }) {
+  const { navToScanner } = useStore()
   const [report, setReport] = useState<CostReport | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -159,7 +160,10 @@ function InstanceCostDetail({ instance }: { instance: string }) {
   if (error) return (
     <div className="flex items-start gap-2 px-4 py-3 rounded-xl border border-red-500/30 bg-red-500/10 text-xs text-red-400">
       <AlertTriangle size={13} className="shrink-0 mt-0.5" />
-      {error}
+      <span className="flex-1">{error}</span>
+      <button onClick={load} className="flex items-center gap-1 hover:underline shrink-0">
+        <RefreshCw size={11} /> Retry
+      </button>
     </div>
   )
 
@@ -291,11 +295,18 @@ function InstanceCostDetail({ instance }: { instance: string }) {
                   const maxCost = filteredTables[0]?.monthly_usd ?? 1
                   const barW = maxCost > 0 ? (t.monthly_usd / maxCost) * 100 : 0
                   return (
-                    <tr key={i} className="border-b border-[var(--border)] hover:bg-[var(--hover)] transition-colors">
+                    <tr key={i} className="group border-b border-[var(--border)] hover:bg-[var(--hover)] transition-colors">
                       <td className="px-4 py-2 max-w-[220px]">
-                        <div className="flex items-baseline gap-0.5 min-w-0">
+                        <div className="flex items-center gap-0.5 min-w-0">
                           <span className="text-[var(--dim)] text-[10px] shrink-0">{t.database}.</span>
                           <span className="font-medium truncate" title={t.table}>{t.table}</span>
+                          <button
+                            onClick={() => navToScanner(instance, t.table)}
+                            className="ml-auto shrink-0 text-[10px] text-[var(--accent)] hover:underline opacity-0 group-hover:opacity-100 transition-opacity"
+                            title="Open in Table Scanner"
+                          >
+                            Inspect →
+                          </button>
                         </div>
                         {/* Mini bar */}
                         <div className="mt-1 h-1 rounded-full bg-[var(--surface)] overflow-hidden">

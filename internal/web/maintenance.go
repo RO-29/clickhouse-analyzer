@@ -54,6 +54,10 @@ func (s *Server) handleMaintenanceCreate(w http.ResponseWriter, r *http.Request)
 
 	duration := time.Duration(req.DurationMinutes) * time.Minute
 	window := s.maintenance.Add(req.Instance, req.Reason, req.CreatedBy, duration)
+
+	// Audit log — best-effort, don't fail the request on error.
+	_ = s.store.LogAction(r.Context(), req.Instance, "maintenance_create", req.CreatedBy, req.Reason)
+
 	writeJSON(w, http.StatusCreated, window)
 }
 

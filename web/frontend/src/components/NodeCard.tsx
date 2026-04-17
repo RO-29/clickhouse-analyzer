@@ -46,7 +46,7 @@ function AlertRow({
         <Badge className={cn('border shrink-0', sevColor(alert.severity))}>
           {alert.severity === 'critical' ? 'CRIT' : alert.severity === 'warn' ? 'WARN' : 'INFO'}
         </Badge>
-        <span className={cn('truncate flex-1', alert.possibly_recovered && 'opacity-60')}>
+        <span className={cn('truncate flex-1', alert.possibly_recovered && 'opacity-60')} title={alert.title}>
           {alert.title}
         </span>
         {alert.possibly_recovered && (
@@ -103,6 +103,7 @@ export function NodeCard({
   const [expanded, setExpanded] = useState(false)
   const [resolvingKey, setResolvingKey] = useState<string | null>(null)
   const [sparklines, setSparklines] = useState<{ cpu: number[]; mem: number[] } | null>(null)
+  const [healthTrend, setHealthTrend] = useState<number[]>([])
 
   // Fetch sparkline data (1h, 20 points) — lazy, fires after mount
   useEffect(() => {
@@ -119,6 +120,15 @@ export function NodeCard({
       if (cpu.length >= 2 || mem.length >= 2) setSparklines({ cpu, mem })
     }).catch(() => {})
     return () => { cancelled = true }
+  }, [instance.name])
+
+  // Fetch 24h health trend — decorative, silent failure
+  useEffect(() => {
+    const to = Math.floor(Date.now() / 1000)
+    const from = to - 24 * 3600
+    api.healthTrend(instance.name, from, to)
+      .then(pts => setHealthTrend(pts.map(p => p.score)))
+      .catch(() => {}) // silent failure — trend is decorative
   }, [instance.name])
 
   const handleResolve = useCallback(async (dedupKey: string) => {
@@ -178,13 +188,28 @@ export function NodeCard({
           )}
         </div>
 
-        {/* Health score */}
-        <span
-          className="text-[13px] font-bold tabular-nums w-7 text-right shrink-0"
-          style={{ color: scoreColor(instance.health_score) }}
-        >
-          {instance.health_score}
-        </span>
+        {/* Health score + 24h trend sparkline */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          <span
+            className="text-[13px] font-bold tabular-nums w-7 text-right"
+            style={{ color: scoreColor(instance.health_score) }}
+          >
+            {instance.health_score}
+          </span>
+          {healthTrend.length >= 2 && (
+            <svg width={60} height={16} className="opacity-60">
+              <title>24h health trend</title>
+              <polyline
+                points={healthTrend.map((v, i) => `${(i / (healthTrend.length - 1)) * 60},${16 - (v / 100) * 14}`).join(' ')}
+                fill="none"
+                stroke={healthTrend[healthTrend.length - 1] >= 80 ? '#22c55e' : healthTrend[healthTrend.length - 1] >= 50 ? '#f59e0b' : '#ef4444'}
+                strokeWidth={1.5}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          )}
+        </div>
 
         {/* Key metrics */}
         <div className="hidden sm:flex items-center gap-4 shrink-0">

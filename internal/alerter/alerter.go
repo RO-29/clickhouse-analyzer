@@ -75,6 +75,9 @@ type AlertManager struct {
 	// maintenance suppresses all alerts for instances in a maintenance window.
 	maintenance *MaintenanceStore
 
+	// snooze suppresses notifications for specific alerts by dedupKey.
+	snooze *SnoozeStore
+
 	// pagerduty sends critical alert events to PagerDuty (optional).
 	pagerduty *PagerDutyNotifier
 
@@ -128,6 +131,13 @@ func WithInhibition(rules []InhibitionRule) Option {
 // in maintenance are silently dropped (not persisted or sent to Slack).
 func WithMaintenance(store *MaintenanceStore) Option {
 	return func(am *AlertManager) { am.maintenance = store }
+}
+
+// WithSnooze installs a SnoozeStore. Alerts whose dedupKey is snoozed are
+// still tracked in activeAlerts (for state/resolution) but skip Slack/PD/webhook
+// notification for the duration of the snooze.
+func WithSnooze(store *SnoozeStore) Option {
+	return func(am *AlertManager) { am.snooze = store }
 }
 
 // WithPagerDuty installs a PagerDutyNotifier for critical alert escalation.
@@ -285,6 +295,15 @@ func (am *AlertManager) Process(alerts []collector.Alert) {
 		// detection, but don't mark the instance dirty (no Slack notification).
 		if am.inhibition != nil && am.inhibition.IsInhibited(*active, am.activeAlerts) {
 			am.logger.Debug("alert inhibited",
+				slog.String("dedup_key", key),
+				slog.String("instance", alert.Instance),
+			)
+			continue
+		}
+
+		// Snooze check: track the alert but skip Slack/PD/webhook notification.
+		if am.snooze != nil && am.snooze.IsSnoozed(key) {
+			am.logger.Debug("alert snoozed",
 				slog.String("dedup_key", key),
 				slog.String("instance", alert.Instance),
 			)

@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { ChevronDown, ChevronRight, Play, AlertTriangle, Zap, Search, Sparkles } from 'lucide-react'
+import { ChevronDown, ChevronRight, Play, AlertTriangle, Zap, Search, Sparkles, HelpCircle } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
@@ -192,7 +192,7 @@ function getAPExtraColumns(type: string) {
 /*  Advisor view                                                      */
 /* ------------------------------------------------------------------ */
 export default function Advisor() {
-  const { instances, navToTerminal, openTableDetail, selectedInstance } = useStore()
+  const { instances, navToTerminal, openTableDetail, selectedInstance, setView, navToScanner } = useStore()
   const { analyze } = useAIAnalysis(selectedInstance)
   const [instance, setInstance] = useState('')
   const [hasRun, setHasRun] = useState(false)
@@ -335,6 +335,13 @@ export default function Advisor() {
             Run at {analysisRunAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
           </span>
         )}
+        <button
+          onClick={() => setView('discover')}
+          title="Open Feature Guide"
+          className="text-[var(--dim)] hover:text-[var(--text)] transition-colors p-0.5 rounded ml-auto"
+        >
+          <HelpCircle size={14} />
+        </button>
       </div>
 
       {/* Summary tiles */}
@@ -409,6 +416,23 @@ export default function Advisor() {
                 },
                 { key: 'column_count', label: 'Columns', format: (v: any) => fmtNum(v) },
                 {
+                  key: '_scan',
+                  label: '',
+                  format: (_: any, row: any) => {
+                    const table = row.table || row.table_name || ''
+                    if (!table) return null
+                    return (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); navToScanner(inst, table) }}
+                        className="text-[10px] text-[var(--accent)] hover:underline whitespace-nowrap"
+                        title="Open in Table Scanner"
+                      >
+                        Scan →
+                      </button>
+                    )
+                  },
+                },
+                {
                   key: 'fix_sql',
                   label: '',
                   format: (v: any) => v ? <FixButton sql={v} instance={inst} /> : null,
@@ -421,6 +445,8 @@ export default function Advisor() {
                 if (bIssue !== aIssue) return bIssue - aIssue
                 return (b.compressed_bytes ?? 0) - (a.compressed_bytes ?? 0)
               }))}
+              showColumnToggle={true}
+              storageKey="advisor-compression"
             />
             <ShowAllButton sectionKey="compression" total={compression.data.length} />
           </>)}
@@ -486,6 +512,8 @@ export default function Advisor() {
                         { key: 'total_rows', label: 'Rows', format: (v: any) => fmtNum(v) },
                       ]}
                       data={flagged.sort((a: any, b: any) => (b.pk_bytes ?? 0) - (a.pk_bytes ?? 0))}
+                      showColumnToggle={true}
+                      storageKey="advisor-index-memory"
                     />
                   </>
                 )}
@@ -550,6 +578,8 @@ export default function Advisor() {
               onRowClick={(row) => {
                 if (row.sample_query) navToTerminal(row.sample_query, inst)
               }}
+              showColumnToggle={true}
+              storageKey="advisor-query-regression"
             />
             <ShowAllButton sectionKey="queryRegression" total={queryRegression.data.length} />
           </>)}
@@ -597,6 +627,8 @@ export default function Advisor() {
                 },
               ]}
               data={limitRows('newPatterns', newPatterns.data)}
+              showColumnToggle={true}
+              storageKey="advisor-new-patterns"
             />
             <ShowAllButton sectionKey="newPatterns" total={newPatterns.data.length} />
           </>)}
@@ -640,6 +672,23 @@ export default function Advisor() {
                 { key: 'engine', label: 'Engine' },
                 { key: 'metadata_modification_time', label: 'Last Modified' },
                 {
+                  key: '_scan',
+                  label: '',
+                  format: (_: any, row: any) => {
+                    const table = row.table || row.table_name || ''
+                    if (!table) return null
+                    return (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); navToScanner(inst, table) }}
+                        className="text-[10px] text-[var(--accent)] hover:underline whitespace-nowrap"
+                        title="Open in Table Scanner"
+                      >
+                        Scan →
+                      </button>
+                    )
+                  },
+                },
+                {
                   key: '_drop',
                   label: '',
                   format: (v: any) => v ? <FixButton sql={v} instance={inst} /> : null,
@@ -652,6 +701,8 @@ export default function Advisor() {
               onRowClick={(row) => {
                 if (row._drop) navToTerminal(row._drop, inst)
               }}
+              showColumnToggle={true}
+              storageKey="advisor-unused-tables"
             />
             <ShowAllButton sectionKey="unusedTables" total={unusedTables.data.length} />
           </>)}
@@ -764,6 +815,23 @@ export default function Advisor() {
                 { key: 'type', label: 'Current Type' },
                 { key: 'cardinality', label: 'Cardinality', format: (v: any) => fmtNum(v) },
                 {
+                  key: '_scan',
+                  label: '',
+                  format: (_: any, row: any) => {
+                    const table = row.table || row.table_name || ''
+                    if (!table) return null
+                    return (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); navToScanner(inst, table) }}
+                        className="text-[10px] text-[var(--accent)] hover:underline whitespace-nowrap"
+                        title="Open in Table Scanner"
+                      >
+                        Scan →
+                      </button>
+                    )
+                  },
+                },
+                {
                   key: '_fix',
                   label: '',
                   format: (v: any) => v ? <FixButton sql={v} instance={inst} /> : null,
@@ -773,6 +841,8 @@ export default function Advisor() {
                 ...r,
                 _fix: `ALTER TABLE \`${r.database}\`.\`${r.table_name}\` MODIFY COLUMN \`${r.column_name}\` LowCardinality(${r.type})`,
               })))}
+              showColumnToggle={true}
+              storageKey="advisor-cardinality"
             />
             <ShowAllButton sectionKey="cardinality" total={cardinality.data.length} />
           </>)}
@@ -833,8 +903,27 @@ export default function Advisor() {
                     ? <span className="text-sm">{v.map((r: any) => r.text).join('; ')}</span>
                     : null,
                 },
+                {
+                  key: '_scan',
+                  label: '',
+                  format: (_: any, row: any) => {
+                    const table = row.table || row.table_name || ''
+                    if (!table) return null
+                    return (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); navToScanner(inst, table) }}
+                        className="text-[10px] text-[var(--accent)] hover:underline whitespace-nowrap"
+                        title="Open in Table Scanner"
+                      >
+                        Scan →
+                      </button>
+                    )
+                  },
+                },
               ]}
               data={limitRows('storagePolicy', storagePolicy.data)}
+              showColumnToggle={true}
+              storageKey="advisor-storage-policy"
             />
             <ShowAllButton sectionKey="storagePolicy" total={storagePolicy.data.length} />
           </>)}
@@ -902,6 +991,8 @@ export default function Advisor() {
                       ]}
                       data={limitRows(`qap_${group.type}`, group.queries)}
                       onRowClick={(row) => row.sample_query && navToTerminal(row.sample_query, inst)}
+                      showColumnToggle={true}
+                      storageKey={`advisor-query-ap-${group.type}`}
                     />
                     <ShowAllButton sectionKey={`qap_${group.type}`} total={group.queries.length} />
                   </div>
@@ -990,6 +1081,8 @@ export default function Advisor() {
                       ]}
                       data={limitRows(`tap_${group.type}`, group.tables.map((t: any) => ({ ...t, severity: group.severity })))}
                       onRowClick={(row) => row.fix_hint && navToTerminal(row.fix_hint, inst)}
+                      showColumnToggle={true}
+                      storageKey={`advisor-table-ap-${group.type}`}
                     />
                     <ShowAllButton sectionKey={`tap_${group.type}`} total={group.tables.length} />
                   </div>
