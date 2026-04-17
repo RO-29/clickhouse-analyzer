@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef, type ChangeEvent } from 'react'
-import { Sparkles, X, Copy, Play, Maximize2, Skull, RefreshCw, ChevronDown, ChevronRight, Wrench, ArrowRight, BarChart2, AlertTriangle, ExternalLink, Zap } from 'lucide-react'
+import { Sparkles, X, Copy, Play, Maximize2, Minimize2, Skull, RefreshCw, ChevronDown, ChevronRight, Wrench, ArrowRight, BarChart2, AlertTriangle, ExternalLink, Zap } from 'lucide-react'
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, Cell, PieChart, Pie, Legend } from 'recharts'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
@@ -21,6 +21,7 @@ import type {
   HistoryS3,
   HistoryAsyncMetric,
   S3Stats,
+  S3LatencyByTableRow,
   PartsAgeEntry,
 } from '../types/api'
 import type { AnalyzeOptions } from '../hooks/useAIAnalysis'
@@ -257,6 +258,7 @@ interface QueryDetailPanelProps {
 function QueryDetailPanel({ pattern, timeline, tlLoading, instance, onClose, onDrillHash, onAnalyze, onShowQuery }: QueryDetailPanelProps) {
   const [panelTab, setPanelTab] = useState<'metrics' | 'query'>('metrics')
   const [sqlCopied, setSqlCopied] = useState(false)
+  const [patternFullscreen, setPatternFullscreen] = useState(false)
   const hash = String(pattern.normalized_query_hash)
 
   const handleCopySql = () => {
@@ -290,7 +292,12 @@ function QueryDetailPanel({ pattern, timeline, tlLoading, instance, onClose, onD
         onClick={onClose}
       />
       {/* Panel */}
-      <div className="fixed right-0 top-0 h-full z-50 flex flex-col bg-[var(--card)] border-l border-[var(--border)] shadow-2xl w-full sm:w-[45vw] sm:min-w-[440px] max-w-full">
+      <div className={cn(
+        'fixed z-50 flex flex-col bg-[var(--card)] border-[var(--border)] shadow-2xl',
+        patternFullscreen
+          ? 'inset-0'
+          : 'right-0 top-0 h-full border-l w-full sm:w-[45vw] sm:min-w-[440px] max-w-full',
+      )}>
 
         {/* ── Header ── */}
         <div className="shrink-0 border-b border-[var(--border)] bg-[var(--surface)]">
@@ -310,6 +317,13 @@ function QueryDetailPanel({ pattern, timeline, tlLoading, instance, onClose, onD
               title="View full query"
             >
               <Maximize2 size={12} />
+            </button>
+            <button
+              onClick={() => setPatternFullscreen(v => !v)}
+              className="shrink-0 p-1 rounded text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--hover)] transition-colors"
+              title={patternFullscreen ? 'Restore panel' : 'Maximize panel'}
+            >
+              {patternFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
             </button>
             <button
               onClick={onClose}
@@ -1962,6 +1976,7 @@ function MVTab({ instance, from, to, refreshKey, onAnalyze }: TabProps) {
 function S3Tab({ instance, from, to, refreshKey, onAnalyze, onShowQuery }: TabProps) {
   const [history, setHistory] = useState<HistoryS3[]>([])
   const [stats, setStats] = useState<S3Stats | null>(null)
+  const [latencyByTable, setLatencyByTable] = useState<S3LatencyByTableRow[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -1969,8 +1984,12 @@ function S3Tab({ instance, from, to, refreshKey, onAnalyze, onShowQuery }: TabPr
     let c = false
     setLoading(true)
     setError(null)
-    Promise.all([api.history.s3(instance, from, to), api.s3Stats(instance)])
-      .then(([h, s]) => { if (!c) { setHistory(h); setStats(s) } })
+    Promise.all([
+      api.history.s3(instance, from, to),
+      api.s3Stats(instance),
+      api.s3LatencyByTable(instance, from, to),
+    ])
+      .then(([h, s, lbt]) => { if (!c) { setHistory(h); setStats(s); setLatencyByTable(lbt) } })
       .catch(e => { if (!c) setError(e.message) })
       .finally(() => { if (!c) setLoading(false) })
     return () => { c = true }
@@ -2047,21 +2066,20 @@ function S3Tab({ instance, from, to, refreshKey, onAnalyze, onShowQuery }: TabPr
           />
         </Card>
       )}
-      {stats?.latency_by_table && stats.latency_by_table.length > 0 && (
-        <Card>
-          <div className="text-xs font-medium text-[var(--dim)] uppercase tracking-wider mb-2">S3 Latency by Table</div>
-          <DataTable
-            columns={[
-              { key: 'table_name', label: 'Table', tooltip: 'Table reading data from S3 (S3-backed or tiered storage)' },
-              { key: 'queries', label: 'Queries', tooltip: 'Number of distinct query patterns that accessed this table via S3', format: (v: any) => fmtNum(v) },
-              { key: 'avg_latency_ms', label: 'Avg ms', tooltip: 'Average S3 request latency across all queries for this table', format: (v: any) => fmtDuration(Number(v ?? 0)) },
-              { key: 'total_requests', label: 'Total Requests', tooltip: 'Total number of S3 API calls made for this table', format: (v: any) => fmtNum(v) },
-            ]}
-            data={stats.latency_by_table}
-            emptyText="No table data"
-          />
-        </Card>
-      )}
+      <Card>
+        <div className="text-xs font-medium text-[var(--dim)] uppercase tracking-wider mb-2">BY TABLE</div>
+        <DataTable
+          columns={[
+            { key: 'table_name', label: 'Table', tooltip: 'Table reading data from S3 within the selected time range' },
+            { key: 'avg_latency_ms', label: 'Avg Latency ms', tooltip: 'Average S3 read latency across all queries touching this table', format: (v: any) => fmtDuration(Number(v ?? 0)) },
+            { key: 's3_requests', label: 'S3 Requests', tooltip: 'Total number of S3 API requests made for this table', format: (v: any) => fmtNum(v) },
+            { key: 'total_s3_bytes', label: 'Total S3 Bytes', tooltip: 'Total bytes read from S3 for this table', format: (v: any) => fmtBytes(v) },
+            { key: 'query_count', label: 'Queries', tooltip: 'Number of queries that accessed this table via S3', format: (v: any) => fmtNum(v) },
+          ]}
+          data={latencyByTable}
+          emptyText="No S3 table data in this time range"
+        />
+      </Card>
     </div>
   )
 }

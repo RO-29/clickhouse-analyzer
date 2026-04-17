@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Search, RefreshCw, ChevronDown, ChevronRight,
   Database, HardDrive, Activity, Code, AlertTriangle,
-  Sparkles, X, Loader2,
+  Sparkles, X, Loader2, Maximize2, Minimize2,
 } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
@@ -267,6 +267,7 @@ function TableDetailModal({
   const [partitionRows, setPartitionRows] = useState<PartitionDiskRow[] | null>(null)
   const [partitionsLoading, setPartitionsLoading] = useState(false)
   const [partitionsError, setPartitionsError] = useState<string | null>(null)
+  const [modalFullscreen, setModalFullscreen] = useState(false)
 
   // Auto-load partition data when modal opens
   useEffect(() => {
@@ -311,7 +312,12 @@ function TableDetailModal({
 
       {/* Modal */}
       <div
-        className="relative z-10 w-full max-w-4xl max-h-[90vh] flex flex-col rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-2xl"
+        className={cn(
+          'relative z-10 flex flex-col border border-[var(--border)] bg-[var(--card)] shadow-2xl',
+          modalFullscreen
+            ? 'fixed inset-0 rounded-none'
+            : 'w-full max-w-4xl max-h-[90vh] rounded-xl',
+        )}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -349,6 +355,13 @@ function TableDetailModal({
             >
               <Sparkles size={12} />
               Analyze with AI
+            </button>
+            <button
+              onClick={() => setModalFullscreen(v => !v)}
+              className="p-1.5 rounded-lg text-[var(--dim)] hover:text-[var(--fg)] hover:bg-[var(--hover)] transition-colors"
+              title={modalFullscreen ? 'Restore modal' : 'Maximize modal'}
+            >
+              {modalFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
             </button>
             <button
               onClick={onClose}

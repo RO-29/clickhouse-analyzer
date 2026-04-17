@@ -187,6 +187,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/query/history", s.handleQueryHistory)
 	mux.HandleFunc("GET /api/instances/{name}/alerts-at", s.handleAlertsAt)
 	mux.HandleFunc("GET /api/instances/{name}/s3-stats", s.handleS3Stats)
+	mux.HandleFunc("GET /api/instances/{name}/s3-latency-by-table", s.handleS3LatencyByTable)
 	mux.HandleFunc("GET /api/instances/{name}/replication", s.handleReplication)
 
 	// Compare endpoints (from compare.go).

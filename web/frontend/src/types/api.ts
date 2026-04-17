@@ -219,6 +219,14 @@ export interface S3Stats {
   latency_by_table: Record<string, any>[]
 }
 
+export interface S3LatencyByTableRow {
+  table_name: string
+  query_count: number
+  avg_latency_ms: number
+  total_s3_bytes: number
+  s3_requests: number
+}
+
 export interface LogEntry {
   time: string; level: string; msg: string; attrs: Record<string, any>
 }

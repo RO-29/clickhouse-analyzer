@@ -19,6 +19,7 @@ import type {
   HistoryS3,
   HistoryAsyncMetric,
   S3Stats,
+  S3LatencyByTableRow,
   LogEntry,
   CHLogEntry,
   Suggestion,
@@ -110,6 +111,8 @@ export const api = {
   disks: (inst: string) => get<DiskInfo[]>(`/api/instances/${inst}/disks`),
   mvs: (inst: string) => get<Record<string, any>[]>(`/api/instances/${inst}/mvs`),
   s3Stats: (inst: string) => get<S3Stats>(`/api/instances/${inst}/s3-stats`),
+  s3LatencyByTable: (inst: string, from: number, to: number) =>
+    get<S3LatencyByTableRow[]>(`/api/instances/${inst}/s3-latency-by-table?from=${from}&to=${to}`),
   suggestions: (category: string) => get<Suggestion>(`/api/suggestions/${category}`),
   terminal: {
     execute: (instance: string, query: string, limit = 1000) =>
