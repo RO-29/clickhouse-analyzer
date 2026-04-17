@@ -13,7 +13,7 @@ const TIME_WINDOWS = [
   { label: '6h', minutes: 360 },
   { label: '24h', minutes: 1440 },
 ] as const
-const LIMITS = [100, 250, 500, 1000] as const
+const LIMITS = [100, 250, 500, 1000, 0] as const
 
 const LEVEL_COLOR: Record<string, string> = {
   Fatal: 'text-red-500 font-bold',
@@ -45,7 +45,7 @@ export default function CHLogs({ refreshKey }: { refreshKey?: number }) {
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [minutes, setMinutes] = useState(60)
-  const [limit, setLimit] = useState(200)
+  const [limit, setLimit] = useState(250)
   const [logs, setLogs] = useState<CHLogEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -70,7 +70,8 @@ export default function CHLogs({ refreshKey }: { refreshKey?: number }) {
     setError(null)
     try {
       const lvl = level === 'All' ? undefined : level
-      const data = await api.chLogs(inst, lvl, debouncedSearch || undefined, minutes, limit)
+      const effectiveLimit = limit === 0 ? 10000 : limit
+      const data = await api.chLogs(inst, lvl, debouncedSearch || undefined, minutes, effectiveLimit)
       setLogs(data)
       setLoadedAt(new Date())
     } catch (e: any) {
@@ -156,7 +157,7 @@ export default function CHLogs({ refreshKey }: { refreshKey?: number }) {
           className="rounded-md border border-[var(--border)] bg-[var(--card)] px-3 py-1.5 text-sm text-[var(--fg)] focus:outline-none focus:border-[var(--accent)]"
         >
           {LIMITS.map((l) => (
-            <option key={l} value={l}>{l}</option>
+            <option key={l} value={l}>{l === 0 ? 'All' : l}</option>
           ))}
         </select>
 

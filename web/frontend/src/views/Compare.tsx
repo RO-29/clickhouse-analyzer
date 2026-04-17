@@ -1635,21 +1635,23 @@ function CrossQueryView({ from, to }: { from: number; to: number }) {
 /*  Timeline metrics list                                             */
 /* ------------------------------------------------------------------ */
 const TIMELINE_METRICS = [
-  'MemoryResident',
-  'OSMemoryTotal',
-  'LoadAverage1',
-  'Query',
-  'Merge',
-  'PartMutation',
-  'MemoryTracking',
-  'MarkCacheBytes',
-  'CGroupMemoryUsed',
-  'OSMemoryAvailable',
+  'system.metrics.MemoryResident',
+  'system.metrics.OSMemoryTotal',
+  'system.metrics.LoadAverage1',
+  'system.metrics.Query',
+  'system.metrics.Merge',
+  'system.metrics.PartMutation',
+  'system.metrics.MemoryTracking',
+  'system.metrics.MarkCacheBytes',
+  'system.memory.used_percent',
+  'system.memory.rss_percent',
 ]
 
 const BYTES_METRICS = new Set([
-  'MemoryResident', 'OSMemoryTotal', 'MemoryTracking', 'MarkCacheBytes',
-  'CGroupMemoryUsed', 'OSMemoryAvailable',
+  'system.metrics.MemoryResident',
+  'system.metrics.OSMemoryTotal',
+  'system.metrics.MemoryTracking',
+  'system.metrics.MarkCacheBytes',
 ])
 
 function TimelineView({ from, to }: { from: number; to: number }) {
@@ -1681,7 +1683,7 @@ function TimelineView({ from, to }: { from: number; to: number }) {
           className="rounded border border-[var(--border)] bg-[var(--card)] px-2 py-1 text-xs focus:outline-none focus:border-[var(--accent)]"
         >
           {TIMELINE_METRICS.map(m => (
-            <option key={m} value={m}>{m}</option>
+            <option key={m} value={m}>{m.replace(/^system\.(metrics|memory)\./, '')}</option>
           ))}
         </select>
         {loading && <Loader2 size={13} className="animate-spin text-[var(--dim)]" />}

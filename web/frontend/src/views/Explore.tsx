@@ -1464,8 +1464,12 @@ function LiveTab({ instance, onShowQuery }: { instance: string; onShowQuery: (q:
                   <SqlHighlight text={q} maxLen={100} />
                 </span>
                 {/* Memory */}
-                <span className="text-xs text-[var(--dim)] w-16 text-right shrink-0 tabular-nums">
-                  {r.memory_usage ? fmtBytes(r.memory_usage) : ''}
+                <span className="text-xs text-[var(--dim)] w-16 text-right shrink-0 tabular-nums" title="Memory usage">
+                  {r.memory || ''}
+                </span>
+                {/* Read bytes */}
+                <span className="text-xs text-[var(--dim)] w-16 text-right shrink-0 tabular-nums" title="Read bytes">
+                  {r.read_size || ''}
                 </span>
                 <button onClick={() => onShowQuery(q)}
                   className="shrink-0 p-1 rounded text-[var(--dim)] hover:text-[var(--accent)] opacity-0 group-hover:opacity-100 transition-all"
@@ -2450,8 +2454,8 @@ function QueryAPCard({ group, onRunQuery }: { group: any; onRunQuery: (q: string
       <button onClick={() => setOpen(o => !o)} className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-[var(--hover)] transition-colors">
         {open ? <ChevronDown size={14} className="text-[var(--dim)] shrink-0" /> : <ChevronRight size={14} className="text-[var(--dim)] shrink-0" />}
         <span className="font-medium text-sm flex-1">{group.title}</span>
-        <SevBadge s={group.severity} />
-        <span className={cn('text-xs font-semibold ml-2 px-2 py-0.5 rounded-full', hasIssues ? group.severity === 'critical' ? 'bg-red-500/15 text-red-400' : 'bg-yellow-500/15 text-yellow-400' : 'bg-green-500/15 text-green-400')}>
+        {hasIssues && <SevBadge s={group.severity} />}
+        <span className={cn('text-xs font-semibold ml-2 px-2 py-0.5 rounded-full', hasIssues ? group.severity === 'critical' ? 'bg-red-500/15 text-red-400' : 'bg-yellow-500/15 text-yellow-400' : 'bg-[var(--hover)] text-[var(--dim)]')}>
           {group.count} pattern{group.count !== 1 ? 's' : ''}
         </span>
       </button>
@@ -2492,8 +2496,8 @@ function TableAPCard({ group, onRunQuery }: { group: any; onRunQuery: (q: string
       <button onClick={() => setOpen(o => !o)} className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-[var(--hover)] transition-colors">
         {open ? <ChevronDown size={14} className="text-[var(--dim)] shrink-0" /> : <ChevronRight size={14} className="text-[var(--dim)] shrink-0" />}
         <span className="font-medium text-sm flex-1">{group.title}</span>
-        <SevBadge s={group.severity} />
-        <span className={cn('text-xs font-semibold ml-2 px-2 py-0.5 rounded-full', hasIssues ? group.severity === 'critical' ? 'bg-red-500/15 text-red-400' : 'bg-yellow-500/15 text-yellow-400' : 'bg-green-500/15 text-green-400')}>
+        {hasIssues && <SevBadge s={group.severity} />}
+        <span className={cn('text-xs font-semibold ml-2 px-2 py-0.5 rounded-full', hasIssues ? group.severity === 'critical' ? 'bg-red-500/15 text-red-400' : 'bg-yellow-500/15 text-yellow-400' : 'bg-[var(--hover)] text-[var(--dim)]')}>
           {group.count} table{group.count !== 1 ? 's' : ''}
         </span>
       </button>
