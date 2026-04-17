@@ -142,7 +142,7 @@ function Layout() {
           'flex-1 w-full',
           view === 'analyzer' || view === 'terminal'
             ? 'overflow-hidden flex flex-col'
-            : 'p-3 sm:p-6 max-w-[1600px] mx-auto overflow-auto',
+            : 'p-3 sm:p-6 max-w-[1600px] mx-auto overflow-y-auto overflow-x-hidden',
         )}>
           {/* Chat Analyzer: mount once and keep alive (hidden when inactive) to preserve session */}
           {analyzerMounted && (
