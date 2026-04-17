@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -85,62 +86,108 @@ func (s *Store) LogAction(ctx context.Context, instance, action, actor, details 
 
 // GetAuditLog returns recent audit events sorted by ts DESC.
 // Supports optional filters: instance, action, from/to timestamps, limit.
+// When opts.Instance is empty, fans out across all registered instances and merges results.
 func (s *Store) GetAuditLog(ctx context.Context, opts AuditLogQuery) ([]AuditEvent, error) {
 	if opts.Limit <= 0 {
 		opts.Limit = 200
 	}
 
-	// Determine which client to use.
-	// If instance is specified, query that instance; otherwise query first available.
-	client := s.clientFor(opts.Instance)
-	if client == nil {
-		return nil, fmt.Errorf("store: GetAuditLog: no client available")
-	}
-
-	var whereClauses []string
-
-	if opts.Instance != "" {
-		whereClauses = append(whereClauses, fmt.Sprintf("instance = '%s'", escape(opts.Instance)))
-	}
-	if opts.Action != "" {
-		whereClauses = append(whereClauses, fmt.Sprintf("action = '%s'", escape(opts.Action)))
-	}
-	if !opts.From.IsZero() {
-		whereClauses = append(whereClauses, fmt.Sprintf("ts >= '%s'", opts.From.Format("2006-01-02 15:04:05")))
-	}
-	if !opts.To.IsZero() {
-		whereClauses = append(whereClauses, fmt.Sprintf("ts <= '%s'", opts.To.Format("2006-01-02 15:04:05")))
-	}
-
-	whereSQL := ""
-	if len(whereClauses) > 0 {
-		whereSQL = "WHERE " + strings.Join(whereClauses, " AND ")
-	}
-
-	sql := fmt.Sprintf(`SELECT id, instance, action, actor, details, ts
-		FROM %s.audit_log
-		%s
-		ORDER BY ts DESC
-		LIMIT %d`,
-		s.database, whereSQL, opts.Limit)
-
-	rows, err := client.Query(ctx, sql)
-	if err != nil {
-		return nil, fmt.Errorf("store: GetAuditLog: %w", err)
-	}
-
-	var events []AuditEvent
-	for _, row := range rows {
-		ev := AuditEvent{
-			ID:       getString(row, "id"),
-			Instance: getString(row, "instance"),
-			Action:   getString(row, "action"),
-			Actor:    getString(row, "actor"),
-			Details:  getString(row, "details"),
+	// Build WHERE clauses (instance filter only applied when a specific instance is requested).
+	buildWhere := func(includeInstance bool) string {
+		var whereClauses []string
+		if includeInstance && opts.Instance != "" {
+			whereClauses = append(whereClauses, fmt.Sprintf("instance = '%s'", escape(opts.Instance)))
 		}
-		tsStr := getString(row, "ts")
-		ev.Ts, _ = time.Parse("2006-01-02 15:04:05", tsStr)
-		events = append(events, ev)
+		if opts.Action != "" {
+			whereClauses = append(whereClauses, fmt.Sprintf("action = '%s'", escape(opts.Action)))
+		}
+		if !opts.From.IsZero() {
+			whereClauses = append(whereClauses, fmt.Sprintf("ts >= '%s'", opts.From.Format("2006-01-02 15:04:05")))
+		}
+		if !opts.To.IsZero() {
+			whereClauses = append(whereClauses, fmt.Sprintf("ts <= '%s'", opts.To.Format("2006-01-02 15:04:05")))
+		}
+		if len(whereClauses) > 0 {
+			return "WHERE " + strings.Join(whereClauses, " AND ")
+		}
+		return ""
 	}
-	return events, nil
+
+	parseRows := func(rows []map[string]interface{}) []AuditEvent {
+		var events []AuditEvent
+		for _, row := range rows {
+			ev := AuditEvent{
+				ID:       getString(row, "id"),
+				Instance: getString(row, "instance"),
+				Action:   getString(row, "action"),
+				Actor:    getString(row, "actor"),
+				Details:  getString(row, "details"),
+			}
+			tsStr := getString(row, "ts")
+			ev.Ts, _ = time.Parse("2006-01-02 15:04:05", tsStr)
+			events = append(events, ev)
+		}
+		return events
+	}
+
+	// If a specific instance is requested, query only that instance.
+	if opts.Instance != "" {
+		client := s.clientFor(opts.Instance)
+		if client == nil {
+			return nil, fmt.Errorf("store: GetAuditLog: no client available for instance %q", opts.Instance)
+		}
+		whereSQL := buildWhere(true)
+		sql := fmt.Sprintf(`SELECT id, instance, action, actor, details, ts
+			FROM %s.audit_log
+			%s
+			ORDER BY ts DESC
+			LIMIT %d`,
+			s.database, whereSQL, opts.Limit)
+		rows, err := client.Query(ctx, sql)
+		if err != nil {
+			return nil, fmt.Errorf("store: GetAuditLog: %w", err)
+		}
+		return parseRows(rows), nil
+	}
+
+	// No instance filter — fan out across all instances and merge.
+	names := s.manager.Names()
+	if len(names) == 0 {
+		return nil, fmt.Errorf("store: GetAuditLog: no clients available")
+	}
+
+	whereSQL := buildWhere(false)
+	var merged []AuditEvent
+	seen := make(map[string]bool)
+
+	for _, name := range names {
+		client := s.manager.Get(name)
+		if client == nil {
+			continue
+		}
+		sql := fmt.Sprintf(`SELECT id, instance, action, actor, details, ts
+			FROM %s.audit_log
+			%s
+			ORDER BY ts DESC
+			LIMIT %d`,
+			s.database, whereSQL, opts.Limit)
+		rows, err := client.Query(ctx, sql)
+		if err != nil {
+			slog.Debug("store: GetAuditLog: query failed", "instance", name, "err", err)
+			continue
+		}
+		for _, ev := range parseRows(rows) {
+			if !seen[ev.ID] {
+				seen[ev.ID] = true
+				merged = append(merged, ev)
+			}
+		}
+	}
+
+	// Sort merged results by ts DESC and cap at limit.
+	sort.Slice(merged, func(i, j int) bool { return merged[i].Ts.After(merged[j].Ts) })
+	if len(merged) > opts.Limit {
+		merged = merged[:opts.Limit]
+	}
+	return merged, nil
 }

@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -77,6 +78,11 @@ func (s *Server) handleMaintenanceDelete(w http.ResponseWriter, r *http.Request)
 	if !s.maintenance.Delete(id) {
 		writeErr(w, http.StatusNotFound, "maintenance window not found")
 		return
+	}
+
+	// Audit log — best-effort, don't fail the request on error.
+	if err := s.store.LogAction(r.Context(), "", "maintenance_delete", r.RemoteAddr, id); err != nil {
+		slog.Debug("audit log failed for maintenance_delete", "err", err)
 	}
 
 	w.WriteHeader(http.StatusNoContent)

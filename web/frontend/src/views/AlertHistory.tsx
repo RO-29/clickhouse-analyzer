@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react'
-import { Bell, CheckCircle, ChevronDown, ChevronRight, Clock, GitMerge, HelpCircle, Search, XCircle } from 'lucide-react'
+import { Bell, CheckCircle, ChevronDown, ChevronRight, Clock, GitMerge, HelpCircle, RefreshCw, Search, XCircle } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { api } from '../lib/api'
 import { cn } from '../lib/utils'
@@ -360,6 +360,14 @@ export default function AlertHistory({ refreshKey }: { refreshKey?: number }) {
               Updated {lastRefreshed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
             </span>
           )}
+          <button
+            onClick={() => setRefreshTick(t => t + 1)}
+            disabled={loading}
+            className="flex items-center gap-1 px-2 py-1 rounded border border-[var(--border)] text-xs text-[var(--dim)] hover:text-[var(--fg)] hover:bg-[var(--hover)] transition-colors disabled:opacity-50"
+          >
+            <RefreshCw size={10} className={loading ? 'animate-spin' : ''} />
+            {loading ? 'Loading…' : 'Refresh'}
+          </button>
           <div className="flex items-center gap-1">
             {RANGE_OPTIONS.map(o => (
               <button

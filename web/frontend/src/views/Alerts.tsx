@@ -617,6 +617,8 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null)
+  const [manualTick, setManualTick] = useState(0)
   const [forcingPoll, setForcingPoll] = useState(false)
   const [forcePollMsg, setForcePollMsg] = useState('')
 
@@ -755,7 +757,7 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
       }
       try {
         const [active, history] = await Promise.all([api.alerts.active(), api.alerts.history()])
-        if (!cancelled) { setActiveAlerts(active); setHistoryAlerts(history); setLoadError(null) }
+        if (!cancelled) { setActiveAlerts(active); setHistoryAlerts(history); setLoadError(null); setLastRefreshed(new Date()) }
       } catch (e: any) {
         if (!cancelled) setLoadError(e?.message ?? 'Failed to load alerts')
       } finally {
@@ -768,7 +770,7 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
     }
     load()
     return () => { cancelled = true }
-  }, [customFrom, customTo, refreshKey])
+  }, [customFrom, customTo, refreshKey, manualTick])
 
   const allAlerts = useMemo(() => {
     const map = new Map<number, Alert>()
@@ -1079,6 +1081,21 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
         <button onClick={() => setView('discover')} title="About alert severity levels" className="text-[var(--dim)] hover:text-[var(--text)] transition-colors">
           <HelpCircle size={13} />
         </button>
+        <div className="ml-auto flex items-center gap-2">
+          {lastRefreshed && !loading && (
+            <span className="text-[10px] text-[var(--dim)] hidden sm:block">
+              Updated {lastRefreshed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+            </span>
+          )}
+          <button
+            onClick={() => setManualTick(t => t + 1)}
+            disabled={loading || refreshing}
+            className="flex items-center gap-1 px-2 py-1 rounded border border-[var(--border)] text-xs text-[var(--dim)] hover:text-[var(--fg)] hover:bg-[var(--hover)] transition-colors disabled:opacity-50"
+          >
+            <RefreshCw size={10} className={(loading || refreshing) ? 'animate-spin' : ''} />
+            {(loading || refreshing) ? 'Loading…' : 'Refresh'}
+          </button>
+        </div>
       </div>
 
       {/* ---- Stat cards + actions ---- */}

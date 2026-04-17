@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 
 	"github.com/rohitjain/ch-analyzer/internal/alerter"
@@ -48,6 +49,12 @@ func (s *Server) handleAckCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	entry := s.ackStore.Add(req.DedupKey, req.Instance, req.Reason, req.AckedBy)
+
+	// Audit log — best-effort, don't fail the request on error.
+	if err := s.store.LogAction(r.Context(), req.Instance, "alert_ack", req.AckedBy, req.DedupKey); err != nil {
+		slog.Debug("audit log failed for alert_ack", "err", err)
+	}
+
 	writeJSON(w, http.StatusCreated, entry)
 }
 
