@@ -9,7 +9,7 @@ import (
 
 // SLOReport summarises uptime and health-score percentiles for a given time window.
 type SLOReport struct {
-	UptimePct  float64 `json:"uptime_pct"`  // % polls where score > 0
+	UptimePct  float64 `json:"uptime_pct"`  // % polls where score > 0 (instance was up and not totally degraded)
 	HealthyPct float64 `json:"healthy_pct"` // % polls where score >= 70
 	P50Score   float64 `json:"p50_score"`
 	P95Score   float64 `json:"p95_score"`
@@ -31,15 +31,16 @@ func (s *Server) handleSLO(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
+	db := s.store.Database()
 	sql := fmt.Sprintf(`SELECT
-  countIf(score > 0) AS up_polls,
-  countIf(score >= 70) AS healthy_polls,
   count() AS total_polls,
+  countIf(score >= 50) AS up_polls,
+  countIf(score >= 70) AS healthy_polls,
   quantile(0.5)(score) AS p50,
   quantile(0.95)(score) AS p95
-FROM ch_analyzer.health_snapshots
+FROM %s.health_snapshots
 WHERE instance = '%s' AND ts >= now() - INTERVAL %d DAY`,
-		escapeSQLString(instance), windowDays)
+		db, escapeSQLString(instance), windowDays)
 
 	rows, err := client.Query(ctx, sql)
 	if err != nil {
@@ -59,8 +60,7 @@ WHERE instance = '%s' AND ts >= now() - INTERVAL %d DAY`,
 			report.P50Score = toFloat64(row["p50"])
 			report.P95Score = toFloat64(row["p95"])
 		}
-		// When total_polls == 0, UptimePct/HealthyPct/P50Score/P95Score stay 0
-		// and the frontend checks TotalPolls == 0 to show "No data yet".
+		// When total_polls == 0, values stay 0 and frontend shows "No data yet".
 	}
 
 	writeJSON(w, http.StatusOK, report)

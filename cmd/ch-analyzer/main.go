@@ -665,14 +665,12 @@ func runCollectionCB(
 		}
 
 		// Record health snapshot for trend tracking.
+		// Use the analyzer's deduplicated health score (not raw alert counts).
 		{
 			criticals := alertCounts["critical"]
 			warns := alertCounts["warn"]
 			infos := alertCounts["info"]
-			score := float32(100) - float32(criticals)*15 - float32(warns)*5
-			if score < 0 {
-				score = 0
-			}
+			score := float32(analysisResult.HealthScore.Score)
 			snapCtx, snapCancel := context.WithTimeout(ctx, 5*time.Second)
 			if err := metricStore.RecordHealthSnapshot(snapCtx, instanceName, score, criticals, warns, infos); err != nil {
 				slog.Debug("failed to record health snapshot", "instance", instanceName, "err", err)

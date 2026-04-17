@@ -120,6 +120,9 @@ func (s *Store) migrateAlertUpdatedAt() {
 // Close is a no-op for ClickHouse.
 func (s *Store) Close() error { return nil }
 
+// Database returns the configured database name.
+func (s *Store) Database() string { return s.database }
+
 // clientFor returns the CH client for the given instance name.
 // Falls back to first available client if not found.
 func (s *Store) clientFor(instance string) *chclient.Client {
