@@ -69,44 +69,53 @@ func (ss *ScheduleStore) Add(instance, collectorName string, intervalMins int) *
 // Delete removes a schedule by ID. Returns true if it existed.
 func (ss *ScheduleStore) Delete(id string) bool {
 	ss.mu.Lock()
-	defer ss.mu.Unlock()
-
+	found := false
 	for i, e := range ss.entries {
 		if e.ID == id {
 			ss.entries = append(ss.entries[:i], ss.entries[i+1:]...)
-			go ss.save()
-			return true
+			found = true
+			break
 		}
 	}
-	return false
+	ss.mu.Unlock()
+	if found {
+		ss.save()
+	}
+	return found
 }
 
 // SetEnabled enables or disables a schedule. Returns true if found.
 func (ss *ScheduleStore) SetEnabled(id string, enabled bool) bool {
 	ss.mu.Lock()
-	defer ss.mu.Unlock()
-
+	found := false
 	for _, e := range ss.entries {
 		if e.ID == id {
 			e.Enabled = enabled
-			go ss.save()
-			return true
+			found = true
+			break
 		}
 	}
-	return false
+	ss.mu.Unlock()
+	if found {
+		ss.save()
+	}
+	return found
 }
 
 // UpdateLastRun sets LastRunAt to now for the given schedule ID.
 func (ss *ScheduleStore) UpdateLastRun(id string) {
 	ss.mu.Lock()
-	defer ss.mu.Unlock()
-
+	found := false
 	for _, e := range ss.entries {
 		if e.ID == id {
 			e.LastRunAt = time.Now()
-			go ss.save()
-			return
+			found = true
+			break
 		}
+	}
+	ss.mu.Unlock()
+	if found {
+		ss.save()
 	}
 }
 
@@ -183,9 +192,19 @@ func (ss *ScheduleStore) save() {
 		slog.Warn("schedule: failed to marshal entries", "error", err)
 		return
 	}
-	if err := os.WriteFile(ss.path, data, 0644); err != nil {
+	if err := atomicWriteFile(ss.path, data, 0644); err != nil {
 		slog.Warn("schedule: failed to write persist file", "path", ss.path, "error", err)
 	}
+}
+
+// atomicWriteFile writes data to path atomically via a temp file + rename,
+// preventing partial writes from corrupting the persist file on crash.
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, perm); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // ── HTTP handlers ─────────────────────────────────────────────────────────────

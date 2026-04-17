@@ -53,12 +53,14 @@ WHERE instance = '%s' AND ts >= now() - INTERVAL %d DAY`,
 		row := rows[0]
 		total := int(toFloat64(row["total_polls"]))
 		report.TotalPolls = total
-		report.P50Score = toFloat64(row["p50"])
-		report.P95Score = toFloat64(row["p95"])
 		if total > 0 {
 			report.UptimePct = toFloat64(row["up_polls"]) / float64(total) * 100
 			report.HealthyPct = toFloat64(row["healthy_polls"]) / float64(total) * 100
+			report.P50Score = toFloat64(row["p50"])
+			report.P95Score = toFloat64(row["p95"])
 		}
+		// When total_polls == 0, UptimePct/HealthyPct/P50Score/P95Score stay 0
+		// and the frontend checks TotalPolls == 0 to show "No data yet".
 	}
 
 	writeJSON(w, http.StatusOK, report)

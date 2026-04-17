@@ -153,9 +153,19 @@ func (ss *SnoozeStore) saveToFile() {
 		slog.Warn("snooze: failed to marshal entries", "error", err)
 		return
 	}
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := atomicWriteFile(path, data, 0644); err != nil {
 		slog.Warn("snooze: failed to write persist file", "path", path, "error", err)
 	}
+}
+
+// atomicWriteFile writes data to path atomically using a temp file + rename.
+// This prevents partial writes from corrupting the persist file on crash.
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, perm); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func (ss *SnoozeStore) loadFromFile() {

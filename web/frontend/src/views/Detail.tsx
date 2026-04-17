@@ -387,24 +387,28 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
                   ))}
                 </div>
               </div>
-              <div className="grid grid-cols-3 gap-2">
-                <div>
-                  <div className={cn('text-xl font-bold', slo.uptime_pct >= 99.9 ? 'text-green-400' : slo.uptime_pct >= 99 ? 'text-amber-400' : 'text-red-400')}>
-                    {slo.uptime_pct.toFixed(2)}%
+              {slo.total_polls === 0 ? (
+                <div className="text-sm text-[var(--dim)] py-2 text-center">No data yet for this window</div>
+              ) : (
+                <div className="grid grid-cols-3 gap-2">
+                  <div>
+                    <div className={cn('text-xl font-bold', slo.uptime_pct >= 99.9 ? 'text-green-400' : slo.uptime_pct >= 99 ? 'text-amber-400' : 'text-red-400')}>
+                      {slo.uptime_pct.toFixed(2)}%
+                    </div>
+                    <div className="text-xs text-[var(--text-muted)]">Uptime</div>
                   </div>
-                  <div className="text-xs text-[var(--text-muted)]">Uptime</div>
-                </div>
-                <div>
-                  <div className={cn('text-xl font-bold', slo.healthy_pct >= 95 ? 'text-green-400' : slo.healthy_pct >= 80 ? 'text-amber-400' : 'text-red-400')}>
-                    {slo.healthy_pct.toFixed(1)}%
+                  <div>
+                    <div className={cn('text-xl font-bold', slo.healthy_pct >= 95 ? 'text-green-400' : slo.healthy_pct >= 80 ? 'text-amber-400' : 'text-red-400')}>
+                      {slo.healthy_pct.toFixed(1)}%
+                    </div>
+                    <div className="text-xs text-[var(--text-muted)]">Healthy</div>
                   </div>
-                  <div className="text-xs text-[var(--text-muted)]">Healthy</div>
+                  <div>
+                    <div className="text-xl font-bold">{Math.round(slo.p50_score)}</div>
+                    <div className="text-xs text-[var(--text-muted)]">Median score</div>
+                  </div>
                 </div>
-                <div>
-                  <div className="text-xl font-bold">{Math.round(slo.p50_score)}</div>
-                  <div className="text-xs text-[var(--text-muted)]">Median score</div>
-                </div>
-              </div>
+              )}
               <div className="text-[10px] text-[var(--dim)] mt-1">{slo.total_polls} polls in last {slo.window_days}d</div>
             </Card>
           )}

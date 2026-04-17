@@ -78,6 +78,9 @@ type AlertManager struct {
 	// snooze suppresses notifications for specific alerts by dedupKey.
 	snooze *SnoozeStore
 
+	// ack tracks acknowledged alerts; cleared when an alert resolves.
+	ack *AckStore
+
 	// pagerduty sends critical alert events to PagerDuty (optional).
 	pagerduty *PagerDutyNotifier
 
@@ -138,6 +141,12 @@ func WithMaintenance(store *MaintenanceStore) Option {
 // notification for the duration of the snooze.
 func WithSnooze(store *SnoozeStore) Option {
 	return func(am *AlertManager) { am.snooze = store }
+}
+
+// WithAck installs an AckStore. When an alert resolves all acknowledgments for
+// its dedupKey are cleared so the next firing starts fresh.
+func WithAck(store *AckStore) Option {
+	return func(am *AlertManager) { am.ack = store }
 }
 
 // WithPagerDuty installs a PagerDutyNotifier for critical alert escalation.
@@ -650,6 +659,11 @@ func (am *AlertManager) checkResolutions() {
 				am.logger.Error("failed to persist alert resolution",
 					slog.String("dedup_key", key), slog.String("error", err.Error()))
 			}
+		}
+
+		// Clear any acknowledgment for this alert so the next firing starts fresh.
+		if am.ack != nil {
+			am.ack.ClearForDedupKey(key)
 		}
 
 		// PagerDuty: resolve the incident.

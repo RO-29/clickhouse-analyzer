@@ -155,7 +155,7 @@ func (as *AckStore) save() {
 		slog.Warn("ackstore: failed to marshal entries", "error", err)
 		return
 	}
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := atomicWriteFile(path, data, 0644); err != nil {
 		slog.Warn("ackstore: failed to write persist file", "path", path, "error", err)
 	}
 }

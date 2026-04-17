@@ -53,7 +53,15 @@ const DEFAULT_WIDGETS: DashboardWidget[] = [
 function loadLayout(): DashboardWidget[] {
   try {
     const saved = JSON.parse(localStorage.getItem('ch-dashboard-layout') ?? 'null')
-    if (Array.isArray(saved) && saved.length > 0) return saved
+    if (Array.isArray(saved) && saved.length > 0) {
+      // Merge: keep saved order/enabled state, append any new widget types at the end.
+      const savedTypes = new Set(saved.map((w: DashboardWidget) => w.type))
+      const maxOrder = saved.reduce((m: number, w: DashboardWidget) => Math.max(m, w.order), -1)
+      const newWidgets = DEFAULT_WIDGETS
+        .filter(w => !savedTypes.has(w.type))
+        .map((w, i) => ({ ...w, order: maxOrder + 1 + i }))
+      return [...saved, ...newWidgets]
+    }
   } catch {}
   return DEFAULT_WIDGETS
 }

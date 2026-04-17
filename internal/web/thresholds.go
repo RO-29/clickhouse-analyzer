@@ -11,8 +11,9 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/rohitjain/ch-analyzer/internal/config"
@@ -248,21 +249,86 @@ func (s *Server) handleGetThresholds(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(thresholdsToJSON(t))
 }
 
+// validateThresholds returns an error if any threshold value is invalid.
+func validateThresholds(j ThresholdsJSON) error {
+	// Warn must be less than critical for all percent pairs.
+	checks := []struct {
+		name string
+		warn float64
+		crit float64
+	}{
+		{"memory", j.Memory.WarnPercent, j.Memory.CriticalPercent},
+		{"memory.rss", j.Memory.RSSWarnPercent, j.Memory.RSSCriticalPercent},
+		{"cpu", j.CPU.WarnPercent, j.CPU.CriticalPercent},
+		{"disk", j.Disk.WarnPercent, j.Disk.CriticalPercent},
+		{"background_pool", j.BackgroundPool.WarnPercent, j.BackgroundPool.CriticalPercent},
+	}
+	for _, c := range checks {
+		if c.warn <= 0 || c.crit <= 0 {
+			return fmt.Errorf("%s: percent values must be positive", c.name)
+		}
+		if c.warn >= c.crit {
+			return fmt.Errorf("%s: warn_percent (%.1f) must be less than critical_percent (%.1f)", c.name, c.warn, c.crit)
+		}
+	}
+
+	// Duration fields must be positive.
+	durs := []struct {
+		name string
+		val  float64
+	}{
+		{"queries.long_running_threshold_secs", j.Queries.LongRunningThresholdSecs},
+		{"queries.long_running_warn_threshold_secs", j.Queries.LongRunningWarnThresholdSecs},
+		{"mutations.stuck_threshold_secs", j.Mutations.StuckThresholdSecs},
+	}
+	for _, d := range durs {
+		if d.val <= 0 {
+			return fmt.Errorf("%s must be positive", d.name)
+		}
+	}
+
+	// Integer counts must be positive.
+	if j.Queries.MaxConcurrent <= 0 {
+		return fmt.Errorf("queries.max_concurrent must be positive")
+	}
+	if j.Queries.WarnConcurrent <= 0 {
+		return fmt.Errorf("queries.warn_concurrent must be positive")
+	}
+	if j.Queries.WarnConcurrent >= j.Queries.MaxConcurrent {
+		return fmt.Errorf("queries.warn_concurrent (%d) must be less than max_concurrent (%d)", j.Queries.WarnConcurrent, j.Queries.MaxConcurrent)
+	}
+	if j.Parts.WarnCount <= 0 || j.Parts.CriticalCount <= 0 {
+		return fmt.Errorf("parts count thresholds must be positive")
+	}
+	if j.Parts.WarnCount >= j.Parts.CriticalCount {
+		return fmt.Errorf("parts.warn_count (%d) must be less than critical_count (%d)", j.Parts.WarnCount, j.Parts.CriticalCount)
+	}
+
+	return nil
+}
+
 // handlePostThresholds accepts updated thresholds, persists them, and applies
 // them in-memory so the next poll cycle picks them up.
 func (s *Server) handlePostThresholds(w http.ResponseWriter, r *http.Request) {
 	var incoming ThresholdsJSON
 	if err := json.NewDecoder(r.Body).Decode(&incoming); err != nil {
-		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		writeErr(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+
+	if err := validateThresholds(incoming); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	updated := jsonToThresholds(incoming)
 
-	// Persist to override file (best-effort).
+	// Persist to override file atomically.
 	if s.thresholdsOverridePath != "" {
 		data, _ := json.MarshalIndent(incoming, "", "  ")
-		_ = os.WriteFile(s.thresholdsOverridePath, data, 0644)
+		if err := atomicWriteFile(s.thresholdsOverridePath, data, 0644); err != nil {
+			slog.Warn("thresholds: failed to persist override", "path", s.thresholdsOverridePath, "error", err)
+		}
 	}
 
 	// Apply in-memory under the mutex.

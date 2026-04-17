@@ -240,6 +240,7 @@ func main() {
 		slog.Warn("cannot create /var/lib/ch-analyzer, using temp dir for ack persistence", "path", ackFile)
 	}
 	ackStore := alerter.NewAckStore(ackFile)
+	alertMgrOpts = append(alertMgrOpts, alerter.WithAck(ackStore))
 
 	// Schedule store (shared with web server).
 	scheduleFile := "/var/lib/ch-analyzer/schedules.json"
