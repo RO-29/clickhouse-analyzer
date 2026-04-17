@@ -1122,7 +1122,8 @@ func (s *Server) handlePartsAge(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// GET /api/instances/{name}/ch-logs?level=Error&search=foo&limit=200&minutes=60
+// GET /api/instances/{name}/ch-logs?level=Error,Warning&search=foo&limit=200&minutes=60
+// level may be a single value or comma-separated list; omit for all levels.
 func (s *Server) handleCHLogs(w http.ResponseWriter, r *http.Request) {
 	instance := r.PathValue("name")
 	client := s.manager.Get(instance)
@@ -1131,17 +1132,32 @@ func (s *Server) handleCHLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	level := r.URL.Query().Get("level")
+	levelParam := r.URL.Query().Get("level")
 	search := r.URL.Query().Get("search")
 	limit := parseIntParam(r, "limit", 200)
 	minutes := parseIntParam(r, "minutes", 60)
 
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
 	where := fmt.Sprintf("event_time >= now() - INTERVAL %d MINUTE", minutes)
-	if level != "" {
-		where += fmt.Sprintf(" AND level = '%s'", level)
+	if levelParam != "" {
+		levels := strings.Split(levelParam, ",")
+		// Build IN clause with quoted, sanitized values
+		quoted := make([]string, 0, len(levels))
+		for _, l := range levels {
+			l = strings.TrimSpace(l)
+			// Only allow known level names to prevent injection
+			switch l {
+			case "Fatal", "Critical", "Error", "Warning", "Notice", "Information", "Debug", "Trace":
+				quoted = append(quoted, "'"+l+"'")
+			}
+		}
+		if len(quoted) == 1 {
+			where += " AND level = " + quoted[0]
+		} else if len(quoted) > 1 {
+			where += " AND level IN (" + strings.Join(quoted, ", ") + ")"
+		}
 	}
 	if search != "" {
 		where += fmt.Sprintf(" AND (message LIKE '%%%s%%' OR logger_name LIKE '%%%s%%')", search, search)

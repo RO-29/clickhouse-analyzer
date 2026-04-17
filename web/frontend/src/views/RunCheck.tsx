@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   PlayCircle, ChevronDown, ChevronRight, AlertTriangle, CheckCircle2,
   XCircle, BarChart2, Clock, Loader2, Code2, Database, Info, RefreshCw, CalendarRange,
-  Timer, Plus, Trash2, ToggleLeft, ToggleRight,
+  Timer, Plus, Trash2, ToggleLeft, ToggleRight, ListChecks,
 } from 'lucide-react'
 import { api } from '../lib/api'
 import { cn } from '../lib/utils'
@@ -292,7 +292,6 @@ export default function RunCheck() {
 
   // Schedule state
   const [schedules, setSchedules] = useState<any[]>([])
-  const [scheduleOpen, setScheduleOpen] = useState(false)
   const [newSchedInst, setNewSchedInst] = useState('')
   const [newSchedCollector, setNewSchedCollector] = useState('')
   const [newSchedInterval, setNewSchedInterval] = useState(5)
@@ -398,6 +397,8 @@ export default function RunCheck() {
     }
   }
 
+  const [activeTab, setActiveTab] = useState<'run' | 'scheduled'>('run')
+
   const grouped = groupByCategory(collectorMetas)
   const categories = Object.keys(grouped).sort()
 
@@ -414,6 +415,11 @@ export default function RunCheck() {
     clean:  results.filter(r => !r.error && r.alerts.length === 0).length,
   } : null
 
+  const tabs = [
+    { id: 'run' as const, label: 'Run Checks', icon: PlayCircle },
+    { id: 'scheduled' as const, label: 'Scheduled', icon: ListChecks, badge: schedules.length || undefined },
+  ]
+
   return (
     <div className="space-y-6">
       <div>
@@ -423,6 +429,34 @@ export default function RunCheck() {
         </p>
       </div>
 
+      {/* Tab navigation */}
+      <div className="flex gap-1 border-b border-[var(--border)]">
+        {tabs.map(tab => {
+          const Icon = tab.icon
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={cn(
+                'flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px',
+                activeTab === tab.id
+                  ? 'border-[var(--accent)] text-[var(--accent)]'
+                  : 'border-transparent text-[var(--dim)] hover:text-[var(--text)]',
+              )}
+            >
+              <Icon size={14} />
+              {tab.label}
+              {tab.badge != null && tab.badge > 0 && (
+                <span className="text-[10px] font-medium bg-[var(--accent)]/15 text-[var(--accent)] border border-[var(--accent)]/20 rounded-full px-1.5 py-0.5 leading-none">
+                  {tab.badge}
+                </span>
+              )}
+            </button>
+          )
+        })}
+      </div>
+
+      {activeTab === 'run' && (<>
       {/* Time range picker */}
       <div className="bg-[var(--card)] border border-[var(--border)] rounded-xl p-4 space-y-3">
         <div className="flex items-center gap-2">
@@ -709,8 +743,11 @@ export default function RunCheck() {
         </div>
       )}
 
+      </>)}
+
+      {activeTab === 'scheduled' && (<>
       {/* ── Advisor Anti-pattern Checks ─────────────────────────────────────── */}
-      <div className="border-t border-[var(--border)] pt-6 space-y-4">
+      <div className="space-y-4">
         <div>
           <h2 className="text-sm font-semibold text-[var(--text)] mb-1">Advisor Anti-pattern Scan</h2>
           <p className="text-xs text-[var(--dim)]">
@@ -795,23 +832,13 @@ export default function RunCheck() {
       </div>
 
       {/* ── Schedules ──────────────────────────────────────────────────────────── */}
-      <div className="border-t border-[var(--border)] pt-6 space-y-4">
-        <button
-          onClick={() => { setScheduleOpen(o => !o); if (!scheduleOpen) loadSchedules() }}
-          className="flex items-center gap-2 w-full text-left"
-        >
+      <div className="space-y-4">
+        <div className="flex items-center gap-2">
           <Timer size={14} className="text-[var(--dim)]" />
           <span className="text-sm font-semibold text-[var(--text)]">Scheduled Checks</span>
-          {schedules.length > 0 && (
-            <span className="text-[11px] font-medium text-[var(--accent)] bg-[var(--accent)]/10 border border-[var(--accent)]/20 rounded-full px-2 py-0.5">
-              {schedules.length}
-            </span>
-          )}
-          {scheduleOpen ? <ChevronDown size={13} className="ml-auto text-[var(--dim)]" /> : <ChevronRight size={13} className="ml-auto text-[var(--dim)]" />}
-        </button>
+        </div>
 
-        {scheduleOpen && (
-          <div className="space-y-3">
+        <div className="space-y-3">
             <p className="text-xs text-[var(--dim)]">
               Automatically run a collector against an instance at a fixed interval. The schedule runner checks every 30 seconds.
             </p>
@@ -967,8 +994,9 @@ export default function RunCheck() {
               </div>
             )}
           </div>
-        )}
+        </div>
       </div>
+      </>)}
     </div>
   )
 }
