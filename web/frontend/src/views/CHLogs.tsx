@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo, type ReactNode } from 'react'
-import { RefreshCw, Sparkles, ChevronDown, Check } from 'lucide-react'
+import { RefreshCw, Sparkles } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
@@ -8,7 +8,17 @@ import type { CHLogEntry } from '../types/api'
 
 const CH_LEVELS = ['Fatal', 'Critical', 'Error', 'Warning', 'Notice', 'Information', 'Debug', 'Trace'] as const
 type CHLevel = typeof CH_LEVELS[number]
-const ALL_LEVELS = new Set<CHLevel>(CH_LEVELS)
+
+const LEVEL_BG: Record<string, string> = {
+  Fatal:       'bg-red-500/20 text-red-300 border-red-500/30',
+  Critical:    'bg-red-500/15 text-red-400 border-red-500/20',
+  Error:       'bg-red-500/10 text-red-400 border-red-500/20',
+  Warning:     'bg-yellow-500/10 text-yellow-400 border-yellow-500/20',
+  Notice:      'bg-blue-500/10 text-blue-400 border-blue-500/20',
+  Information: 'bg-green-500/10 text-green-400 border-green-500/20',
+  Debug:       'bg-[var(--border)] text-[var(--dim)] border-[var(--border)]',
+  Trace:       'bg-[var(--border)] text-[var(--dim)] border-[var(--border)]',
+}
 
 const TIME_WINDOWS = [
   { label: '15m', minutes: 15 },
@@ -44,9 +54,7 @@ export default function CHLogs({ refreshKey }: { refreshKey?: number }) {
   const { analyze } = useAIAnalysis(selectedInstance)
 
   const [inst, setInst] = useState(() => selectedInstance || instances[0] || '')
-  const [selectedLevels, setSelectedLevels] = useState<Set<CHLevel>>(new Set(ALL_LEVELS))
-  const [levelMenuOpen, setLevelMenuOpen] = useState(false)
-  const levelMenuRef = useRef<HTMLDivElement>(null!)
+  const [selectedLevel, setSelectedLevel] = useState<CHLevel | null>(null)
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [minutes, setMinutes] = useState(60)
@@ -69,30 +77,13 @@ export default function CHLogs({ refreshKey }: { refreshKey?: number }) {
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
   }, [search])
 
-  // Close level menu on outside click
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (levelMenuRef.current && !levelMenuRef.current.contains(e.target as Node)) {
-        setLevelMenuOpen(false)
-      }
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [])
-
-  // Stable key for fetchLogs dependency
-  const levelsKey = Array.from(selectedLevels).sort().join(',')
-
   const fetchLogs = useCallback(async () => {
     if (!inst) return
     setLoading(true)
     setError(null)
     try {
-      // Pass comma-separated levels; if all selected, omit the filter entirely
-      const isAll = selectedLevels.size === ALL_LEVELS.size
-      const lvl = isAll ? undefined : Array.from(selectedLevels).join(',')
       const effectiveLimit = limit === 0 ? 10000 : limit
-      const data = await api.chLogs(inst, lvl, debouncedSearch || undefined, minutes, effectiveLimit)
+      const data = await api.chLogs(inst, selectedLevel ?? undefined, debouncedSearch || undefined, minutes, effectiveLimit)
       setLogs(data)
       setLoadedAt(new Date())
     } catch (e: any) {
@@ -101,8 +92,7 @@ export default function CHLogs({ refreshKey }: { refreshKey?: number }) {
     } finally {
       setLoading(false)
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inst, levelsKey, debouncedSearch, minutes, limit])
+  }, [inst, selectedLevel, debouncedSearch, minutes, limit])
 
   // Fetch when params change
   useEffect(() => { fetchLogs() }, [fetchLogs])
@@ -138,60 +128,33 @@ export default function CHLogs({ refreshKey }: { refreshKey?: number }) {
           ))}
         </select>
 
-        {/* Multi-select severity dropdown */}
-        <div className="relative" ref={levelMenuRef}>
+        {/* Level pills */}
+        <div className="flex rounded-lg border border-[var(--border)] overflow-hidden text-xs">
           <button
-            onClick={() => setLevelMenuOpen(o => !o)}
-            className="flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--card)] px-3 py-1.5 text-sm text-[var(--fg)] hover:border-[var(--accent)] transition-colors min-w-[130px]"
+            onClick={() => setSelectedLevel(null)}
+            className={cn(
+              'px-3 py-1.5 font-medium border-r border-[var(--border)] transition-colors',
+              selectedLevel === null
+                ? 'bg-[var(--accent)]/15 text-[var(--accent)]'
+                : 'text-[var(--dim)] hover:bg-[var(--hover)]',
+            )}
           >
-            <span className="flex-1 text-left truncate">
-              {selectedLevels.size === ALL_LEVELS.size
-                ? 'All levels'
-                : selectedLevels.size === 0
-                  ? 'No levels'
-                  : selectedLevels.size === 1
-                    ? Array.from(selectedLevels)[0]
-                    : `${selectedLevels.size} levels`}
-            </span>
-            <ChevronDown size={13} className="text-[var(--dim)] shrink-0" />
+            All
           </button>
-          {levelMenuOpen && (
-            <div className="absolute z-50 top-full left-0 mt-1 bg-[var(--card)] border border-[var(--border)] rounded-lg shadow-lg py-1 min-w-[160px]">
-              {/* All / None shortcuts */}
-              <div className="flex gap-2 px-3 py-1.5 border-b border-[var(--border)]">
-                <button
-                  onClick={() => setSelectedLevels(new Set(ALL_LEVELS))}
-                  className="text-[11px] text-[var(--accent)] hover:opacity-70 font-medium"
-                >All</button>
-                <span className="text-[var(--border)]">·</span>
-                <button
-                  onClick={() => setSelectedLevels(new Set())}
-                  className="text-[11px] text-[var(--dim)] hover:text-[var(--fg)]"
-                >None</button>
-              </div>
-              {CH_LEVELS.map(l => {
-                const checked = selectedLevels.has(l)
-                return (
-                  <button
-                    key={l}
-                    onClick={() => {
-                      setSelectedLevels(prev => {
-                        const next = new Set(prev)
-                        checked ? next.delete(l) : next.add(l)
-                        return next
-                      })
-                    }}
-                    className="flex items-center gap-2 w-full px-3 py-1.5 text-sm hover:bg-[var(--hover)] transition-colors text-left"
-                  >
-                    <span className={cn('w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0', checked ? 'bg-[var(--accent)] border-[var(--accent)]' : 'border-[var(--border)]')}>
-                      {checked && <Check size={9} className="text-white" />}
-                    </span>
-                    <span className={cn('text-xs', LEVEL_COLOR[l] ?? 'text-[var(--fg)]')}>{l}</span>
-                  </button>
-                )
-              })}
-            </div>
-          )}
+          {CH_LEVELS.map((l) => (
+            <button
+              key={l}
+              onClick={() => setSelectedLevel(selectedLevel === l ? null : l)}
+              className={cn(
+                'px-2.5 py-1.5 font-medium border-r border-[var(--border)] last:border-0 transition-colors',
+                selectedLevel === l
+                  ? LEVEL_BG[l]
+                  : 'text-[var(--dim)] hover:bg-[var(--hover)]',
+              )}
+            >
+              {l}
+            </button>
+          ))}
         </div>
 
         <input
@@ -243,7 +206,7 @@ export default function CHLogs({ refreshKey }: { refreshKey?: number }) {
           Refresh
         </button>
         <button
-          onClick={() => analyze('CH Logs', { logs, instance: inst, levels: Array.from(selectedLevels), search, timeWindow_minutes: minutes, stats }, { contextType: 'tab', tab: 'chlogs' })}
+          onClick={() => analyze('CH Logs', { logs, instance: inst, level: selectedLevel, search, timeWindow_minutes: minutes, stats }, { contextType: 'tab', tab: 'chlogs' })}
           disabled={logs.length === 0}
           className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium text-purple-400 hover:bg-purple-500/15 border border-purple-500/20 transition-colors disabled:opacity-30"
         >

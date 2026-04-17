@@ -304,7 +304,10 @@ function TableDetailModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      className={cn(
+        'fixed inset-0 z-50',
+        modalFullscreen ? '' : 'flex items-center justify-center p-4',
+      )}
       onClick={onClose}
     >
       {/* Backdrop */}
@@ -315,7 +318,7 @@ function TableDetailModal({
         className={cn(
           'relative z-10 flex flex-col border border-[var(--border)] bg-[var(--card)] shadow-2xl',
           modalFullscreen
-            ? 'fixed inset-0 rounded-none'
+            ? 'w-full h-full rounded-none'
             : 'w-full max-w-4xl max-h-[90vh] rounded-xl',
         )}
         onClick={(e) => e.stopPropagation()}

@@ -13,12 +13,12 @@ import (
 
 // AuditEvent represents a tracked action.
 type AuditEvent struct {
-	ID       string    `json:"id"`
-	Instance string    `json:"instance"` // empty string = system-wide action
-	Action   string    `json:"action"`   // e.g. "alert_resolve", "alert_snooze", "maintenance_create"
-	Actor    string    `json:"actor"`    // who did it (IP, user, "system")
-	Details  string    `json:"details"`  // free-form JSON string or description
-	Ts       time.Time `json:"ts"`
+	ID       string `json:"id"`
+	Instance string `json:"instance"` // empty string = system-wide action
+	Action   string `json:"action"`   // e.g. "alert_resolve", "alert_snooze", "maintenance_create"
+	Actor    string `json:"actor"`    // who did it (IP, user, "system")
+	Details  string `json:"details"`  // free-form JSON string or description
+	Ts       int64  `json:"ts"`       // unix epoch seconds
 }
 
 // AuditLogQuery holds optional filters for GetAuditLog.
@@ -116,16 +116,16 @@ func (s *Store) GetAuditLog(ctx context.Context, opts AuditLogQuery) ([]AuditEve
 	parseRows := func(rows []map[string]interface{}) []AuditEvent {
 		var events []AuditEvent
 		for _, row := range rows {
-			ev := AuditEvent{
+			tsStr := getString(row, "ts")
+			t, _ := time.Parse("2006-01-02 15:04:05", tsStr)
+			events = append(events, AuditEvent{
 				ID:       getString(row, "id"),
 				Instance: getString(row, "instance"),
 				Action:   getString(row, "action"),
 				Actor:    getString(row, "actor"),
 				Details:  getString(row, "details"),
-			}
-			tsStr := getString(row, "ts")
-			ev.Ts, _ = time.Parse("2006-01-02 15:04:05", tsStr)
-			events = append(events, ev)
+				Ts:       t.Unix(),
+			})
 		}
 		return events
 	}
@@ -185,7 +185,7 @@ func (s *Store) GetAuditLog(ctx context.Context, opts AuditLogQuery) ([]AuditEve
 	}
 
 	// Sort merged results by ts DESC and cap at limit.
-	sort.Slice(merged, func(i, j int) bool { return merged[i].Ts.After(merged[j].Ts) })
+	sort.Slice(merged, func(i, j int) bool { return merged[i].Ts > merged[j].Ts })
 	if len(merged) > opts.Limit {
 		merged = merged[:opts.Limit]
 	}

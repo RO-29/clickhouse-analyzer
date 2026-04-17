@@ -70,46 +70,13 @@ LIMIT 20`, fromEpoch, toEpoch)
 
 	result := make([]S3LatencyByTableRow, 0, len(rows))
 	for _, row := range rows {
-		r := S3LatencyByTableRow{}
-		if v, ok := row["table_name"]; ok {
-			r.TableName = fmt.Sprintf("%v", v)
-		}
-		if v, ok := row["query_count"]; ok {
-			switch n := v.(type) {
-			case int64:
-				r.QueryCount = n
-			case uint64:
-				r.QueryCount = int64(n)
-			case float64:
-				r.QueryCount = int64(n)
-			}
-		}
-		if v, ok := row["avg_latency_ms"]; ok {
-			if f, ok2 := v.(float64); ok2 {
-				r.AvgLatencyMs = f
-			}
-		}
-		if v, ok := row["total_s3_bytes"]; ok {
-			switch n := v.(type) {
-			case int64:
-				r.TotalS3Bytes = n
-			case uint64:
-				r.TotalS3Bytes = int64(n)
-			case float64:
-				r.TotalS3Bytes = int64(n)
-			}
-		}
-		if v, ok := row["s3_requests"]; ok {
-			switch n := v.(type) {
-			case int64:
-				r.S3Requests = n
-			case uint64:
-				r.S3Requests = int64(n)
-			case float64:
-				r.S3Requests = int64(n)
-			}
-		}
-		result = append(result, r)
+		result = append(result, S3LatencyByTableRow{
+			TableName:    fmt.Sprintf("%v", row["table_name"]),
+			QueryCount:   int64(toFloat64(row["query_count"])),
+			AvgLatencyMs: toFloat64(row["avg_latency_ms"]),
+			TotalS3Bytes: int64(toFloat64(row["total_s3_bytes"])),
+			S3Requests:   int64(toFloat64(row["s3_requests"])),
+		})
 	}
 
 	writeJSON(w, http.StatusOK, result)

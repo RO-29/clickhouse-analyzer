@@ -1137,17 +1137,26 @@ func (s *Server) handleCHLogs(w http.ResponseWriter, r *http.Request) {
 	limit := parseIntParam(r, "limit", 200)
 	minutes := parseIntParam(r, "minutes", 60)
 
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	// Use a generous timeout for large time ranges (24h+ can scan millions of rows).
+	timeoutSecs := 90
+	if minutes > 360 {
+		timeoutSecs = 120
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(timeoutSecs)*time.Second)
 	defer cancel()
 
-	where := fmt.Sprintf("event_time >= now() - INTERVAL %d MINUTE", minutes)
+	// Partition pruning: toDate() lets CH skip entire date-granule parts.
+	daysBack := (minutes + 1439) / 1440 // ceil(minutes/1440)
+	where := fmt.Sprintf(
+		"toDate(event_time) >= today() - %d AND event_time >= now() - INTERVAL %d MINUTE",
+		daysBack, minutes,
+	)
 	if levelParam != "" {
 		levels := strings.Split(levelParam, ",")
-		// Build IN clause with quoted, sanitized values
+		// Build IN clause with quoted, sanitized values (whitelist-only — no injection possible).
 		quoted := make([]string, 0, len(levels))
 		for _, l := range levels {
 			l = strings.TrimSpace(l)
-			// Only allow known level names to prevent injection
 			switch l {
 			case "Fatal", "Critical", "Error", "Warning", "Notice", "Information", "Debug", "Trace":
 				quoted = append(quoted, "'"+l+"'")
@@ -1160,7 +1169,9 @@ func (s *Server) handleCHLogs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if search != "" {
-		where += fmt.Sprintf(" AND (message LIKE '%%%s%%' OR logger_name LIKE '%%%s%%')", search, search)
+		// Escape LIKE special characters to prevent injection.
+		safe := strings.NewReplacer("'", "''", "%", "\\%", "_", "\\_", "\\", "\\\\").Replace(search)
+		where += fmt.Sprintf(" AND (message ILIKE '%%%s%%' OR logger_name ILIKE '%%%s%%')", safe, safe)
 	}
 
 	sql := fmt.Sprintf(`SELECT
