@@ -72,6 +72,38 @@ function isAcked(dedupKey: string, acked: Record<string, any>): boolean {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Tokenized search parser                                            */
+/* ------------------------------------------------------------------ */
+interface ParsedSearch {
+  instance?: string
+  severity?: string
+  category?: string
+  text: string
+}
+
+function parseSearchTokens(raw: string): ParsedSearch {
+  const result: ParsedSearch = { text: '' }
+  const TOKEN_RE = /\b(instance|severity|category):(\S+)/gi
+  const textParts: string[] = []
+  let lastIndex = 0
+  let match: RegExpExecArray | null
+  while ((match = TOKEN_RE.exec(raw)) !== null) {
+    if (match.index > lastIndex) {
+      textParts.push(raw.slice(lastIndex, match.index).trim())
+    }
+    const key = match[1].toLowerCase()
+    const val = match[2]
+    if (key === 'instance') result.instance = val
+    else if (key === 'severity') result.severity = val
+    else if (key === 'category') result.category = val
+    lastIndex = match.index + match[0].length
+  }
+  if (lastIndex < raw.length) textParts.push(raw.slice(lastIndex).trim())
+  result.text = textParts.filter(Boolean).join(' ')
+  return result
+}
+
+/* ------------------------------------------------------------------ */
 /*  Runbooks — per-category remediation steps                          */
 /* ------------------------------------------------------------------ */
 interface Runbook { title: string; steps: string[] }
@@ -579,6 +611,25 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
   const [filterType, setFilterType] = useState('all')
   const [filterStatus, setFilterStatus] = useState('all')
 
+  const [searchRaw, setSearchRaw] = useState('')
+  const searchText = parseSearchTokens(searchRaw).text
+
+  const handleSearchChange = useCallback((value: string) => {
+    setSearchRaw(value)
+    const parsed = parseSearchTokens(value)
+    if (parsed.instance) setFilterInstance(parsed.instance)
+    if (parsed.severity) setFilterSeverity(parsed.severity)
+    if (parsed.category) setFilterCategory(parsed.category)
+  }, [])
+
+  const clearToken = useCallback((key: 'instance' | 'severity' | 'category') => {
+    if (key === 'instance') setFilterInstance('all')
+    if (key === 'severity') setFilterSeverity('all')
+    if (key === 'category') setFilterCategory('all')
+    // Also strip the corresponding token from the raw search string
+    setSearchRaw(prev => prev.replace(new RegExp(`\\b${key}:\\S+`, 'gi'), '').trim())
+  }, [])
+
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set())
   const [flatPage, setFlatPage] = useState(0)
   const FLAT_PAGE_SIZE = 50
@@ -695,9 +746,17 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
         const isActive = !a.resolved && !isStale(a, staleHours)
         if (!inRange && !isActive) return false
       }
+      if (searchText) {
+        const q = searchText.toLowerCase()
+        const hit = a.title.toLowerCase().includes(q)
+          || a.message?.toLowerCase().includes(q)
+          || a.instance?.toLowerCase().includes(q)
+          || a.category?.toLowerCase().includes(q)
+        if (!hit) return false
+      }
       return true
     })
-  }, [allAlerts, filterInstance, filterSeverity, filterCategory, filterType, filterStatus, staleHours, customFrom, customTo])
+  }, [allAlerts, filterInstance, filterSeverity, filterCategory, filterType, filterStatus, staleHours, customFrom, customTo, searchText])
 
   const groups = useMemo(() => {
     const map = new Map<string, Alert[]>()
@@ -1020,6 +1079,50 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
             {STALE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
         </div>
+      </div>
+
+      {/* ---- Search + active token chips ---- */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            value={searchRaw}
+            onChange={e => handleSearchChange(e.target.value)}
+            placeholder="Search… or type instance:prod severity:critical"
+            className="flex-1 bg-[var(--surface)] border border-[var(--border)] rounded-md px-3 py-1.5 text-sm focus:outline-none focus:border-[var(--accent)] placeholder:text-[var(--dim)]"
+          />
+          {searchRaw && (
+            <button
+              onClick={() => { setSearchRaw(''); }}
+              className="text-[var(--dim)] hover:text-[var(--text)] transition-colors"
+              title="Clear search"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
+        {(filterInstance !== 'all' || filterSeverity !== 'all' || filterCategory !== 'all') && (
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {filterInstance !== 'all' && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] bg-[var(--accent)]/10 text-[var(--accent)] border border-[var(--accent)]/20">
+                <span className="font-semibold">instance:</span>{filterInstance}
+                <button onClick={() => clearToken('instance')} className="hover:text-red-400 transition-colors"><X size={9} /></button>
+              </span>
+            )}
+            {filterSeverity !== 'all' && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] bg-[var(--accent)]/10 text-[var(--accent)] border border-[var(--accent)]/20">
+                <span className="font-semibold">severity:</span>{filterSeverity}
+                <button onClick={() => clearToken('severity')} className="hover:text-red-400 transition-colors"><X size={9} /></button>
+              </span>
+            )}
+            {filterCategory !== 'all' && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] bg-[var(--accent)]/10 text-[var(--accent)] border border-[var(--accent)]/20">
+                <span className="font-semibold">category:</span>{filterCategory}
+                <button onClick={() => clearToken('category')} className="hover:text-red-400 transition-colors"><X size={9} /></button>
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* ---- Filters ---- */}

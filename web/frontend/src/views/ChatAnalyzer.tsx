@@ -8,6 +8,19 @@ import { ChatInput } from '../components/chat/ChatInput'
 import { notifyDone, notifyError, requestNotifPermission } from '../lib/notify'
 import type { ChatSession, ChatMessage as ChatMessageType, StepInfo, ThinkingLine, ChatLogEntry } from '../types/api'
 
+/* ─── Starter questions ───────────────────────────────────────────────────── */
+
+const STARTER_QUESTIONS = [
+  "What are the slowest queries in the last hour?",
+  "Are there any memory pressure issues right now?",
+  "Which tables are consuming the most storage?",
+  "Show me insert failures in the last 24 hours",
+  "Are there any failed merges or mutations?",
+  "What's causing the most disk I/O?",
+  "Are there replication lag issues?",
+  "What's the health score trend for this instance?",
+]
+
 /* ─── Helpers ────────────────────────────────────────────────────────────── */
 
 function genId(): string {
@@ -549,6 +562,26 @@ export default function ChatAnalyzer() {
 
             {/* Message list */}
             <div className="flex-1 overflow-y-auto px-6 py-4 space-y-6">
+              {activeSession.messages.length === 0 && (
+                <div className="flex flex-col items-center justify-center h-full gap-6 px-6">
+                  <div className="text-center">
+                    <div className="text-lg font-semibold mb-1">What would you like to analyze?</div>
+                    <div className="text-sm text-[var(--dim)]">Ask anything about this ClickHouse instance</div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 max-w-lg w-full">
+                    {STARTER_QUESTIONS.map(q => (
+                      <button
+                        key={q}
+                        type="button"
+                        onClick={() => handleSend(q)}
+                        className="text-left px-3 py-2 text-xs rounded-lg border border-[var(--border)] hover:border-[var(--accent)]/50 hover:bg-[var(--accent)]/5 transition-colors text-[var(--text)]"
+                      >
+                        {q}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
               {activeSession.messages.map((msg, i) => {
                 const isLast = i === activeSession.messages.length - 1
                 const lastUserMsg = isLast && msg.role === 'assistant' && msg.status === 'error'

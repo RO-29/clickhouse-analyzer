@@ -518,9 +518,10 @@ const SORT_OPTIONS = [
 interface QueryPatternsTabProps extends TabProps {
   onDrillHash?: (hash: string, user?: string) => void
   onDrillFail?: (hash: string) => void
+  onFetched?: () => void
 }
 
-function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQuery, onDrillHash, onDrillFail }: QueryPatternsTabProps) {
+function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQuery, onDrillHash, onDrillFail, onFetched }: QueryPatternsTabProps) {
   const [patterns, setPatterns] = useState<QueryPatternV2[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -551,9 +552,9 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
         }
       })
       .catch(e => { if (!c) setError(e.message) })
-      .finally(() => { if (!c) setLoading(false) })
+      .finally(() => { if (!c) { setLoading(false); onFetched?.() } })
     return () => { c = true }
-  }, [instance, from, to, refreshKey, sortBy])
+  }, [instance, from, to, refreshKey, sortBy, onFetched])
 
   useEffect(() => {
     if (!selectedHash) return
@@ -847,6 +848,8 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
             )
           }}
           emptyText="No query patterns found"
+          showColumnToggle={true}
+          storageKey="explore-patterns"
         />
       </div>
 
@@ -2657,6 +2660,9 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
   const [manualTick, setManualTick] = useState(0)
   const [lastRefreshed, setLastRefreshed] = useState(new Date())
   const [agoStr, setAgoStr] = useState('just now')
+  // Stale banner — set when patterns/samples/users fetch completes
+  const [lastFetchedAt, setLastFetchedAt] = useState<Date | null>(null)
+  const [staleAgoStr, setStaleAgoStr] = useState('')
   const inst = selectedInstance || instances[0] || ''
 
   const effectiveRefreshKey = (refreshKey ?? 0) + manualTick
@@ -2667,6 +2673,14 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
     return () => clearInterval(id)
   }, [lastRefreshed])
 
+  // Update stale banner display string every 10s
+  useEffect(() => {
+    if (!lastFetchedAt) return
+    setStaleAgoStr(fmtAgo(lastFetchedAt))
+    const id = setInterval(() => setStaleAgoStr(fmtAgo(lastFetchedAt)), 10_000)
+    return () => clearInterval(id)
+  }, [lastFetchedAt])
+
   // Stale if data is older than 5 minutes (re-evaluated on each render triggered by agoStr interval)
   const isStale = (Date.now() - lastRefreshed.getTime()) > 5 * 60 * 1000
 
@@ -2674,6 +2688,10 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
     setManualTick(t => t + 1)
     setLastRefreshed(new Date())
     setAgoStr('just now')
+  }, [])
+
+  const handleDataFetched = useCallback(() => {
+    setLastFetchedAt(new Date())
   }, [])
 
   const { analyze } = useAIAnalysis(inst)
@@ -2792,6 +2810,14 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
         ))}
       </div>
 
+      {/* Stale data banner — shown for patterns/samples/users tabs when fetch is >5 min old */}
+      {lastFetchedAt && (Date.now() - lastFetchedAt.getTime()) > 5 * 60_000 && (tab === 'patterns' || tab === 'samples' || tab === 'users') && (
+        <div className="flex items-center gap-2 px-3 py-1.5 mt-2 mb-0 rounded text-xs bg-amber-500/10 border border-amber-500/20 text-amber-400">
+          <span>Data may be stale — fetched {staleAgoStr} ago.</span>
+          <button onClick={handleManualRefresh} className="underline hover:no-underline ml-1">Refresh</button>
+        </div>
+      )}
+
       {/* Tab content */}
       <div className="pt-4">
       {!inst ? (
@@ -2809,6 +2835,7 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
               onAnalyze={handleAnalyze} onShowQuery={handleShowQuery}
               onDrillHash={handleDrillHash}
               onDrillFail={handleDrillFail}
+              onFetched={handleDataFetched}
             />
           )}
           {tab === 'samples' && (

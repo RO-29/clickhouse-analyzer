@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import {
   LayoutDashboard, Bell, BellDot, Search, GitCompareArrows, Lightbulb, TerminalSquare, FileText, Database,
   Sun, Moon, ChevronsLeft, ChevronsRight, Sparkles, RefreshCw, ScanSearch, DollarSign, Shield, PlayCircle, Compass,
-  Rows3, Command, Copy, ClipboardList, SlidersHorizontal,
+  Rows3, Command, Copy, ClipboardList, SlidersHorizontal, ChevronLeft,
 } from 'lucide-react'
 import { useStore, type View } from '../hooks/useStore'
 import { cn, scoreColor } from '../lib/utils'
@@ -81,6 +81,7 @@ export function Sidebar({ mobileOpen = false, onMobileClose, onOpenPalette }: Si
     view, setView, sidebarCollapsed, setSidebarCollapsed,
     theme, toggleTheme, refreshInterval, setRefreshInterval,
     navToDetail, chatSessions, denseMode, setDenseMode,
+    viewHistory, goBack,
   } = useStore()
 
   const hasActiveAnalysis = chatSessions.some(s =>
@@ -160,6 +161,23 @@ export function Sidebar({ mobileOpen = false, onMobileClose, onOpenPalette }: Si
 
         {/* Nav groups */}
         <nav className="flex-1 py-2 overflow-y-auto">
+          {/* Back button */}
+          {viewHistory.length > 0 && (
+            <div className="px-2 mb-1">
+              <button
+                onClick={goBack}
+                className={cn(
+                  'w-full flex items-center gap-2 px-3 py-2 text-[var(--dim)] hover:text-[var(--fg)] hover:bg-[var(--hover)] rounded-lg transition-colors text-sm',
+                  collapsed && 'justify-center',
+                )}
+                title="Go back"
+              >
+                <ChevronLeft size={14} className="shrink-0" />
+                {!collapsed && <span className="text-xs">Back</span>}
+              </button>
+            </div>
+          )}
+
           {NAV_GROUPS.map(group => (
             <div key={group.label} className="mb-1">
               {/* Group label */}

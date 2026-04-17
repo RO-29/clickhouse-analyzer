@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from 'react'
-import { Sun, Moon, Menu, Lock, LockOpen, X, Loader2, ExternalLink, Copy, Check, ChevronRight } from 'lucide-react'
+import { Sun, Moon, Menu, Lock, LockOpen, X, Loader2, ExternalLink, Copy, Check, ChevronRight, Settings } from 'lucide-react'
 import { useStore, type View } from '../hooks/useStore'
 import { cn } from '../lib/utils'
+import { api } from '../lib/api'
 
 const VIEW_TITLES: Record<View, string> = {
   dashboard: 'Dashboard',
@@ -336,12 +337,20 @@ export function TopBar({ onMobileMenuClick }: TopBarProps) {
   const {
     view, selectedInstance, setView, rangePreset, setRangePreset, setCustomRange,
     theme, toggleTheme, authExpired, setAuthExpired,
+    denseMode, setDenseMode,
   } = useStore()
 
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
   const [showReAuth, setShowReAuth] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [notifyStatus, setNotifyStatus] = useState<{
+    slack: { configured: boolean; channel: string; has_token: boolean }
+    pagerduty: { configured: boolean }
+    webhook: { configured: boolean; url: string }
+  } | null>(null)
+  const settingsRef = useRef<HTMLDivElement>(null)
 
   // When auth expires, silently attempt token refresh before asking user to re-auth.
   useEffect(() => {
@@ -359,6 +368,25 @@ export function TopBar({ onMobileMenuClick }: TopBarProps) {
       .catch(() => setShowReAuth(true))
       .finally(() => setRefreshing(false))
   }, [authExpired]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Close settings popover when clicking outside
+  useEffect(() => {
+    if (!settingsOpen) return
+    const handler = (e: MouseEvent) => {
+      if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) {
+        setSettingsOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [settingsOpen])
+
+  // Fetch notification status once on mount
+  useEffect(() => {
+    api.notifyStatus()
+      .then(s => setNotifyStatus(s))
+      .catch(() => {/* leave null */})
+  }, [])
 
   const handleGo = () => {
     if (!customFrom || !customTo) return
@@ -428,6 +456,62 @@ export function TopBar({ onMobileMenuClick }: TopBarProps) {
                 <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-orange-400" />
               )}
             </button>
+
+            {/* Settings gear */}
+            <div ref={settingsRef} className="relative">
+              <button
+                onClick={() => setSettingsOpen(v => !v)}
+                className={cn(
+                  'p-1.5 rounded-md transition-colors',
+                  settingsOpen
+                    ? 'text-[var(--text)] bg-[var(--surface)]'
+                    : 'text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)]',
+                )}
+                title="Settings"
+              >
+                <Settings size={14} />
+              </button>
+
+              {settingsOpen && (
+                <div className="absolute right-0 top-full mt-1 z-50 min-w-[200px] bg-[var(--card)] border border-[var(--border)] rounded-lg shadow-lg p-3 space-y-3">
+                  {/* Dense mode */}
+                  <div>
+                    <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--dim)] mb-2">Display</div>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={denseMode}
+                        onChange={() => setDenseMode(!denseMode)}
+                        className="rounded"
+                      />
+                      <span className="text-xs">Dense mode</span>
+                    </label>
+                  </div>
+
+                  {/* Notifications */}
+                  <div>
+                    <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--dim)] mb-2">Notifications</div>
+                    {notifyStatus === null ? (
+                      <span className="text-[10px] text-[var(--dim)]">...</span>
+                    ) : (
+                      <div className="space-y-1">
+                        {[
+                          { label: 'Slack', ok: notifyStatus.slack.configured },
+                          { label: 'PagerDuty', ok: notifyStatus.pagerduty.configured },
+                          { label: 'Webhook', ok: notifyStatus.webhook.configured },
+                        ].map(({ label, ok }) => (
+                          <div key={label} className="flex items-center gap-2 text-xs">
+                            <span className={cn('w-1.5 h-1.5 rounded-full shrink-0', ok ? 'bg-green-500' : 'bg-[var(--dim)]')} />
+                            <span className={ok ? 'text-[var(--text)]' : 'text-[var(--dim)]'}>{label}</span>
+                            {!ok && <span className="text-[9px] text-[var(--dim)] ml-auto">not configured</span>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
 
             <button
               onClick={toggleTheme}

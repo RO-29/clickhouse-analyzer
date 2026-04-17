@@ -30,6 +30,10 @@ export interface Store {
   denseMode: boolean
   scannerSearch: string
 
+  // Navigation history
+  viewHistory: View[]
+  goBack: () => void
+
   // Actions
   setView: (v: View) => void
   setSelectedInstance: (name: string) => void
@@ -94,14 +98,34 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     document.documentElement.setAttribute('data-theme', t)
     return t
   })
+  const [viewHistory, setViewHistory] = useState<View[]>([])
+
   const setView = useCallback((v: View) => {
-    setViewState(v)
+    setViewState(prev => {
+      if (v !== prev) {
+        setViewHistory(h => [...h.slice(-19), prev])
+      }
+      return v
+    })
     // pushState for view changes so the back button navigates between views.
     const url = new URL(window.location.href)
     url.searchParams.set('view', v)
     // Drop tab when switching views — it only makes sense within Explore.
     if (v !== 'explore') url.searchParams.delete('tab')
     window.history.pushState(null, '', url.toString())
+  }, [])
+
+  const goBack = useCallback(() => {
+    setViewHistory(h => {
+      if (h.length === 0) return h
+      const prev = h[h.length - 1]
+      setViewState(prev)
+      const url = new URL(window.location.href)
+      url.searchParams.set('view', prev)
+      if (prev !== 'explore') url.searchParams.delete('tab')
+      window.history.pushState(null, '', url.toString())
+      return h.slice(0, -1)
+    })
   }, [])
 
   const [refreshInterval, setRefreshInterval] = useState(300)
@@ -207,13 +231,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const navToDetail = useCallback((instance: string) => {
     setSelectedInstanceRaw(instance)
+    setViewState(prev => {
+      if (prev !== 'detail') setViewHistory(h => [...h.slice(-19), prev])
+      return 'detail'
+    })
     // pushState so browser back returns to previous view
     const url = new URL(window.location.href)
     url.searchParams.set('view', 'detail')
     url.searchParams.set('instance', instance || '')
     url.searchParams.delete('tab')
     window.history.pushState(null, '', url.toString())
-    setViewState('detail')
   }, [])
 
   const navToExploreWithRange = useCallback((instance: string, from: number, to: number) => {
@@ -221,6 +248,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setFrom(from)
     setTo(to)
     setRangePresetRaw('custom')
+    setViewState(prev => {
+      if (prev !== 'explore') setViewHistory(h => [...h.slice(-19), prev])
+      return 'explore'
+    })
     const url = new URL(window.location.href)
     url.searchParams.set('view', 'explore')
     url.searchParams.set('instance', instance || '')
@@ -228,7 +259,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     url.searchParams.set('to', String(to))
     url.searchParams.delete('tab')
     window.history.pushState(null, '', url.toString())
-    setViewState('explore')
   }, [])
 
   const navToAlerts = useCallback((filters?: { severity?: string; instance?: string }) => {
@@ -245,7 +275,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const navToScanner = useCallback((instance: string, search: string) => {
     setSelectedInstanceRaw(instance)
     setScannerSearchState(search)
-    setViewState('scanner')
+    setViewState(prev => {
+      if (prev !== 'scanner') setViewHistory(h => [...h.slice(-19), prev])
+      return 'scanner'
+    })
   }, [])
 
   const openTableDetail = useCallback((instance: string, database: string, table: string) => {
@@ -265,6 +298,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const store: Store = {
     view, setView: setView as (v: View) => void,
+    viewHistory, goBack,
     selectedInstance,
     instance: selectedInstance,
     setSelectedInstance: setSelectedInstance,

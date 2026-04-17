@@ -88,6 +88,31 @@ function Skeleton() {
   )
 }
 
+/* ── InfoTooltip ─────────────────────────────────────────────────────── */
+function InfoTooltip({ text }: { text: string }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <span className="relative inline-flex items-center">
+      <button
+        type="button"
+        onMouseEnter={() => setOpen(true)}
+        onMouseLeave={() => setOpen(false)}
+        onClick={() => setOpen(o => !o)}
+        className="text-[var(--dim)] hover:text-[var(--accent)] transition-colors ml-1"
+        aria-label="More info"
+      >
+        <HelpCircle size={12} />
+      </button>
+      {open && (
+        <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-1.5 z-50 w-56 px-3 py-2 rounded-lg bg-[var(--card)] border border-[var(--border)] shadow-lg text-xs text-[var(--text)] leading-relaxed pointer-events-none">
+          {text}
+          <div className="absolute left-1/2 -translate-x-1/2 top-full w-0 h-0 border-x-4 border-x-transparent border-t-4 border-t-[var(--border)]" />
+        </div>
+      )}
+    </span>
+  )
+}
+
 /* ── Detail view ─────────────────────────────────────────────────────── */
 export default function Detail({ refreshKey }: { refreshKey?: number }) {
   const { instance, setView, setInstance, customFrom, customTo } = useStore()
@@ -370,13 +395,20 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
       {/* ═══ SUMMARY TAB ═══ */}
       {activeTab === 'summary' && (
         <div className="space-y-4">
-          <HealthChecklist instance={instance} refreshTrigger={currentStateRefreshTick} />
+          <div>
+            <div className="flex items-center mb-2">
+              <span className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-widest">Health Score</span>
+              <InfoTooltip text="Health score (0–100) measures overall instance health. 100 = all checks passing. Drops when CPU, memory, query latency, parts count, or replication fall outside thresholds." />
+            </div>
+            <HealthChecklist instance={instance} refreshTrigger={currentStateRefreshTick} />
+          </div>
 
           {slo && (
             <Card className="p-3">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-semibold text-[var(--text-muted)] flex items-center gap-1.5">
                   <Activity size={13} /> SLO / Uptime
+                  <InfoTooltip text="Service Level Objective: percentage of polling cycles where the instance was reachable and healthy. Uptime = instance responded. Healthy = health score ≥ 70." />
                 </span>
                 <div className="flex gap-1">
                   {[1, 7, 30].map(d => (

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, type FC } from 'react'
 import { RefreshCw, Sparkles, Zap } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
@@ -102,6 +102,89 @@ function MetricChip({
     </div>
   )
 }
+
+/* ── Setup Wizard ────────────────────────────────────────────────────── */
+const YAML_SNIPPET = `instances:
+  - name: my-cluster
+    host: localhost
+    port: 9000
+    user: default
+    password: ""
+    database: default`
+
+const RESTART_SNIPPET = `sudo systemctl restart ch-analyzer
+# or if running locally:
+./ch-analyzer --config path/to/config.yaml`
+
+function CopyBlock({ snippet }: { snippet: string }) {
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(snippet).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    }).catch(() => {})
+  }
+
+  return (
+    <div className="relative">
+      <pre className="bg-[var(--surface)] border border-[var(--border)] rounded-lg p-3 text-xs font-mono overflow-x-auto text-[var(--text)]">
+        {snippet}
+      </pre>
+      <button
+        onClick={handleCopy}
+        className="absolute top-2 right-2 px-2 py-0.5 rounded text-[10px] font-medium bg-[var(--card)] border border-[var(--border)] text-[var(--dim)] hover:text-[var(--text)] hover:border-[var(--accent)]/40 transition-colors"
+      >
+        {copied ? 'Copied!' : 'Copy'}
+      </button>
+    </div>
+  )
+}
+
+const SetupWizard: FC<{ onExplore: () => void }> = ({ onExplore }) => (
+  <div className="max-w-lg mx-auto py-16 px-4">
+    <div className="bg-[var(--card)] border border-[var(--border)] rounded-xl p-8 space-y-8">
+      {/* Header */}
+      <div className="text-center space-y-1">
+        <h2 className="text-lg font-semibold text-[var(--text)]">Get started with CH Analyzer</h2>
+        <p className="text-sm text-[var(--dim)]">Monitor your ClickHouse instances in minutes</p>
+      </div>
+
+      {/* Step 1 */}
+      <div className="space-y-3">
+        <div className="flex items-center gap-3">
+          <span className="flex-shrink-0 w-6 h-6 rounded-full bg-[var(--accent)]/15 border border-[var(--accent)]/30 flex items-center justify-center text-[11px] font-bold text-[var(--accent)]">1</span>
+          <span className="text-sm font-medium text-[var(--text)]">Connect your first ClickHouse instance</span>
+        </div>
+        <p className="text-xs text-[var(--dim)] pl-9">
+          Add an <code className="font-mono bg-[var(--surface)] px-1 py-0.5 rounded border border-[var(--border)]">instances</code> block to your config file:
+        </p>
+        <div className="pl-9">
+          <CopyBlock snippet={YAML_SNIPPET} />
+        </div>
+      </div>
+
+      {/* Step 2 */}
+      <div className="space-y-3">
+        <div className="flex items-center gap-3">
+          <span className="flex-shrink-0 w-6 h-6 rounded-full bg-[var(--accent)]/15 border border-[var(--accent)]/30 flex items-center justify-center text-[11px] font-bold text-[var(--accent)]">2</span>
+          <span className="text-sm font-medium text-[var(--text)]">Restart to connect</span>
+        </div>
+        <p className="text-xs text-[var(--dim)] pl-9">After saving your config file, restart ch-analyzer:</p>
+        <div className="pl-9">
+          <CopyBlock snippet={RESTART_SNIPPET} />
+        </div>
+      </div>
+
+      {/* Footer link */}
+      <div className="text-center pt-2">
+        <button onClick={onExplore} className="text-[var(--accent)] hover:underline text-sm">
+          Explore features →
+        </button>
+      </div>
+    </div>
+  </div>
+)
 
 /* ── Overview ────────────────────────────────────────────────────────── */
 export default function Overview({ refreshKey }: { refreshKey?: number }) {
@@ -302,60 +385,38 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
         <AlertActivityStrip onViewHistory={() => setView('history')} />
       </div>
 
-      {/* ── Instances section ── */}
-      <Section
-        title={`Instances · ${totalInstances}`}
-        defaultOpen
-        actions={
-          <span className="text-[10px] text-[var(--dim)] mr-1">
-            {healthData && (
-              <span className={`inline-flex items-center gap-1 ${healthData.status === 'ok' ? 'text-green-400' : 'text-yellow-400'}`}>
-                <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ backgroundColor: healthData.status === 'ok' ? '#22c55e' : '#eab308' }} />
-                v{healthData.version} · up {healthData.uptime}
-              </span>
-            )}
-          </span>
-        }
-      >
-        <div className="rounded-lg border border-[var(--border)] overflow-hidden">
-          {/* Table header */}
-          <div className="grid bg-[var(--surface)] border-b border-[var(--border)] px-4 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-[var(--dim)]"
-            style={{ gridTemplateColumns: '16px 1fr 48px 280px 80px 100px 24px' }}
-          >
-            <span />
-            <span>Instance</span>
-            <span className="text-right">Health</span>
-            <span className="hidden sm:block text-right pr-8">CPU / MEM / Queries / Merges</span>
-            <span className="hidden md:block">Areas</span>
-            <span className="text-right">Alerts</span>
-            <span />
-          </div>
-          {instances.length === 0 ? (
-            <div className="flex flex-col items-center gap-4 px-4 py-12 text-[var(--dim)]">
-              <svg className="w-10 h-10 opacity-25" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
-              </svg>
-              <div className="text-center">
-                <p className="text-sm font-semibold text-[var(--text)]">No instances configured</p>
-                <p className="text-xs opacity-60 mt-1">Add a ClickHouse instance to your config file to start monitoring</p>
-              </div>
-              <div className="w-full max-w-md">
-                <div className="text-[10px] text-[var(--dim)] uppercase tracking-wider mb-1.5 px-1">Example config</div>
-                <pre className="bg-[var(--surface)] border border-[var(--border)] rounded-lg px-4 py-3 text-[11px] font-mono text-[var(--text)] overflow-x-auto whitespace-pre leading-relaxed">
-{`instances:
-  - name: "my-clickhouse"
-    host: "localhost"
-    port: 9000
-    user: "default"
-    password: ""`}
-                </pre>
-              </div>
-              <p className="text-[11px] text-[var(--dim)] text-center max-w-xs">
-                Restart CH Analyzer after saving the config. The instance will appear here within seconds.
-              </p>
+      {/* ── Instances section (or setup wizard when empty) ── */}
+      {instances.length === 0 ? (
+        <SetupWizard onExplore={() => setView('discover')} />
+      ) : (
+        <Section
+          title={`Instances · ${totalInstances}`}
+          defaultOpen
+          actions={
+            <span className="text-[10px] text-[var(--dim)] mr-1">
+              {healthData && (
+                <span className={`inline-flex items-center gap-1 ${healthData.status === 'ok' ? 'text-green-400' : 'text-yellow-400'}`}>
+                  <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ backgroundColor: healthData.status === 'ok' ? '#22c55e' : '#eab308' }} />
+                  v{healthData.version} · up {healthData.uptime}
+                </span>
+              )}
+            </span>
+          }
+        >
+          <div className="rounded-lg border border-[var(--border)] overflow-hidden">
+            {/* Table header */}
+            <div className="grid bg-[var(--surface)] border-b border-[var(--border)] px-4 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-[var(--dim)]"
+              style={{ gridTemplateColumns: '16px 1fr 48px 280px 80px 100px 24px' }}
+            >
+              <span />
+              <span>Instance</span>
+              <span className="text-right">Health</span>
+              <span className="hidden sm:block text-right pr-8">CPU / MEM / Queries / Merges</span>
+              <span className="hidden md:block">Areas</span>
+              <span className="text-right">Alerts</span>
+              <span />
             </div>
-          ) : (
-            instances.map(inst => (
+            {instances.map(inst => (
               <NodeCard
                 key={inst.name}
                 instance={inst}
@@ -364,10 +425,10 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
                 onResolved={() => setManualRefreshTick(t => t + 1)}
                 onSelectAlert={setSelectedAlert}
               />
-            ))
-          )}
-        </div>
-      </Section>
+            ))}
+          </div>
+        </Section>
+      )}
 
       {/* ── Active alerts ── */}
       {freshAlerts.length > 0 && (

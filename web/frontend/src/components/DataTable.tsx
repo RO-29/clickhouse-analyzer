@@ -40,6 +40,8 @@ interface DataTableProps {
   contextMenu?: (row: Record<string, any>) => ContextMenuItem[]
   /** Enable j/k keyboard navigation when container is focused */
   keyboardNav?: boolean
+  /** Column keys to show on mobile (< 768px); all others are hidden */
+  mobileColumns?: string[]
 }
 
 export function DataTable({
@@ -57,6 +59,7 @@ export function DataTable({
   storageKey,
   contextMenu,
   keyboardNav = false,
+  mobileColumns,
 }: DataTableProps) {
   const [sortKey, setSortKey] = useState<string | null>(null)
   const [sortAsc, setSortAsc] = useState(true)
@@ -76,6 +79,15 @@ export function DataTable({
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; row: Record<string, any> } | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const colMenuRef = useRef<HTMLDivElement>(null)
+  const tableRef = useRef<HTMLDivElement>(null)
+
+  const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth < 768)
+
+  useEffect(() => {
+    const handler = () => setIsMobile(window.innerWidth < 768)
+    window.addEventListener('resize', handler)
+    return () => window.removeEventListener('resize', handler)
+  }, [])
 
   const source = Array.isArray(data) ? data : Array.isArray(rows) ? rows : []
   const visibleColumns = columns.filter(c => !hiddenCols.has(c.key))
@@ -163,13 +175,17 @@ export function DataTable({
       tabIndex={keyboardNav ? 0 : undefined}
       onFocus={() => keyboardNav && focusedRow === null && setFocusedRow(0)}
     >
-      {/* Scroll hint overlay — static gradient on right edge for mobile */}
-      <div className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-[var(--card)] to-transparent sm:hidden z-10" />
-      <div className="overflow-auto relative" style={{ maxHeight: maxHeight ?? undefined }}>
+      <div className="relative">
+        {isMobile && (
+          <div className="absolute right-0 top-0 bottom-0 w-8 bg-gradient-to-l from-[var(--card)] to-transparent pointer-events-none z-10" />
+        )}
+      <div className="overflow-x-auto" ref={tableRef} style={{ maxHeight: maxHeight ?? undefined }}>
       <table className="w-full min-w-[500px]">
         <thead className="sticky top-0 bg-[var(--card)] z-10">
           <tr className="border-b border-[var(--border)]">
-            {visibleColumns.map(col => (
+            {visibleColumns.map(col => {
+              const isHidden = isMobile && mobileColumns != null && !mobileColumns.includes(col.key)
+              return (
               <th
                 key={col.key}
                 title={col.tooltip}
@@ -177,6 +193,7 @@ export function DataTable({
                   'text-left py-2 px-3 text-[10px] font-semibold uppercase tracking-widest text-[var(--dim)] cursor-pointer select-none hover:text-[var(--text)] transition-colors whitespace-nowrap',
                   col.className,
                   col.tooltip && 'underline decoration-dotted decoration-[var(--dim)]',
+                  isHidden && 'hidden',
                 )}
                 onClick={() => handleSort(col.key)}
               >
@@ -185,7 +202,8 @@ export function DataTable({
                   {sortKey === col.key && (sortAsc ? <ChevronUp size={11} /> : <ChevronDown size={11} />)}
                 </span>
               </th>
-            ))}
+              )
+            })}
             {/* Column toggle + analyze header */}
             {(onRowAnalyze || showColumnToggle) && (
               <th className="w-8 py-2 px-1 text-right">
@@ -203,7 +221,9 @@ export function DataTable({
                         <div className="px-3 py-1.5 text-[10px] font-semibold text-[var(--dim)] uppercase tracking-wider border-b border-[var(--border)] mb-1">
                           Columns
                         </div>
-                        {columns.filter(c => c.hideable !== false).map(col => (
+                        {columns.filter(c => c.hideable !== false).map(col => {
+                          const autoHiddenOnMobile = isMobile && mobileColumns != null && !mobileColumns.includes(col.key)
+                          return (
                           <label
                             key={col.key}
                             className="flex items-center gap-2 px-3 py-1.5 text-[12px] cursor-pointer hover:bg-[var(--hover)] transition-colors"
@@ -213,10 +233,15 @@ export function DataTable({
                               checked={!hiddenCols.has(col.key)}
                               onChange={() => toggleColumn(col.key)}
                               className="accent-[var(--accent)]"
+                              disabled={autoHiddenOnMobile}
                             />
-                            {col.label}
+                            <span className={autoHiddenOnMobile ? 'text-[var(--dim)]' : ''}>
+                              {col.label}
+                              {autoHiddenOnMobile && <span className="ml-1 text-[10px] text-[var(--dim)]">(mobile)</span>}
+                            </span>
                           </label>
-                        ))}
+                          )
+                        })}
                       </div>
                     )}
                   </div>
@@ -245,11 +270,14 @@ export function DataTable({
                   setCtxMenu({ x: e.clientX, y: e.clientY, row })
                 } : undefined}
               >
-                {visibleColumns.map(col => (
-                  <td key={col.key} className={cn(`${rowPy} px-3 font-mono text-[11px]`, col.className)}>
+                {visibleColumns.map(col => {
+                  const isHidden = isMobile && mobileColumns != null && !mobileColumns.includes(col.key)
+                  return (
+                  <td key={col.key} className={cn(`${rowPy} px-3 font-mono text-[11px]`, col.className, isHidden && 'hidden')}>
                     {col.format ? col.format(row[col.key], row) : String(row[col.key] ?? '')}
                   </td>
-                ))}
+                  )
+                })}
                 {(onRowAnalyze || showColumnToggle) && (
                   <td className={`${rowPy} px-1 w-8 text-right`}>
                     {onRowAnalyze && (
@@ -271,7 +299,8 @@ export function DataTable({
           })}
         </tbody>
       </table>
-      </div>{/* end overflow-auto scroll wrapper */}
+      </div>{/* end overflow-x-auto scroll wrapper */}
+      </div>{/* end relative fade wrapper */}
 
       {/* Pagination */}
       {pageSize && totalPages > 1 && (
