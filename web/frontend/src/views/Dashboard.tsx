@@ -210,10 +210,10 @@ function DiskUsageWidget({ inst }: { inst: string }) {
     <WidgetCard title="Disk Usage" noInnerPad>
       <MetricChart
         instance={inst}
-        metrics={['storage.disk.free_space']}
-        title="Disk Free Space"
+        metrics={['storage.disk.used_percent']}
+        title="Disk Used %"
         height={120}
-        yFormat="bytes"
+        yFormat="percent"
       />
     </WidgetCard>
   )

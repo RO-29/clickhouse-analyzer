@@ -256,27 +256,24 @@ function TableDetailModal({
   onAnalyze: (entry: TableScanEntry) => void
 }) {
   const [showQuery, setShowQuery] = useState(false)
-  const [partitionsOpen, setPartitionsOpen] = useState(false)
+  const [partitionsOpen, setPartitionsOpen] = useState(true)
   const [partitionRows, setPartitionRows] = useState<PartitionDiskRow[] | null>(null)
   const [partitionsLoading, setPartitionsLoading] = useState(false)
   const [partitionsError, setPartitionsError] = useState<string | null>(null)
 
-  const handleTogglePartitions = useCallback(async () => {
-    const nextOpen = !partitionsOpen
-    setPartitionsOpen(nextOpen)
-    if (nextOpen && partitionRows === null && !partitionsLoading) {
-      setPartitionsLoading(true)
-      setPartitionsError(null)
-      try {
-        const rows = await api.tablePartitions(instance, entry.database, entry.table)
-        setPartitionRows(rows)
-      } catch (e: any) {
-        setPartitionsError(e?.message ?? 'Failed to load partitions')
-      } finally {
-        setPartitionsLoading(false)
-      }
-    }
-  }, [partitionsOpen, partitionRows, partitionsLoading, instance, entry.database, entry.table])
+  // Auto-load partition data when modal opens
+  useEffect(() => {
+    setPartitionsLoading(true)
+    setPartitionsError(null)
+    api.tablePartitions(instance, entry.database, entry.table)
+      .then(rows => setPartitionRows(rows))
+      .catch((e: any) => setPartitionsError(e?.message ?? 'Failed to load partitions'))
+      .finally(() => setPartitionsLoading(false))
+  }, [instance, entry.database, entry.table])
+
+  const handleTogglePartitions = useCallback(() => {
+    setPartitionsOpen(v => !v)
+  }, [])
 
   const act = entry.query_activity
   const lastSel = fmtActivityTs(act.last_select)
@@ -604,10 +601,23 @@ function TableRow({
         {fmtRows(entry.total_rows)}
       </td>
 
-      {/* Size */}
+      {/* Size + disk split */}
       <td className={cn('px-2 py-1.5 text-[11px] font-mono text-right tabular-nums', hl('bytes'),
         entry.total_bytes > 0 ? 'text-[var(--fg)]' : 'text-[var(--dim)]')}>
         {fmtBytes(entry.total_bytes)}
+        {(() => {
+          const s3b = entry.disk_usage?.filter(d => isS3Type(d.disk_type)).reduce((s, d) => s + d.bytes, 0) ?? 0
+          const locb = entry.disk_usage?.filter(d => !isS3Type(d.disk_type)).reduce((s, d) => s + d.bytes, 0) ?? 0
+          if (s3b === 0 || locb + s3b === 0) return null
+          const locPct = locb / (locb + s3b) * 100
+          const s3Pct = s3b / (locb + s3b) * 100
+          return (
+            <div className="flex h-1 rounded-full overflow-hidden w-full mt-0.5" title={`Local: ${fmtBytes(locb)} · S3: ${fmtBytes(s3b)}`}>
+              <div className="bg-blue-500" style={{ width: `${locPct.toFixed(0)}%` }} />
+              <div className="bg-amber-500" style={{ width: `${s3Pct.toFixed(0)}%` }} />
+            </div>
+          )
+        })()}
       </td>
 
       {/* Parts */}
