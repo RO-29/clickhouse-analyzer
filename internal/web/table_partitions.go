@@ -55,7 +55,7 @@ SELECT
 FROM system.parts AS p
 LEFT JOIN system.disks AS d ON p.disk_name = d.name
 WHERE p.database = '`+safeDB+`' AND p.table = '`+safeTable+`' AND p.active = 1
-GROUP BY p.partition, p.disk_name, disk_type
+GROUP BY p.partition, p.disk_name, COALESCE(d.type, 'local')
 ORDER BY p.partition DESC, bytes DESC
 LIMIT 500
 `)

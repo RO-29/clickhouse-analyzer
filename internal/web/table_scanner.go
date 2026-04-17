@@ -263,23 +263,21 @@ LIMIT 1000
 	}()
 
 	// 5. Partition aggregate stats per table
+	// Note: `table` is quoted because it is a reserved word in ClickHouse SQL.
 	go func() {
 		defer wg.Done()
-		partAggRows, partAggErr = client.Query(ctx, `
-SELECT
-    database,
-    table,
-    count(DISTINCT partition) AS partition_count,
-    max(pb) AS max_partition_bytes,
-    min(pb) AS min_partition_bytes
-FROM (
-    SELECT database, table, partition, sum(bytes_on_disk) AS pb
-    FROM system.parts
-    WHERE active = 1
-    GROUP BY database, table, partition
-) sub
-GROUP BY database, table
-`)
+		partAggRows, partAggErr = client.Query(ctx,
+			"SELECT database, `table`," +
+			" count(DISTINCT partition) AS partition_count," +
+			" max(pb) AS max_partition_bytes," +
+			" min(pb) AS min_partition_bytes" +
+			" FROM (" +
+			"   SELECT database, `table`, partition, sum(bytes_on_disk) AS pb" +
+			"   FROM system.parts WHERE active = 1" +
+			"   GROUP BY database, `table`, partition" +
+			" ) sub" +
+			" GROUP BY database, `table`",
+		)
 	}()
 
 	wg.Wait()

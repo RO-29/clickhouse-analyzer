@@ -195,8 +195,8 @@ function QueryThroughputWidget({ inst }: { inst: string }) {
     <WidgetCard title="Query Throughput" noInnerPad>
       <MetricChart
         instance={inst}
-        metrics={['Query']}
-        title="Queries/sec"
+        metrics={['system.metrics.Query']}
+        title="Active Queries"
         height={120}
       />
     </WidgetCard>
@@ -210,8 +210,8 @@ function DiskUsageWidget({ inst }: { inst: string }) {
     <WidgetCard title="Disk Usage" noInnerPad>
       <MetricChart
         instance={inst}
-        metrics={['FilesystemMainPathAvailableBytes']}
-        title="Disk Available"
+        metrics={['storage.disk.free_space']}
+        title="Disk Free Space"
         height={120}
         yFormat="bytes"
       />
@@ -226,8 +226,8 @@ function InsertRateWidget({ inst }: { inst: string }) {
     <WidgetCard title="Insert Rate" noInnerPad>
       <MetricChart
         instance={inst}
-        metrics={['InsertedRows']}
-        title="Insert Rate"
+        metrics={['inserts.total.rows']}
+        title="Inserted Rows"
         height={120}
       />
     </WidgetCard>
