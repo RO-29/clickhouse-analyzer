@@ -134,7 +134,7 @@ function Layout() {
   }
 
   return (
-    <div className="flex min-h-screen bg-[var(--bg)] text-[var(--text)]">
+    <div className="flex min-h-screen overflow-x-hidden bg-[var(--bg)] text-[var(--text)]">
       <Sidebar mobileOpen={mobileSidebarOpen} onMobileClose={() => setMobileSidebarOpen(false)} onOpenPalette={() => setPaletteOpen(true)} />
       <div className={cn("flex-1 flex flex-col transition-all duration-200", sidebarCollapsed ? "md:ml-14" : "md:ml-[220px]")}>
         <TopBar onMobileMenuClick={() => setMobileSidebarOpen(o => !o)} />

@@ -82,6 +82,10 @@
     --chart-tooltip-border: #e2e8f0;
   }
 
+  html, body {
+    overflow-x: hidden;
+  }
+
   html {
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     font-size: 13px;
