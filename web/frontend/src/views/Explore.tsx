@@ -1446,54 +1446,70 @@ function LiveTab({ instance, onShowQuery }: { instance: string; onShowQuery: (q:
         </Card>
       )}
       {!loading && !error && rows.length > 0 && (
-        <div className="space-y-1">
-          {rows.map((r, i) => {
-            const qid = String(r.query_id ?? '')
-            const q = String(r.query_short ?? r.query ?? '')
-            const sec = Number(r.elapsed) || 0
-            const pct = Math.min(100, (sec / 300) * 100) // 300s = 100%
-            const pill = sec > 300 ? 'bg-red-500' : sec > 60 ? 'bg-orange-500' : sec > 10 ? 'bg-yellow-500' : 'bg-emerald-500'
-            const kind = String(r.query_kind || r.kind || '').toLowerCase()
-            return (
-              <div key={i} className="flex items-center gap-2.5 px-3 py-2.5 rounded-lg border border-[var(--border)] bg-[var(--card)] hover:bg-[var(--hover)] transition-colors group">
-                {/* Elapsed pill */}
-                <div className="flex items-center gap-1.5 shrink-0 w-20">
-                  <div className="w-10 h-1.5 rounded-full bg-[var(--border)] overflow-hidden">
-                    <div className={cn('h-full rounded-full transition-all', pill)} style={{ width: `${pct}%` }} />
+        <div className="overflow-x-auto">
+          <div className="space-y-1 min-w-[600px]">
+            {/* Column headers */}
+            <div className="flex items-center gap-2.5 px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--dim)]">
+              <span className="w-20 shrink-0">Elapsed</span>
+              <span className="w-20 shrink-0">User</span>
+              <span className="w-12 shrink-0">Kind</span>
+              <span className="flex-1">Query</span>
+              <span className="w-16 text-right shrink-0">Memory</span>
+              <span className="w-16 text-right shrink-0">Read</span>
+              <span className="w-12 shrink-0" />
+            </div>
+            {rows.map((r, i) => {
+              const qid = String(r.query_id ?? '')
+              const q = String(r.query_short ?? r.query ?? '')
+              const sec = Number(r.elapsed) || 0
+              const pct = Math.min(100, (sec / 300) * 100) // 300s = 100%
+              const pill = sec > 300 ? 'bg-red-500' : sec > 60 ? 'bg-orange-500' : sec > 10 ? 'bg-yellow-500' : 'bg-emerald-500'
+              const kind = String(r.query_kind || r.kind || '').toLowerCase()
+              return (
+                <div key={i} className="flex items-center gap-2.5 px-3 py-2.5 rounded-lg border border-[var(--border)] bg-[var(--card)] hover:bg-[var(--hover)] transition-colors group">
+                  {/* Elapsed pill */}
+                  <div className="flex items-center gap-1.5 shrink-0 w-20">
+                    <div className="w-10 h-1.5 rounded-full bg-[var(--border)] overflow-hidden">
+                      <div className={cn('h-full rounded-full transition-all', pill)} style={{ width: `${pct}%` }} />
+                    </div>
+                    <span className={cn('text-xs tabular-nums font-mono', elapsedColor(r.elapsed))}>
+                      {elapsed(r.elapsed)}
+                    </span>
                   </div>
-                  <span className={cn('text-xs tabular-nums font-mono', elapsedColor(r.elapsed))}>
-                    {elapsed(r.elapsed)}
+                  {/* User */}
+                  <span className="text-xs text-[var(--dim)] w-20 shrink-0 truncate" title={r.user}>{r.user}</span>
+                  {/* Kind badge */}
+                  <span className="w-12 shrink-0">
+                    {kind && (
+                      <span className={cn('inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium', kindBg(kind))}>
+                        {kind.slice(0, 3).toUpperCase()}
+                      </span>
+                    )}
                   </span>
+                  {/* Query preview */}
+                  <span className="text-xs font-mono text-[var(--fg)] truncate flex-1 min-w-0" title={q}>
+                    <SqlHighlight text={q} maxLen={120} />
+                  </span>
+                  {/* Memory */}
+                  <span className="text-xs text-[var(--dim)] w-16 text-right shrink-0 tabular-nums" title="Memory usage">
+                    {r.memory || '—'}
+                  </span>
+                  {/* Read bytes */}
+                  <span className="text-xs text-[var(--dim)] w-16 text-right shrink-0 tabular-nums" title="Read bytes">
+                    {r.read_size || '—'}
+                  </span>
+                  <div className="flex items-center gap-0.5 w-12 shrink-0 justify-end">
+                    <button onClick={() => onShowQuery(q)}
+                      className="p-1 rounded text-[var(--dim)] hover:text-[var(--accent)] opacity-0 group-hover:opacity-100 transition-all"
+                      title="View query"><Maximize2 size={12} /></button>
+                    <button onClick={() => setKillTarget(qid)}
+                      className="p-1 rounded text-[var(--dim)] hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"
+                      title="Kill query"><Skull size={12} /></button>
+                  </div>
                 </div>
-                {/* User */}
-                <span className="text-xs text-[var(--dim)] w-20 shrink-0 truncate" title={r.user}>{r.user}</span>
-                {/* Kind badge */}
-                {kind && (
-                  <span className={cn('shrink-0 inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium', kindBg(kind))}>
-                    {kind.slice(0, 3).toUpperCase()}
-                  </span>
-                )}
-                {/* Query preview */}
-                <span className="text-xs font-mono text-[var(--fg)] truncate flex-1" title={q}>
-                  <SqlHighlight text={q} maxLen={100} />
-                </span>
-                {/* Memory */}
-                <span className="text-xs text-[var(--dim)] w-16 text-right shrink-0 tabular-nums" title="Memory usage">
-                  {r.memory || ''}
-                </span>
-                {/* Read bytes */}
-                <span className="text-xs text-[var(--dim)] w-16 text-right shrink-0 tabular-nums" title="Read bytes">
-                  {r.read_size || ''}
-                </span>
-                <button onClick={() => onShowQuery(q)}
-                  className="shrink-0 p-1 rounded text-[var(--dim)] hover:text-[var(--accent)] opacity-0 group-hover:opacity-100 transition-all"
-                  title="View query"><Maximize2 size={12} /></button>
-                <button onClick={() => setKillTarget(qid)}
-                  className="shrink-0 p-1 rounded text-[var(--dim)] hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"
-                  title="Kill query"><Skull size={12} /></button>
-              </div>
-            )
-          })}
+              )
+            })}
+          </div>
         </div>
       )}
 

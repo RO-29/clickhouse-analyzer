@@ -1326,7 +1326,13 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
       )}
 
       {/* ---- Alert list ---- */}
-      {filtered.length === 0 ? (
+      {loading && activeAlerts.length === 0 ? (
+        <div className="space-y-2">
+          {[...Array(5)].map((_, i) => (
+            <div key={i} className="h-16 rounded-xl bg-[var(--hover)] animate-pulse" />
+          ))}
+        </div>
+      ) : filtered.length === 0 ? (
         <div className="flex flex-col items-center gap-2 py-12 text-[var(--dim)]">
           <Bell size={20} className="opacity-30" />
           <span className="text-sm">No alerts match the current filters</span>

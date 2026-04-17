@@ -864,7 +864,8 @@ export default function Terminal() {
               <span>Results from {execTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
             </div>
           )}
-          <div className={cn('flex gap-4', isSplit ? 'flex-row items-start' : 'flex-col')}>
+          <div className={cn(isSplit ? 'overflow-x-auto' : '')}>
+          <div className={cn('flex gap-4', isSplit ? 'flex-row items-start min-w-max' : 'flex-col')}>
             {allInstances.map((i, idx) => {
               const nr = nodeResults[i] ?? { result: null, error: null, loading: false }
               return (
@@ -878,6 +879,7 @@ export default function Terminal() {
                 />
               )
             })}
+          </div>
           </div>
           </>
         )}

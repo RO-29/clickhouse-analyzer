@@ -1635,23 +1635,33 @@ function CrossQueryView({ from, to }: { from: number; to: number }) {
 /*  Timeline metrics list                                             */
 /* ------------------------------------------------------------------ */
 const TIMELINE_METRICS = [
-  'system.metrics.MemoryResident',
-  'system.metrics.OSMemoryTotal',
-  'system.metrics.LoadAverage1',
+  'system.memory.used_percent',
+  'system.memory.rss_percent',
+  'system.async.MemoryResident',
+  'system.memory.total_bytes',
+  'system.async.LoadAverage1',
   'system.metrics.Query',
   'system.metrics.Merge',
   'system.metrics.PartMutation',
   'system.metrics.MemoryTracking',
-  'system.metrics.MarkCacheBytes',
-  'system.memory.used_percent',
-  'system.memory.rss_percent',
 ]
 
+const METRIC_LABELS: Record<string, string> = {
+  'system.memory.used_percent':  'Memory Used %',
+  'system.memory.rss_percent':   'RSS %',
+  'system.async.MemoryResident': 'Memory Resident',
+  'system.memory.total_bytes':   'Total Memory',
+  'system.async.LoadAverage1':   'Load Avg 1m',
+  'system.metrics.Query':        'Active Queries',
+  'system.metrics.Merge':        'Merges',
+  'system.metrics.PartMutation': 'Mutations',
+  'system.metrics.MemoryTracking': 'Memory Tracking',
+}
+
 const BYTES_METRICS = new Set([
-  'system.metrics.MemoryResident',
-  'system.metrics.OSMemoryTotal',
+  'system.async.MemoryResident',
+  'system.memory.total_bytes',
   'system.metrics.MemoryTracking',
-  'system.metrics.MarkCacheBytes',
 ])
 
 function TimelineView({ from, to }: { from: number; to: number }) {
@@ -1683,7 +1693,7 @@ function TimelineView({ from, to }: { from: number; to: number }) {
           className="rounded border border-[var(--border)] bg-[var(--card)] px-2 py-1 text-xs focus:outline-none focus:border-[var(--accent)]"
         >
           {TIMELINE_METRICS.map(m => (
-            <option key={m} value={m}>{m.replace(/^system\.(metrics|memory)\./, '')}</option>
+            <option key={m} value={m}>{METRIC_LABELS[m] ?? m}</option>
           ))}
         </select>
         {loading && <Loader2 size={13} className="animate-spin text-[var(--dim)]" />}
