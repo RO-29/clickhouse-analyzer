@@ -1239,7 +1239,7 @@ const BAR_COLORS = [
   '#7c3aed', '#22c55e', '#eab308', '#ef4444', '#3b82f6', '#14b8a6', '#f97316', '#ec4899',
 ]
 
-function MetricsView({ baseline, instances, onAnalyze }: { baseline: string; instances: string[]; onAnalyze: (data: Record<string, any>) => void }) {
+function MetricsView({ baseline, instances, from, to, onAnalyze }: { baseline: string; instances: string[]; from: number; to: number; onAnalyze: (data: Record<string, any>) => void }) {
   const [data, setData] = useState<MetricsData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -1248,11 +1248,12 @@ function MetricsView({ baseline, instances, onAnalyze }: { baseline: string; ins
 
   useEffect(() => {
     setLoading(true)
+    setError('')
     api.compare.metrics()
       .then(setData)
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false))
-  }, [])
+  }, [from, to])
 
   if (loading) return <LoadingSkeleton />
   if (error) return <ErrorMsg msg={error} />
@@ -1749,7 +1750,8 @@ export default function Compare() {
     try { return localStorage.getItem('compare-baseline') ?? '' } catch { return '' }
   })
 
-  // Load tables + settings eagerly — needed for node pill status
+  // Load tables + settings eagerly — needed for node pill status.
+  // Re-fetch when the time range changes so stale data is not shown.
   useEffect(() => {
     setTablesLoading(true)
     setTablesError(null)
@@ -1764,7 +1766,7 @@ export default function Compare() {
       .then(setSettingsData)
       .catch((e: any) => setSettingsError(e?.message ?? 'Failed to load settings data'))
       .finally(() => setSettingsLoading(false))
-  }, [])
+  }, [from, to])
 
   // Use compare API instances as authoritative (they have actual data).
   // Fall back to store instances if compare hasn't loaded yet.
@@ -1860,7 +1862,7 @@ export default function Compare() {
               : <EmptyMsg msg="No settings data" />
       )}
       {tab === 'metrics' && (
-        <MetricsView baseline={effectiveBaseline} instances={instances} onAnalyze={makeElementAnalyzer(d => `Metric: ${d.metric}`)} />
+        <MetricsView baseline={effectiveBaseline} instances={instances} from={from} to={to} onAnalyze={makeElementAnalyzer(d => `Metric: ${d.metric}`)} />
       )}
       {tab === 'memory' && (
         <MemoryView baseline={effectiveBaseline} instances={instances} />
