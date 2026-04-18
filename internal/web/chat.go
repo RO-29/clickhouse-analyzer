@@ -639,12 +639,15 @@ func (s *Server) handleChatAPI(
 		sendEvent("status", `{"phase":"collecting"}`)
 
 		// Execute tool calls in parallel.
+		// Results are collected via a channel to avoid concurrent writes to a
+		// shared slice (which would be a data race under the Go race detector).
 		type toolResult struct {
-			id        string
-			name      string
+			idx        int
+			id         string
+			name       string
 			resultJSON string
 		}
-		results := make([]toolResult, len(toolUseBlocks))
+		resultCh := make(chan toolResult, len(toolUseBlocks))
 		var wg sync.WaitGroup
 
 		for i, block := range toolUseBlocks {
@@ -698,7 +701,8 @@ func (s *Server) handleChatAPI(
 					sendEvent("tool_done", string(b))
 				}
 
-				results[i] = toolResult{
+				resultCh <- toolResult{
+					idx:        i,
 					id:         block.ID,
 					name:       block.Name,
 					resultJSON: toolResultJSON(res),
@@ -706,11 +710,18 @@ func (s *Server) handleChatAPI(
 			}()
 		}
 		wg.Wait()
+		close(resultCh)
 		toolCallCount += len(toolUseBlocks)
+
+		// Collect results preserving original order.
+		orderedResults := make([]toolResult, len(toolUseBlocks))
+		for r := range resultCh {
+			orderedResults[r.idx] = r
+		}
 
 		// Build tool_result message.
 		var resultContents []anthropicContent
-		for _, r := range results {
+		for _, r := range orderedResults {
 			resultContents = append(resultContents, anthropicContent{
 				Type:      "tool_result",
 				ToolUseID: r.id,
