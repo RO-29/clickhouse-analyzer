@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Shield, Plus, Trash2, RefreshCw } from 'lucide-react'
+import { Shield, Plus, Trash2, RefreshCw, Clock } from 'lucide-react'
 import { api } from '../lib/api'
 import { cn } from '../lib/utils'
 import { flashToast } from '../lib/notify'
@@ -62,6 +62,8 @@ export default function Maintenance() {
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
+  const [extendingId, setExtendingId] = useState<string | null>(null)
+  const [extending, setExtending] = useState(false)
 
   const isCustomDuration = formDuration === 0
 
@@ -122,6 +124,21 @@ export default function Maintenance() {
       setWindows(ws => ws.filter(w => w.id !== id))
     } catch (e: any) {
       setError(e.message ?? 'Failed to end maintenance window')
+    }
+  }, [])
+
+  const handleExtend = useCallback(async (w: MaintenanceWindow, extraSeconds: number) => {
+    setExtending(true)
+    try {
+      const newEndTime = w.end_time + extraSeconds
+      await api.maintenance.update(w.id, { end_time: newEndTime })
+      setWindows(ws => ws.map(x => x.id === w.id ? { ...x, end_time: newEndTime } : x))
+      flashToast(`Extended by ${extraSeconds / 3600 >= 1 ? `${extraSeconds / 3600}h` : `${extraSeconds / 60}m`}`, 'done')
+      setExtendingId(null)
+    } catch (e: any) {
+      flashToast(e?.message ?? 'Failed to extend window', 'error')
+    } finally {
+      setExtending(false)
     }
   }, [])
 
@@ -291,14 +308,47 @@ export default function Maintenance() {
                       By {w.created_by} · started {fmtTs(w.start_time)} · ends {fmtTs(w.end_time)}
                     </div>
                   </div>
-                  <button
-                    onClick={() => setConfirmDeleteId(w.id)}
-                    className="shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-red-400 hover:bg-red-500/15 border border-red-500/20 transition-colors"
-                    title="End maintenance window now"
-                  >
-                    <Trash2 size={12} />
-                    End now
-                  </button>
+                  <div className="shrink-0 flex flex-col items-end gap-2">
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setExtendingId(extendingId === w.id ? null : w.id)}
+                        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-amber-400 hover:bg-amber-500/15 border border-amber-500/20 transition-colors"
+                        title="Extend maintenance window"
+                      >
+                        <Clock size={12} />
+                        Extend
+                      </button>
+                      <button
+                        onClick={() => setConfirmDeleteId(w.id)}
+                        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-red-400 hover:bg-red-500/15 border border-red-500/20 transition-colors"
+                        title="End maintenance window now"
+                      >
+                        <Trash2 size={12} />
+                        End now
+                      </button>
+                    </div>
+                    {extendingId === w.id && (
+                      <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                        {[
+                          { label: '+1h', secs: 3600 },
+                          { label: '+4h', secs: 4 * 3600 },
+                          { label: '+24h', secs: 24 * 3600 },
+                        ].map(opt => (
+                          <button
+                            key={opt.label}
+                            disabled={extending}
+                            onClick={() => handleExtend(w, opt.secs)}
+                            className={cn(
+                              'px-2.5 py-1 rounded text-xs font-medium border transition-colors',
+                              'bg-[var(--accent)]/10 text-[var(--accent)] border-[var(--accent)]/20 hover:bg-[var(--accent)]/20 disabled:opacity-50',
+                            )}
+                          >
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </Card>
             ))}

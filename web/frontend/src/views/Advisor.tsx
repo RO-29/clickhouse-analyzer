@@ -4,6 +4,7 @@ import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
 import { fmtBytes, fmtNum, fmtDuration, cn } from '../lib/utils'
+import { flashToast } from '../lib/notify'
 import { Card } from '../components/Card'
 import { Badge } from '../components/Badge'
 import { DataTable } from '../components/DataTable'
@@ -120,7 +121,11 @@ function FixButton({ sql, instance }: { sql: string; instance: string }) {
   return (
     <button
       title={sql}
-      onClick={(e) => { e.stopPropagation(); navToTerminal(sql, instance) }}
+      onClick={(e) => {
+        e.stopPropagation()
+        navToTerminal(sql, instance)
+        flashToast('SQL loaded in Terminal — review and run', 'done')
+      }}
       className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium bg-[var(--accent)]/15 text-[var(--accent)] hover:bg-[var(--accent)]/25 transition-colors"
     >
       <Play size={10} />
@@ -139,7 +144,7 @@ function CopySqlButton({ sql }: { sql: string }) {
     navigator.clipboard.writeText(sql).then(() => {
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
-    })
+    }).catch(err => console.error('copy failed', err))
   }
   return (
     <button

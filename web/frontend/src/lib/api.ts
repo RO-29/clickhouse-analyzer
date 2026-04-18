@@ -244,6 +244,13 @@ export const api = {
     list: () => get<MaintenanceWindow[]>('/api/maintenance'),
     create: (instance: string, reason: string, durationMinutes: number, createdBy?: string) =>
       post<MaintenanceWindow>('/api/maintenance', { instance, reason, duration_minutes: durationMinutes, created_by: createdBy ?? 'user' }),
+    update: (id: string, updates: { end_time?: number; reason?: string }) =>
+      fetch(`/api/maintenance/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates),
+        signal: AbortSignal.timeout(30_000),
+      }).then(async r => { if (!r.ok) { let msg = `HTTP ${r.status}`; try { const j = await r.json(); if (j?.error) msg = j.error } catch {} throw new Error(msg) } return r.json() as Promise<MaintenanceWindow> }),
     delete: (id: string) => fetch(`/api/maintenance/${id}`, { method: 'DELETE', signal: AbortSignal.timeout(30_000) }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`) }).catch(err => { console.error('delete failed:', err); throw err }),
   },
   snooze: {

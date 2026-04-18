@@ -176,6 +176,7 @@ export function NodeCard({
         <span
           className="w-2 h-2 rounded-full shrink-0"
           style={{ backgroundColor: scoreColor(instance.health_score) }}
+          title={instance.status ? `Status: ${instance.status}` : undefined}
         />
 
         {/* Name */}
@@ -184,6 +185,14 @@ export function NodeCard({
           {inMaint && (
             <span className="flex items-center gap-1 text-[10px] text-orange-400 bg-orange-500/10 rounded px-1.5 py-0.5 shrink-0" title={maintUntil ? `Until ${maintUntil}` : 'Maintenance'}>
               <Wrench size={9} /> {maintUntil ? `until ${maintUntil}` : 'maint'}
+            </span>
+          )}
+          {!inMaint && instance.status && instance.status !== 'ok' && (
+            <span className={cn(
+              'text-[10px] rounded px-1.5 py-0.5 shrink-0 font-medium',
+              instance.status === 'critical' ? 'text-red-400 bg-red-500/10' : 'text-yellow-400 bg-yellow-500/10',
+            )}>
+              {instance.status}
             </span>
           )}
         </div>

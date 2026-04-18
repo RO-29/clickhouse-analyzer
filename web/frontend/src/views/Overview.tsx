@@ -422,6 +422,11 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
                 <span className={`inline-flex items-center gap-1 text-[10px] ${healthData.status === 'ok' ? 'text-green-400' : 'text-yellow-400'}`}>
                   <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ backgroundColor: healthData.status === 'ok' ? '#22c55e' : '#eab308' }} />
                   v{healthData.version} · up {healthData.uptime}
+                  {healthData.last_poll_at && (
+                    <span className="text-[var(--dim)]" title={`Last poll: ${new Date(healthData.last_poll_at).toLocaleString()}`}>
+                      {' '}· polled {new Date(healthData.last_poll_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  )}
                 </span>
               )}
               <div className="flex items-center gap-1 ml-auto">
