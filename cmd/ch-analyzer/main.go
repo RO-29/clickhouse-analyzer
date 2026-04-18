@@ -195,6 +195,11 @@ func main() {
 	alertMgrOpts := []alerter.Option{
 		alerter.WithDedupWindow(cfg.Slack.DedupWindow.Duration),
 		alerter.WithInhibition(inhibitionRules),
+		alerter.WithEscalation(alerter.EscalationConfig{
+			Enabled:     cfg.Escalation.Enabled,
+			NoticeAfter: cfg.Escalation.NoticeAfter.Duration,
+			RepeatEvery: cfg.Escalation.RepeatEvery.Duration,
+		}),
 	}
 
 	// PagerDuty notifier.
@@ -267,13 +272,15 @@ func main() {
 			}
 			for _, a := range active {
 				storeAlerts = append(storeAlerts, collector.Alert{
-					Instance:  a.Instance,
-					Severity:  collector.Severity(a.Severity),
-					Category:  a.Category,
-					Title:     a.Title,
-					Message:   a.Message,
-					DedupKey:  a.DedupKey,
-					Timestamp: a.CreatedAt,
+					Instance:    a.Instance,
+					Severity:    collector.Severity(a.Severity),
+					Category:    a.Category,
+					Title:       a.Title,
+					Message:     a.Message,
+					DedupKey:    a.DedupKey,
+					Timestamp:   a.CreatedAt,
+					FirstSeenAt: a.FirstSeenAt,
+					FireCount:   a.FireCount,
 				})
 			}
 		}
@@ -786,13 +793,15 @@ type alertStoreAdapter struct {
 
 func (a *alertStoreAdapter) InsertAlert(alert collector.Alert) (int64, error) {
 	return a.store.InsertAlert(store.Alert{
-		Instance:  alert.Instance,
-		Severity:  string(alert.Severity),
-		Category:  alert.Category,
-		Title:     alert.Title,
-		Message:   alert.Message,
-		CreatedAt: alert.Timestamp,
-		DedupKey:  alert.DedupKey,
+		Instance:    alert.Instance,
+		Severity:    string(alert.Severity),
+		Category:    alert.Category,
+		Title:       alert.Title,
+		Message:     alert.Message,
+		CreatedAt:   alert.Timestamp,
+		DedupKey:    alert.DedupKey,
+		FirstSeenAt: alert.Timestamp,
+		FireCount:   1,
 	})
 }
 
@@ -806,6 +815,10 @@ func (a *alertStoreAdapter) IsAlertActive(dedupKey string) (bool, error) {
 
 func (a *alertStoreAdapter) TouchAlerts(dedupKeys []string) error {
 	return a.store.BulkTouchAlerts(dedupKeys)
+}
+
+func (a *alertStoreAdapter) UpdateFireCount(dedupKey string, count int, firstSeenAt time.Time) error {
+	return a.store.UpdateFireCount(dedupKey, count, firstSeenAt)
 }
 
 func equalsIgnoreCase(a, b string) bool {

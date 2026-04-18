@@ -45,6 +45,18 @@ type Config struct {
 	Notify      NotifyConfig       `yaml:"notify"`
 	Inhibition  []InhibitionConfig `yaml:"inhibition"`
 	Maintenance MaintenanceConfig  `yaml:"maintenance"`
+	Escalation  EscalationConfig   `yaml:"escalation"`
+}
+
+// EscalationConfig controls when escalation notices are sent.
+type EscalationConfig struct {
+	// Enabled controls whether escalation notices are sent at all. Default: true.
+	Enabled bool `yaml:"enabled"`
+	// NoticeAfter is how long an alert must be continuously firing before
+	// an escalation notice is sent. Default: 30 minutes.
+	NoticeAfter Duration `yaml:"notice_after"`
+	// RepeatEvery is how often to repeat the escalation notice. Default: 30 minutes.
+	RepeatEvery Duration `yaml:"repeat_every"`
 }
 
 // AltinityConfig controls cost estimation for the Altinity Cloud Cost Explorer.
@@ -377,6 +389,11 @@ func Defaults() *Config {
 			PricingModel:    "byoc_aws",
 			EBSGBMonthlyUSD: 0.08,
 			S3GBMonthlyUSD:  0.023,
+		},
+		Escalation: EscalationConfig{
+			Enabled:     true,
+			NoticeAfter: Duration{30 * time.Minute},
+			RepeatEvery: Duration{30 * time.Minute},
 		},
 	}
 }

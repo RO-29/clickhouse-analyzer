@@ -24,6 +24,9 @@ type StoreInterface interface {
 	// TouchAlerts bumps updated_at = now() for the given dedup keys so
 	// staleness detection stays accurate across restarts.
 	TouchAlerts(dedupKeys []string) error
+	// UpdateFireCount persists the current fire_count (and first_seen_at) for
+	// an alert so that a subsequent restart can restore them via Rehydrate.
+	UpdateFireCount(dedupKey string, count int, firstSeenAt time.Time) error
 }
 
 // ActiveAlert tracks the lifecycle of a currently-firing alert.
@@ -93,6 +96,9 @@ type AlertManager struct {
 	// lastEscalated records the last time an escalation notice was sent per instance.
 	lastEscalated map[string]time.Time
 
+	// escalation controls when escalation notices are sent.
+	escalation EscalationConfig
+
 	// onStateChange is called (in a goroutine) after each successful Slack update.
 	// Used by SlackApp to refresh the pinned dashboard message.
 	onStateChange func()
@@ -159,6 +165,11 @@ func WithWebhook(notifier *WebhookNotifier) Option {
 	return func(am *AlertManager) { am.webhook = notifier }
 }
 
+// WithEscalation overrides the default escalation configuration.
+func WithEscalation(cfg EscalationConfig) Option {
+	return func(am *AlertManager) { am.escalation = cfg }
+}
+
 // NewAlertManager creates a ready-to-use AlertManager. Call Start to begin
 // background goroutines and Stop to shut them down.
 func NewAlertManager(slackNotifier *SlackNotifier, store StoreInterface, opts ...Option) *AlertManager {
@@ -168,6 +179,7 @@ func NewAlertManager(slackNotifier *SlackNotifier, store StoreInterface, opts ..
 		dedupWindow:        15 * time.Minute,
 		heartbeatInterval:  5 * time.Minute,
 		resolveCleanChecks: 4,
+		escalation:         DefaultEscalationConfig(),
 		activeAlerts:       make(map[string]*ActiveAlert),
 		instanceTS:         make(map[string]string),
 		dirtyInst:          make(map[string]bool),
@@ -204,6 +216,9 @@ func (am *AlertManager) Start(ctx context.Context) {
 
 // Rehydrate loads previously-active alerts from the store back into the
 // in-memory tracking map after a restart.
+// It restores FirstSeen and Count from the stored values so that "firing since"
+// time and escalation timers continue from the original fire time rather than
+// from restart time.
 func (am *AlertManager) Rehydrate(alerts []collector.Alert) {
 	am.mu.Lock()
 	defer am.mu.Unlock()
@@ -215,11 +230,21 @@ func (am *AlertManager) Rehydrate(alerts []collector.Alert) {
 			key = fmt.Sprintf("%s:%s:%s", a.Instance, a.Category, a.Title)
 		}
 		if _, exists := am.activeAlerts[key]; !exists {
+			// Restore FirstSeen from store if available; fall back to now.
+			firstSeen := now
+			if !a.FirstSeenAt.IsZero() {
+				firstSeen = a.FirstSeenAt
+			}
+			// Restore Count from store if available; fall back to 1.
+			count := 1
+			if a.FireCount > 0 {
+				count = a.FireCount
+			}
 			am.activeAlerts[key] = &ActiveAlert{
 				Alert:     a,
-				FirstSeen: now,
+				FirstSeen: firstSeen,
 				LastSeen:  now,
-				Count:     1,
+				Count:     count,
 			}
 			n++
 		}
@@ -521,6 +546,33 @@ func (am *AlertManager) updateInstanceMessage(instance string) {
 	}
 }
 
+// persistFireCounts writes the current Count and FirstSeen for every active
+// alert back to the store. Called from the heartbeat loop so that a subsequent
+// restart can restore these values via Rehydrate.
+func (am *AlertManager) persistFireCounts() {
+	if am.store == nil {
+		return
+	}
+	am.mu.Lock()
+	type entry struct {
+		key       string
+		count     int
+		firstSeen time.Time
+	}
+	entries := make([]entry, 0, len(am.activeAlerts))
+	for key, active := range am.activeAlerts {
+		entries = append(entries, entry{key: key, count: active.Count, firstSeen: active.FirstSeen})
+	}
+	am.mu.Unlock()
+
+	for _, e := range entries {
+		if err := am.store.UpdateFireCount(e.key, e.count, e.firstSeen); err != nil {
+			am.logger.Debug("failed to persist fire count",
+				slog.String("dedup_key", e.key), slog.String("err", err.Error()))
+		}
+	}
+}
+
 // drainDirtyInstances returns and clears the current dirty set.
 // Caller must hold am.mu.
 func (am *AlertManager) drainDirtyInstances() []string {
@@ -576,25 +628,31 @@ func (am *AlertManager) heartbeatLoop(ctx context.Context) {
 			}
 			am.mu.Unlock()
 
+			// Persist fire counts for all active alerts so restarts can restore them.
+			am.persistFireCounts()
+
 			for inst := range instances {
 				am.updateInstanceMessage(inst)
 
-				// Escalation check: if the instance has been firing for >30 min
-				// without a response, post an escalation notice (at most once per 30 min).
-				am.mu.Lock()
-				first, hasFired := am.instanceFirstFired[inst]
-				last, hasEscalated := am.lastEscalated[inst]
-				am.mu.Unlock()
+				// Escalation check: if the instance has been firing for longer than
+				// escalation.NoticeAfter without a response, post an escalation notice
+				// at most once per escalation.RepeatEvery.
+				if am.escalation.Enabled {
+					am.mu.Lock()
+					first, hasFired := am.instanceFirstFired[inst]
+					last, hasEscalated := am.lastEscalated[inst]
+					am.mu.Unlock()
 
-				if hasFired && time.Since(first) > 30*time.Minute {
-					if !hasEscalated || time.Since(last) > 30*time.Minute {
-						firingMinutes := int(time.Since(first).Minutes())
-						if am.slack != nil {
-							_ = am.slack.PostEscalationNotice(inst, firingMinutes)
+					if hasFired && time.Since(first) > am.escalation.NoticeAfter {
+						if !hasEscalated || time.Since(last) > am.escalation.RepeatEvery {
+							firingMinutes := int(time.Since(first).Minutes())
+							if am.slack != nil {
+								_ = am.slack.PostEscalationNotice(inst, firingMinutes)
+							}
+							am.mu.Lock()
+							am.lastEscalated[inst] = time.Now()
+							am.mu.Unlock()
 						}
-						am.mu.Lock()
-						am.lastEscalated[inst] = time.Now()
-						am.mu.Unlock()
 					}
 				}
 			}

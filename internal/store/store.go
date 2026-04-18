@@ -29,17 +29,19 @@ type DataPoint struct {
 
 // Alert represents an alert event.
 type Alert struct {
-	ID         int64
-	Instance   string
-	Severity   string
-	Category   string
-	Title      string
-	Message    string
-	Resolved   bool
-	ResolvedAt *time.Time
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
-	DedupKey   string
+	ID          int64
+	Instance    string
+	Severity    string
+	Category    string
+	Title       string
+	Message     string
+	Resolved    bool
+	ResolvedAt  *time.Time
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	DedupKey    string
+	FirstSeenAt time.Time // time the alert first fired (preserved across restarts)
+	FireCount   int       // cumulative fire count (preserved across restarts)
 }
 
 // DigestSnapshot stores a JSON snapshot of instance state.
@@ -69,6 +71,9 @@ func New(manager *chclient.Manager, database string) (*Store, error) {
 
 	// Migrate: add updated_at column to existing alerts tables (no-op on new installs).
 	s.migrateAlertUpdatedAt()
+
+	// Migrate: add first_seen_at and fire_count columns (no-op on new installs).
+	s.migrateAlertFireTracking()
 
 	// Create health_snapshots table on every instance.
 	s.InitHealthSnapshots()
@@ -112,6 +117,32 @@ func (s *Store) migrateAlertUpdatedAt() {
 	s.manager.ForEach(func(name string, client *chclient.Client) error {
 		if _, err := client.QuerySingleValue(ctx, sql); err != nil {
 			slog.Warn("alert migration: add updated_at failed", "instance", name, "err", err)
+		}
+		return nil
+	})
+}
+
+// migrateAlertFireTracking adds first_seen_at and fire_count columns to the
+// alerts table. Safe to call on existing installs — ADD COLUMN IF NOT EXISTS
+// is idempotent.
+func (s *Store) migrateAlertFireTracking() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sqls := []string{
+		fmt.Sprintf(
+			"ALTER TABLE %s.alerts ADD COLUMN IF NOT EXISTS first_seen_at DateTime DEFAULT created_at",
+			s.database,
+		),
+		fmt.Sprintf(
+			"ALTER TABLE %s.alerts ADD COLUMN IF NOT EXISTS fire_count UInt32 DEFAULT 1",
+			s.database,
+		),
+	}
+	s.manager.ForEach(func(name string, client *chclient.Client) error {
+		for _, sql := range sqls {
+			if _, err := client.QuerySingleValue(ctx, sql); err != nil {
+				slog.Warn("alert migration: fire tracking columns failed", "instance", name, "err", err)
+			}
 		}
 		return nil
 	})
@@ -324,13 +355,22 @@ func (s *Store) InsertAlert(alert Alert) (int64, error) {
 	if len(msg) > 4000 {
 		msg = msg[:4000]
 	}
+	firstSeenAt := alert.FirstSeenAt
+	if firstSeenAt.IsZero() {
+		firstSeenAt = alert.CreatedAt
+	}
+	firstSeenAtStr := firstSeenAt.Format("2006-01-02 15:04:05")
+	fireCount := alert.FireCount
+	if fireCount <= 0 {
+		fireCount = 1
+	}
 
 	sql := fmt.Sprintf(`INSERT INTO %s.alerts
-		(id, instance, severity, category, title, message, resolved, resolved_at, created_at, dedup_key, version, updated_at)
-		VALUES (%d, '%s', '%s', '%s', '%s', '%s', 0, NULL, '%s', '%s', 1, '%s')`,
+		(id, instance, severity, category, title, message, resolved, resolved_at, created_at, dedup_key, version, updated_at, first_seen_at, fire_count)
+		VALUES (%d, '%s', '%s', '%s', '%s', '%s', 0, NULL, '%s', '%s', 1, '%s', '%s', %d)`,
 		s.database, id,
 		escape(alert.Instance), escape(alert.Severity), escape(alert.Category),
-		escape(alert.Title), msg, ts, escape(alert.DedupKey), ts)
+		escape(alert.Title), msg, ts, escape(alert.DedupKey), ts, firstSeenAtStr, fireCount)
 
 	if _, err := client.QuerySingleValue(ctx, sql); err != nil {
 		return 0, fmt.Errorf("store: insert alert: %w", err)
@@ -413,7 +453,8 @@ func (s *Store) GetActiveAlerts(instance string) ([]Alert, error) {
 	defer cancel()
 
 	sql := fmt.Sprintf(`SELECT id, instance, severity, category, title, message,
-			resolved, resolved_at, created_at, dedup_key, updated_at
+			resolved, resolved_at, created_at, dedup_key, updated_at,
+			first_seen_at, fire_count
 		FROM %s.alerts FINAL
 		WHERE instance = '%s' AND resolved = 0
 		ORDER BY created_at DESC`,
@@ -642,13 +683,14 @@ func parseAlertRows(rows []map[string]interface{}) []Alert {
 	var alerts []Alert
 	for _, row := range rows {
 		a := Alert{
-			ID:       int64(getFloat(row, "id")),
-			Instance: getString(row, "instance"),
-			Severity: getString(row, "severity"),
-			Category: getString(row, "category"),
-			Title:    getString(row, "title"),
-			Message:  getString(row, "message"),
-			DedupKey: getString(row, "dedup_key"),
+			ID:        int64(getFloat(row, "id")),
+			Instance:  getString(row, "instance"),
+			Severity:  getString(row, "severity"),
+			Category:  getString(row, "category"),
+			Title:     getString(row, "title"),
+			Message:   getString(row, "message"),
+			DedupKey:  getString(row, "dedup_key"),
+			FireCount: int(getFloat(row, "fire_count")),
 		}
 		a.Resolved = getFloat(row, "resolved") > 0
 		a.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", getString(row, "created_at"))
@@ -666,6 +708,15 @@ func parseAlertRows(rows []map[string]interface{}) []Alert {
 			if t, err := time.Parse("2006-01-02 15:04:05", resolvedStr); err == nil {
 				a.ResolvedAt = &t
 			}
+		}
+		firstSeenStr := getString(row, "first_seen_at")
+		if firstSeenStr != "" && firstSeenStr != "\\N" && firstSeenStr != "1970-01-01 00:00:00" {
+			if t, err := time.Parse("2006-01-02 15:04:05", firstSeenStr); err == nil {
+				a.FirstSeenAt = t
+			}
+		}
+		if a.FirstSeenAt.IsZero() {
+			a.FirstSeenAt = a.CreatedAt
 		}
 		alerts = append(alerts, a)
 	}
@@ -701,6 +752,35 @@ func (s *Store) BulkTouchAlerts(dedupKeys []string) error {
 		}
 		return nil
 	})
+	return nil
+}
+
+// UpdateFireCount updates the fire_count and first_seen_at for an active alert.
+// Called periodically to keep persisted values in sync with in-memory counters
+// so that a restart can restore them via Rehydrate.
+func (s *Store) UpdateFireCount(dedupKey string, count int, firstSeenAt time.Time) error {
+	instance := extractInstance(dedupKey)
+	client := s.clientFor(instance)
+	if client == nil {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	firstSeenAtStr := firstSeenAt.Format("2006-01-02 15:04:05")
+
+	sql := fmt.Sprintf(`INSERT INTO %s.alerts
+		(id, instance, severity, category, title, message, resolved, resolved_at, created_at, dedup_key, version, updated_at, first_seen_at, fire_count)
+		SELECT id, instance, severity, category, title, message, resolved, resolved_at, created_at, dedup_key, version+1, now(), '%s', %d
+		FROM %s.alerts FINAL
+		WHERE dedup_key = '%s' AND resolved = 0`,
+		s.database, firstSeenAtStr, count,
+		s.database, escape(dedupKey))
+
+	if _, err := client.QuerySingleValue(ctx, sql); err != nil {
+		return fmt.Errorf("store: update fire count: %w", err)
+	}
 	return nil
 }
 

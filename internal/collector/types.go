@@ -38,6 +38,11 @@ type Alert struct {
 	Message   string
 	DedupKey  string // unique key for dedup (e.g., "instance:category:specific_id")
 	Timestamp time.Time
+	// FirstSeenAt and FireCount are populated only when rehydrating from the store.
+	// They allow the alerter to preserve "firing since" time and cumulative count
+	// across process restarts.
+	FirstSeenAt time.Time
+	FireCount   int
 }
 
 // ---------------------------------------------------------------------------
