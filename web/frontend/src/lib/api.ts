@@ -45,7 +45,11 @@ const BASE = ''
 
 function toastApiError(path: string, status: number) {
   // Don't toast on auth errors (will be handled by auth flow) or 404s (expected)
-  if (status === 401 || status === 403 || status === 404) return
+  if (status === 401) {
+    window.dispatchEvent(new CustomEvent('ch:auth-expired'))
+    return
+  }
+  if (status === 403 || status === 404) return
   const event = new CustomEvent('ch-toast', {
     detail: {
       id: Date.now().toString(36),
@@ -261,6 +265,9 @@ export const api = {
     pagerduty: { configured: boolean }
     webhook: { configured: boolean; url: string }
   }>('/api/notify/status'),
+  auth: {
+    status: () => get<{ logged_in: boolean; method?: string }>('/api/auth/status'),
+  },
   health: () => get<HealthResponse>('/health'),
   collectors: () => get<CollectorMeta[]>('/api/collectors'),
   runCheck: (collectors: string[], instances: string[], from?: number, to?: number) =>

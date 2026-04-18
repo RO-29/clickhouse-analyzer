@@ -889,7 +889,7 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
     })
   }
 
-  const firingAlerts = filtered.filter((a) => !a.resolved && !isStale(a, staleHours))
+  const firingAlerts = filtered.filter((a) => !a.resolved && !isStale(a, staleHours) && !isSnoozed(a.dedup_key, snoozed))
   const firing = firingAlerts.length
   const critFiring = firingAlerts.filter((a) => a.severity === 'critical').length
   const warnFiring = firingAlerts.filter((a) => a.severity === 'warn').length

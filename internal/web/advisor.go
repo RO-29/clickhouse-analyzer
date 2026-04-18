@@ -632,7 +632,11 @@ func (s *Server) handleAdvisorCardinality(w http.ResponseWriter, r *http.Request
 		}
 
 		// Sample 100K rows to estimate distinct count (subquery limits scan, not output).
-		sql := fmt.Sprintf("SELECT uniq(`%s`) as card FROM (SELECT `%s` FROM `%s`.`%s` LIMIT 100000)", col, col, db, tbl)
+		escapeIdent := func(s string) string {
+			return strings.ReplaceAll(s, "`", "``")
+		}
+		sql := fmt.Sprintf("SELECT uniq(`%s`) as card FROM (SELECT `%s` FROM `%s`.`%s` LIMIT 100000)",
+			escapeIdent(col), escapeIdent(col), escapeIdent(db), escapeIdent(tbl))
 		cardRows, err := client.Query(ctx, sql)
 		if err != nil {
 			cr.Error = err.Error()

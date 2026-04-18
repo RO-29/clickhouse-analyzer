@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -119,7 +120,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	s.srv = &http.Server{
 		Addr:              s.addr,
-		Handler:           mux,
+		Handler:           recoveryMiddleware(mux),
 		ReadHeaderTimeout: 10 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
@@ -1305,6 +1306,20 @@ func writeErr(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
+// recoveryMiddleware catches panics in HTTP handlers, logs the stack trace,
+// and returns a 500 to the client instead of crashing the server.
+func recoveryMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				slog.Error("handler panic", "recover", rec, "stack", string(debug.Stack()))
+				writeErr(w, http.StatusInternalServerError, "internal server error")
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
 type alertJSON struct {
 	ID         int64  `json:"id"`
 	Instance   string `json:"instance"`
@@ -1394,6 +1409,8 @@ func (s *Server) handleResolveStale(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slog.Info("bulk resolved stale alerts", "hours", hours, "count", resolved)
+	details := fmt.Sprintf(`{"resolved":%d,"stale_hours":%d}`, resolved, hours)
+	_ = s.store.LogAction(r.Context(), "", "alert_resolve_stale", r.RemoteAddr, details)
 	writeJSON(w, http.StatusOK, map[string]int64{"resolved": resolved})
 }
 

@@ -32,7 +32,7 @@ import { cn } from './lib/utils'
 import { api } from './lib/api'
 
 function Layout() {
-  const { view, refreshInterval, sidebarCollapsed, setInstances, tableDetail, closeTableDetail, selectedInstance } = useStore()
+  const { view, refreshInterval, sidebarCollapsed, setInstances, tableDetail, closeTableDetail, selectedInstance, setAuthExpired } = useStore()
   const intervalRef = useRef<number>(0)
   const [tick, setTick] = useState(0)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
@@ -93,6 +93,20 @@ function Layout() {
     window.addEventListener('beforeunload', handleBeforeUnload)
     return () => window.removeEventListener('beforeunload', handleBeforeUnload)
   }, [handleBeforeUnload])
+
+  // Re-auth modal: listen for 401 events fired by api.ts
+  useEffect(() => {
+    const handler = () => setAuthExpired(true)
+    window.addEventListener('ch:auth-expired', handler)
+    return () => window.removeEventListener('ch:auth-expired', handler)
+  }, [setAuthExpired])
+
+  // On-mount auth check: show re-auth modal if session is already expired
+  useEffect(() => {
+    api.auth.status().then(s => {
+      if (!s.logged_in) setAuthExpired(true)
+    }).catch(() => {}) // ignore if endpoint unavailable
+  }, [])
 
   // Load instances on mount
   useEffect(() => {

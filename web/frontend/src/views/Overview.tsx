@@ -258,7 +258,9 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
   }, [setInstances])
 
   useEffect(() => {
-    doLoad()
+    let cleanup: (() => void) | undefined
+    doLoad().then(c => { cleanup = c })
+    return () => { cleanup?.() }
   }, [doLoad, refreshKey, manualRefreshTick])
 
   if (loading) return <Skeleton />
