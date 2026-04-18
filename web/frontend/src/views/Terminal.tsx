@@ -697,7 +697,7 @@ export default function Terminal() {
         </div>
       )}
 
-      <div className="flex-1 flex flex-col gap-3 min-w-0 min-h-0 overflow-y-auto">
+      <div className="flex-1 flex flex-col gap-3 min-w-0 min-h-0">
         {/* Instance row */}
         <div className="flex items-center gap-2 flex-wrap">
           <label className="text-sm text-[var(--dim)]">Instance</label>

@@ -96,6 +96,11 @@ type AlertManager struct {
 	// lastEscalated records the last time an escalation notice was sent per instance.
 	lastEscalated map[string]time.Time
 
+	// lastTouched is the last time BulkTouchAlerts ran. TouchAlerts inserts a new
+	// version row every call; calling it every poll floods the ReplacingMergeTree
+	// with unmerged parts, making FINAL queries slow. Rate-limit to 5 min.
+	lastTouched time.Time
+
 	// escalation controls when escalation notices are sent.
 	escalation EscalationConfig
 
@@ -399,11 +404,15 @@ func (am *AlertManager) Process(alerts []collector.Alert) {
 	}
 
 	// Touch all seen alerts in the store to keep updated_at fresh.
-	if am.store != nil && len(seen) > 0 {
+	// Rate-limited to every 5 minutes: each TouchAlerts call inserts a new
+	// version row into the ReplacingMergeTree. Running it every poll floods
+	// the table with unmerged parts, causing FINAL queries to time out.
+	if am.store != nil && len(seen) > 0 && time.Since(am.lastTouched) >= 5*time.Minute {
 		keys := make([]string, 0, len(seen))
 		for k := range seen {
 			keys = append(keys, k)
 		}
+		am.lastTouched = time.Now()
 		touchCtx, touchCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		touchCh := make(chan error, 1)
 		go func() { touchCh <- am.store.TouchAlerts(keys) }()

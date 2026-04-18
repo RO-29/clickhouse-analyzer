@@ -399,15 +399,22 @@ func (s *Store) resolveAlertOnClient(client *chclient.Client, dedupKey string) e
 	now := time.Now().Format("2006-01-02 15:04:05")
 
 	// Resolve ALL unresolved rows for this dedup_key. There may be more than one
-	// if previous auto-resolve cycles failed and InsertAlert created new rows with
-	// different created_at values (different ORDER BY keys = separate CH entities).
-	// Using INSERT...SELECT with version+1 per row avoids the hardcoded-version
-	// race and handles every accumulated duplicate in one shot.
+	// if previous cycles failed and InsertAlert created rows with different created_at
+	// values (different ORDER BY keys = separate CH entities).
+	// Use LIMIT 1 BY (dedup_key, created_at) instead of FINAL: FINAL forces an
+	// expensive in-memory merge of all unmerged parts; LIMIT 1 BY just picks the
+	// highest version per key without forcing a merge.
 	insertSQL := fmt.Sprintf(`INSERT INTO %s.alerts
 		(id, instance, severity, category, title, message, resolved, resolved_at, created_at, dedup_key, version, updated_at)
 		SELECT id, instance, severity, category, title, message, 1, '%s', created_at, dedup_key, version+1, updated_at
-		FROM %s.alerts FINAL
-		WHERE dedup_key = '%s' AND resolved = 0`,
+		FROM (
+			SELECT id, instance, severity, category, title, message, resolved, resolved_at, created_at, dedup_key, version, updated_at
+			FROM %s.alerts
+			WHERE dedup_key = '%s'
+			ORDER BY dedup_key, created_at, version DESC
+			LIMIT 1 BY (dedup_key, created_at)
+		)
+		WHERE resolved = 0`,
 		s.database, now,
 		s.database, escape(dedupKey))
 
@@ -428,7 +435,12 @@ func (s *Store) resolveAlertAllInstances(dedupKey string) error {
 		if resolved {
 			return nil
 		}
-		sql := fmt.Sprintf(`SELECT count() as cnt FROM %s.alerts FINAL WHERE dedup_key = '%s' AND resolved = 0`,
+		sql := fmt.Sprintf(`SELECT count() as cnt FROM (
+				SELECT resolved FROM %s.alerts
+				WHERE dedup_key = '%s'
+				ORDER BY dedup_key, created_at, version DESC
+				LIMIT 1 BY (dedup_key, created_at)
+			) WHERE resolved = 0`,
 			s.database, escape(dedupKey))
 		val, err := client.QuerySingleValue(ctx, sql)
 		if err != nil || val == "0" || val == "" {
@@ -452,13 +464,23 @@ func (s *Store) GetActiveAlerts(instance string) ([]Alert, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Select only the core columns that are guaranteed to exist on all installs.
-	// first_seen_at and fire_count are optional (added by migration); they are
-	// fetched separately by GetAlertsForRehydration which is only called at startup.
+	// Avoid FINAL: BulkTouchAlerts inserts a new version every poll cycle, so
+	// unmerged parts accumulate faster than CH can background-merge them.
+	// FINAL forces an expensive in-memory merge that can exceed the 10s timeout,
+	// returning nil → UI shows 0 active alerts for several minutes.
+	// Instead, use a subquery with LIMIT 1 BY to get the latest version per
+	// (dedup_key, created_at) key without forcing a full table merge.
 	sql := fmt.Sprintf(`SELECT id, instance, severity, category, title, message,
 			resolved, resolved_at, created_at, dedup_key, updated_at
-		FROM %s.alerts FINAL
-		WHERE instance = '%s' AND resolved = 0
+		FROM (
+			SELECT id, instance, severity, category, title, message,
+				resolved, resolved_at, created_at, dedup_key, updated_at
+			FROM %s.alerts
+			WHERE instance = '%s'
+			ORDER BY dedup_key, created_at, version DESC
+			LIMIT 1 BY (dedup_key, created_at)
+		)
+		WHERE resolved = 0
 		ORDER BY created_at DESC`,
 		s.database, escape(instance))
 
@@ -484,9 +506,15 @@ func (s *Store) GetAlertHistory(instance string, from, to time.Time, limit int) 
 
 	sql := fmt.Sprintf(`SELECT id, instance, severity, category, title, message,
 			resolved, resolved_at, created_at, dedup_key, updated_at
-		FROM %s.alerts FINAL
-		WHERE instance = '%s'
-		AND created_at >= '%s' AND created_at <= '%s'
+		FROM (
+			SELECT id, instance, severity, category, title, message,
+				resolved, resolved_at, created_at, dedup_key, updated_at
+			FROM %s.alerts
+			WHERE instance = '%s'
+			AND created_at >= '%s' AND created_at <= '%s'
+			ORDER BY dedup_key, created_at, version DESC
+			LIMIT 1 BY (dedup_key, created_at)
+		)
 		ORDER BY created_at DESC LIMIT %d`,
 		s.database, escape(instance),
 		from.Format("2006-01-02 15:04:05"), to.Format("2006-01-02 15:04:05"), limit)
@@ -744,8 +772,14 @@ func (s *Store) BulkTouchAlerts(dedupKeys []string) error {
 	sql := fmt.Sprintf(`INSERT INTO %s.alerts
 		(id, instance, severity, category, title, message, resolved, resolved_at, created_at, dedup_key, version, updated_at)
 		SELECT id, instance, severity, category, title, message, resolved, resolved_at, created_at, dedup_key, version+1, now()
-		FROM %s.alerts FINAL
-		WHERE resolved = 0 AND dedup_key IN (%s)`,
+		FROM (
+			SELECT id, instance, severity, category, title, message, resolved, resolved_at, created_at, dedup_key, version, updated_at
+			FROM %s.alerts
+			WHERE dedup_key IN (%s)
+			ORDER BY dedup_key, created_at, version DESC
+			LIMIT 1 BY (dedup_key, created_at)
+		)
+		WHERE resolved = 0`,
 		s.database, s.database, inClause)
 
 	s.manager.ForEach(func(_ string, client *chclient.Client) error {
@@ -775,8 +809,14 @@ func (s *Store) UpdateFireCount(dedupKey string, count int, firstSeenAt time.Tim
 	sql := fmt.Sprintf(`INSERT INTO %s.alerts
 		(id, instance, severity, category, title, message, resolved, resolved_at, created_at, dedup_key, version, updated_at, first_seen_at, fire_count)
 		SELECT id, instance, severity, category, title, message, resolved, resolved_at, created_at, dedup_key, version+1, now(), '%s', %d
-		FROM %s.alerts FINAL
-		WHERE dedup_key = '%s' AND resolved = 0`,
+		FROM (
+			SELECT id, instance, severity, category, title, message, resolved, resolved_at, created_at, dedup_key, version, updated_at
+			FROM %s.alerts
+			WHERE dedup_key = '%s'
+			ORDER BY dedup_key, created_at, version DESC
+			LIMIT 1 BY (dedup_key, created_at)
+		)
+		WHERE resolved = 0`,
 		s.database, firstSeenAtStr, count,
 		s.database, escape(dedupKey))
 
