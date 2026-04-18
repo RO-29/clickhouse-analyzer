@@ -12,17 +12,21 @@ import (
 // WebhookNotifier posts JSON payloads to a configurable URL.
 // Supports Teams, Discord, or any custom webhook endpoint.
 type WebhookNotifier struct {
-	URL    string
-	Secret string // optional: sent as X-Webhook-Secret header
-	client *http.Client
+	URL         string
+	Secret      string // optional: sent as X-Webhook-Secret header
+	client      *http.Client
+	rateLimiter *RateLimiter
 }
 
 // NewWebhookNotifier creates a WebhookNotifier for the given URL and optional secret.
+// A per-key rate limiter with a 5-minute minimum gap is installed to prevent
+// alert storms from triggering repeated webhook calls for the same dedup key.
 func NewWebhookNotifier(url, secret string) *WebhookNotifier {
 	return &WebhookNotifier{
-		URL:    url,
-		Secret: secret,
-		client: &http.Client{Timeout: 10 * time.Second},
+		URL:         url,
+		Secret:      secret,
+		client:      &http.Client{Timeout: 10 * time.Second},
+		rateLimiter: NewRateLimiter(5 * time.Minute),
 	}
 }
 
@@ -40,8 +44,18 @@ type WebhookPayload struct {
 }
 
 // Send POSTs payload as JSON to the configured webhook URL.
+// Calls with a non-empty DedupKey are rate-limited to once per 5 minutes per
+// key to prevent alert storms. all_clear events (empty DedupKey) always pass.
 // Errors are logged but not propagated to callers.
 func (w *WebhookNotifier) Send(payload WebhookPayload) error {
+	if payload.DedupKey != "" && !w.rateLimiter.Allow(payload.DedupKey) {
+		slog.Debug("webhook: rate limited, skipping send",
+			slog.String("dedup_key", payload.DedupKey),
+			slog.String("event", payload.Event),
+		)
+		return nil
+	}
+
 	body, err := json.Marshal(payload)
 	if err != nil {
 		slog.Error("webhook: failed to marshal payload", slog.String("error", err.Error()))

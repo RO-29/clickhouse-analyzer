@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -15,15 +16,19 @@ const pdEventsURL = "https://events.pagerduty.com/v2/enqueue"
 
 // PagerDutyNotifier sends events to the PagerDuty Events API v2.
 type PagerDutyNotifier struct {
-	RoutingKey string // integration key
-	client     *http.Client
+	RoutingKey  string // integration key
+	client      *http.Client
+	rateLimiter *RateLimiter
 }
 
 // NewPagerDutyNotifier creates a PagerDutyNotifier with the given routing key.
+// A per-key rate limiter with a 5-minute minimum gap is installed to prevent
+// alert storms from triggering repeated PD calls for the same dedup key.
 func NewPagerDutyNotifier(routingKey string) *PagerDutyNotifier {
 	return &PagerDutyNotifier{
-		RoutingKey: routingKey,
-		client:     &http.Client{Timeout: 10 * time.Second},
+		RoutingKey:  routingKey,
+		client:      &http.Client{Timeout: 10 * time.Second},
+		rateLimiter: NewRateLimiter(5 * time.Minute),
 	}
 }
 
@@ -57,9 +62,16 @@ func mapSeverity(s collector.Severity) string {
 
 // TriggerAlert sends a TRIGGER event for a new/ongoing alert.
 // dedupKey is used as the dedup_key for PD's own dedup logic.
-// Only sends for non-info alerts.
+// Only sends for non-info alerts. Calls are rate-limited to once per 5 minutes
+// per dedupKey to prevent alert storms.
 func (p *PagerDutyNotifier) TriggerAlert(alert collector.Alert, dedupKey string) error {
 	if alert.Severity == collector.SeverityInfo {
+		return nil
+	}
+	if !p.rateLimiter.Allow(dedupKey) {
+		slog.Debug("pagerduty: rate limited, skipping trigger",
+			slog.String("dedup_key", dedupKey),
+		)
 		return nil
 	}
 
