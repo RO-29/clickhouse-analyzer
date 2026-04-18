@@ -21,6 +21,7 @@ type WidgetType =
   | 'error_rate'
   | 'slow_queries'
   | 'slo_overview'
+  | 'uptime'
 
 interface DashboardWidget {
   id: string
@@ -38,6 +39,7 @@ const WIDGET_LABELS: Record<WidgetType, string> = {
   error_rate: 'Error Rate',
   slow_queries: 'Slow Queries',
   slo_overview: 'SLO Overview',
+  uptime: 'Uptime',
 }
 
 const DEFAULT_WIDGETS: DashboardWidget[] = [
@@ -49,6 +51,7 @@ const DEFAULT_WIDGETS: DashboardWidget[] = [
   { id: 'w6', type: 'slow_queries',      enabled: true, order: 5 },
   { id: 'w7', type: 'slo_overview',      enabled: true, order: 6 },
   { id: 'w8', type: 'insert_rate',       enabled: true, order: 7 },
+  { id: 'w9', type: 'uptime',            enabled: true, order: 8 },
 ]
 
 function loadLayout(): DashboardWidget[] {
@@ -104,7 +107,7 @@ function ActiveAlertsWidget({ setView }: { setView: (v: any) => void }) {
   const top5 = alerts.slice(0, 5)
 
   return (
-    <WidgetCard title="Active Alerts" onRefresh={() => setTick(t => t + 1)} loading={loading}>
+    <WidgetCard title="Active Alerts" scope="All instances" onRefresh={() => setTick(t => t + 1)} loading={loading}>
       {alerts.length === 0 ? (
         <div className="text-[var(--dim)] text-xs py-4 text-center">No active alerts</div>
       ) : (
@@ -140,25 +143,25 @@ function ActiveAlertsWidget({ setView }: { setView: (v: any) => void }) {
 
 function HealthScoresWidget({ setView }: { setView: (v: any) => void }) {
   const { navToDetail } = useStore()
-  const [instances, setInstances] = useState<Instance[]>([])
+  const [instanceList, setInstanceList] = useState<Instance[]>([])
   const [loading, setLoading] = useState(true)
   const [tick, setTick] = useState(0)
 
   useEffect(() => {
     setLoading(true)
     api.overview()
-      .then(setInstances)
-      .catch(() => setInstances([]))
+      .then(setInstanceList)
+      .catch(() => setInstanceList([]))
       .finally(() => setLoading(false))
   }, [tick])
 
   return (
-    <WidgetCard title="Health Scores" onRefresh={() => setTick(t => t + 1)} loading={loading}>
-      {instances.length === 0 ? (
+    <WidgetCard title="Health Scores" scope="Per instance" onRefresh={() => setTick(t => t + 1)} loading={loading}>
+      {instanceList.length === 0 ? (
         <div className="text-[var(--dim)] text-xs py-4 text-center">No instances</div>
       ) : (
         <div className="space-y-1.5">
-          {instances.map(inst => {
+          {instanceList.map(inst => {
             const color = scoreColor(inst.health_score)
             const score = Math.round(inst.health_score)
             const crit = inst.alert_counts?.crit ?? 0
@@ -191,11 +194,11 @@ function HealthScoresWidget({ setView }: { setView: (v: any) => void }) {
 
 /* ── Widget: Query Throughput ───────────────────────────────────────────── */
 
-function QueryThroughputWidget({ inst }: { inst: string }) {
+function QueryThroughputWidget({ instances }: { instances: string[] }) {
   return (
-    <WidgetCard title="Query Throughput" noInnerPad>
+    <WidgetCard title="Query Throughput" scope="All instances" noInnerPad>
       <MetricChart
-        instance={inst}
+        instances={instances}
         metrics={['system.metrics.Query']}
         title="Active Queries"
         height={120}
@@ -206,11 +209,11 @@ function QueryThroughputWidget({ inst }: { inst: string }) {
 
 /* ── Widget: Disk Usage ─────────────────────────────────────────────────── */
 
-function DiskUsageWidget({ inst }: { inst: string }) {
+function DiskUsageWidget({ instances }: { instances: string[] }) {
   return (
-    <WidgetCard title="Disk Usage" noInnerPad>
+    <WidgetCard title="Disk Usage" scope="All instances" noInnerPad>
       <MetricChart
-        instance={inst}
+        instances={instances}
         metrics={['storage.disk.used_percent']}
         title="Disk Used %"
         height={120}
@@ -222,11 +225,11 @@ function DiskUsageWidget({ inst }: { inst: string }) {
 
 /* ── Widget: Insert Rate ────────────────────────────────────────────────── */
 
-function InsertRateWidget({ inst }: { inst: string }) {
+function InsertRateWidget({ instances }: { instances: string[] }) {
   return (
-    <WidgetCard title="Insert Rate" noInnerPad>
+    <WidgetCard title="Insert Rate" scope="All instances" noInnerPad>
       <MetricChart
-        instance={inst}
+        instances={instances}
         metrics={['inserts.total.rows']}
         title="Inserted Rows"
         height={120}
@@ -251,7 +254,7 @@ function ErrorRateWidget() {
   }, [tick])
 
   return (
-    <WidgetCard title="Error Rate (24h)" onRefresh={() => setTick(t => t + 1)} loading={loading}>
+    <WidgetCard title="Error Rate (24h)" scope="All instances · cumulative" onRefresh={() => setTick(t => t + 1)} loading={loading}>
       {!stats ? (
         <div className="text-[var(--dim)] text-xs py-4 text-center">No data</div>
       ) : (
@@ -291,7 +294,7 @@ function SlowQueriesWidget({ inst, from, to, setView }: { inst: string; from: nu
   }, [inst, from, to, tick])
 
   return (
-    <WidgetCard title="Slow Queries" onRefresh={() => setTick(t => t + 1)} loading={loading}>
+    <WidgetCard title="Slow Queries" scope={`${inst} · top 5`} onRefresh={() => setTick(t => t + 1)} loading={loading}>
       {patterns.length === 0 ? (
         <div className="text-[var(--dim)] text-xs py-4 text-center">No query data</div>
       ) : (
@@ -355,7 +358,7 @@ function SLOOverviewWidget({ instances }: { instances: string[] }) {
   }
 
   return (
-    <WidgetCard title="SLO Overview (7d)" onRefresh={() => setTick(t => t + 1)} loading={loading}>
+    <WidgetCard title="SLO Overview (7d)" scope="Per instance" onRefresh={() => setTick(t => t + 1)} loading={loading}>
       {rows.length === 0 ? (
         <div className="text-[var(--dim)] text-xs py-4 text-center">No instances</div>
       ) : (
@@ -396,17 +399,74 @@ function SLOOverviewWidget({ instances }: { instances: string[] }) {
   )
 }
 
+/* ── Widget: Uptime ─────────────────────────────────────────────────────── */
+
+function UptimeWidget({ instances }: { instances: string[] }) {
+  const now = Math.floor(Date.now() / 1000)
+  const from = now - 300   // last 5 min
+  const [uptimes, setUptimes] = useState<{ name: string; secs: number | null }[]>([])
+  const [loading, setLoading] = useState(true)
+  const [tick, setTick] = useState(0)
+
+  useEffect(() => {
+    if (instances.length === 0) { setLoading(false); return }
+    setLoading(true)
+    Promise.all(
+      instances.map(name =>
+        api.metrics(name, 'system.uptime_seconds', from, now)
+          .then(r => {
+            const pts = r.points
+            const val = pts.length > 0 ? pts[pts.length - 1].value : null
+            return { name, secs: val }
+          })
+          .catch(() => ({ name, secs: null }))
+      )
+    ).then(setUptimes).finally(() => setLoading(false))
+  }, [instances.join(','), tick]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const formatUptime = (secs: number) => {
+    const d = Math.floor(secs / 86400)
+    const h = Math.floor((secs % 86400) / 3600)
+    const m = Math.floor((secs % 3600) / 60)
+    if (d > 0) return `${d}d ${h}h`
+    if (h > 0) return `${h}h ${m}m`
+    return `${m}m`
+  }
+
+  return (
+    <WidgetCard title="Uptime" scope="Per instance" onRefresh={() => setTick(t => t + 1)} loading={loading}>
+      {uptimes.length === 0 ? (
+        <div className="text-[var(--dim)] text-xs py-4 text-center">No data</div>
+      ) : (
+        <div className="space-y-1.5">
+          {uptimes.map(({ name, secs }) => (
+            <div key={name} className="flex items-center gap-2 text-xs">
+              <span className="flex-1 truncate text-[var(--text)]">{name}</span>
+              {secs !== null ? (
+                <span className="font-mono text-[11px] text-[var(--text)]">{formatUptime(secs)}</span>
+              ) : (
+                <span className="text-[var(--dim)] text-[10px]">—</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </WidgetCard>
+  )
+}
+
 /* ── WidgetCard shell ───────────────────────────────────────────────────── */
 
 interface WidgetCardProps {
   title: string
+  scope?: string
   children: React.ReactNode
   onRefresh?: () => void
   loading?: boolean
   noInnerPad?: boolean
 }
 
-function WidgetCard({ title, children, onRefresh, loading, noInnerPad }: WidgetCardProps) {
+function WidgetCard({ title, scope, children, onRefresh, loading, noInnerPad }: WidgetCardProps) {
   return (
     <div className="bg-[var(--card)] border border-[var(--border)] rounded-lg overflow-hidden">
       {/* Header */}
@@ -414,6 +474,11 @@ function WidgetCard({ title, children, onRefresh, loading, noInnerPad }: WidgetC
         <span className="text-[11px] font-semibold uppercase tracking-widest text-[var(--dim)] flex-1">
           {title}
         </span>
+        {scope && (
+          <span className="text-[9px] text-[var(--dim)] bg-[var(--surface)] px-1.5 py-0.5 rounded-full border border-[var(--border)] shrink-0">
+            {scope}
+          </span>
+        )}
         {onRefresh && (
           <button
             onClick={onRefresh}
@@ -458,17 +523,19 @@ function WidgetWrapper({ widget, inst, from, to, instances, setView }: WidgetWra
     case 'health_scores':
       return <HealthScoresWidget setView={setView} />
     case 'query_throughput':
-      return <QueryThroughputWidget inst={inst} />
+      return <QueryThroughputWidget instances={instances} />
     case 'disk_usage':
-      return <DiskUsageWidget inst={inst} />
+      return <DiskUsageWidget instances={instances} />
     case 'insert_rate':
-      return <InsertRateWidget inst={inst} />
+      return <InsertRateWidget instances={instances} />
     case 'error_rate':
       return <ErrorRateWidget />
     case 'slow_queries':
       return <SlowQueriesWidget inst={inst} from={from} to={to} setView={setView} />
     case 'slo_overview':
       return <SLOOverviewWidget instances={instances} />
+    case 'uptime':
+      return <UptimeWidget instances={instances} />
     default:
       return null
   }

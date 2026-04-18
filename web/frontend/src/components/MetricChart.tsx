@@ -19,7 +19,8 @@ interface MetricDef {
 }
 
 interface MetricChartProps {
-  instance: string
+  instance?: string
+  instances?: string[]  // multi-instance mode: one series per instance
   metrics: MetricDef[] | string[]
   title: string
   height?: number
@@ -48,11 +49,14 @@ function ChartTooltip({ active, payload, label, formatValue }: any) {
   )
 }
 
-export function MetricChart({ instance, title, metrics, height = 160, yFormat = 'number' }: MetricChartProps) {
+export function MetricChart({ instance, instances, title, metrics, height = 160, yFormat = 'number' }: MetricChartProps) {
   const { getTimeRange } = useStore()
   const { from, to } = getTimeRange()
-  const [series, setSeries] = useState<{ label: string; color: string; points: MetricPoint[] }[]>([])
+  const [series, setSeries] = useState<{ label: string; color: string; points?: MetricPoint[] }[]>([])
+  const [chartData, setChartData] = useState<Record<string, any>[]>([])
   const [loading, setLoading] = useState(true)
+
+  const isMultiInstance = Array.isArray(instances) && instances.length > 0
 
   const defs: MetricDef[] = metrics.map((m, i) => {
     if (typeof m === 'string') return { name: m, label: m.split('.').pop()!, color: DEFAULT_COLORS[i % DEFAULT_COLORS.length] }
@@ -64,18 +68,57 @@ export function MetricChart({ instance, title, metrics, height = 160, yFormat = 
     async function load() {
       setLoading(true)
       try {
-        const results = await Promise.all(
-          defs.map(d => api.metrics(instance, d.name, from, to))
-        )
-        if (!cancelled) {
-          setSeries(results.map((r, i) => ({
-            label: defs[i].label,
-            color: defs[i].color,
-            points: r.points,
-          })))
+        if (isMultiInstance) {
+          // Multi-instance mode: fetch the first metric for each instance
+          const metricName = defs[0].name
+          const results = await Promise.all(
+            instances!.map(inst => api.metrics(inst, metricName, from, to))
+          )
+          if (!cancelled) {
+            // Merge into unified time axis
+            const tsMap = new Map<number, Record<string, number>>()
+            results.forEach((r, i) => {
+              r.points.forEach(p => {
+                if (!tsMap.has(p.ts)) tsMap.set(p.ts, {})
+                tsMap.get(p.ts)![instances![i]] = p.value
+              })
+            })
+            const merged = Array.from(tsMap.entries())
+              .sort(([a], [b]) => a - b)
+              .map(([ts, vals]) => ({ ts, ...vals }))
+            setChartData(merged)
+            setSeries(instances!.map((name, i) => ({
+              label: name,
+              color: DEFAULT_COLORS[i % DEFAULT_COLORS.length],
+            })))
+          }
+        } else {
+          // Single-instance mode (original behavior)
+          const inst = instance ?? ''
+          const results = await Promise.all(
+            defs.map(d => api.metrics(inst, d.name, from, to))
+          )
+          if (!cancelled) {
+            const seriesData = results.map((r, i) => ({
+              label: defs[i].label,
+              color: defs[i].color,
+              points: r.points,
+            }))
+            setSeries(seriesData)
+            const points0 = seriesData[0]?.points ?? []
+            const data = points0.map((p, idx) => {
+              const row: Record<string, any> = { ts: p.ts }
+              seriesData.forEach(s => { row[s.label] = s.points?.[idx]?.value ?? null })
+              return row
+            })
+            setChartData(data)
+          }
         }
       } catch {
-        if (!cancelled) setSeries([])
+        if (!cancelled) {
+          setSeries([])
+          setChartData([])
+        }
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -83,7 +126,13 @@ export function MetricChart({ instance, title, metrics, height = 160, yFormat = 
     load()
     return () => { cancelled = true }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [instance, from, to, JSON.stringify(defs.map(d => d.name))])
+  }, [
+    instance,
+    isMultiInstance ? instances!.join(',') : '',
+    from,
+    to,
+    JSON.stringify(defs.map(d => d.name)),
+  ])
 
   const formatValue = (v: number) => {
     if (yFormat === 'bytes') return fmtBytes(v)
@@ -92,10 +141,17 @@ export function MetricChart({ instance, title, metrics, height = 160, yFormat = 
     return fmtNum(v)
   }
 
-  const points0 = series[0]?.points ?? []
-  const spanMs = points0.length >= 2
-    ? Math.abs(points0[points0.length - 1].ts - points0[0].ts) * 1000
-    : 0
+  // For time axis span calculation in single-instance mode
+  const firstSeriesPoints = isMultiInstance ? [] : (series[0]?.points ?? [])
+  const spanMs = firstSeriesPoints.length >= 2
+    ? Math.abs(firstSeriesPoints[firstSeriesPoints.length - 1].ts - firstSeriesPoints[0].ts) * 1000
+    : (() => {
+        // In multi-instance mode, derive span from merged chartData
+        if (chartData.length >= 2) {
+          return Math.abs(chartData[chartData.length - 1].ts - chartData[0].ts) * 1000
+        }
+        return 0
+      })()
 
   const formatTs = (ts: number) => {
     const d = new Date(ts * 1000)
@@ -104,14 +160,9 @@ export function MetricChart({ instance, title, metrics, height = 160, yFormat = 
     return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
   }
 
-  // Pivot series into recharts row format: { ts, label0: val, label1: val, ... }
-  const chartData = points0.map((p, i) => {
-    const row: Record<string, any> = { ts: p.ts }
-    series.forEach(s => { row[s.label] = s.points[i]?.value ?? null })
-    return row
-  })
-
   const empty = chartData.length === 0
+  // Show legend when there are multiple series (multi-metric or multi-instance)
+  const showLegend = series.length > 1
 
   return (
     <div className="bg-[var(--card)] border border-[var(--border)] rounded-lg overflow-hidden">
@@ -176,7 +227,7 @@ export function MetricChart({ instance, title, metrics, height = 160, yFormat = 
           </ResponsiveContainer>
         )}
       </div>
-      {series.length > 1 && !empty && !loading && (
+      {showLegend && !empty && !loading && (
         <div className="flex flex-wrap gap-3 px-4 pb-3">
           {series.map(s => (
             <div key={s.label} className="flex items-center gap-1.5 text-[10px] text-[var(--dim)]">
