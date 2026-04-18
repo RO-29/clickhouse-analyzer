@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import {
   LayoutDashboard, Settings2, ChevronUp, ChevronDown, RefreshCw,
 } from 'lucide-react'
@@ -22,6 +22,7 @@ type WidgetType =
   | 'slow_queries'
   | 'slo_overview'
   | 'uptime'
+  | 'live_queries'
 
 interface DashboardWidget {
   id: string
@@ -40,6 +41,7 @@ const WIDGET_LABELS: Record<WidgetType, string> = {
   slow_queries: 'Slow Queries',
   slo_overview: 'SLO Overview',
   uptime: 'Uptime',
+  live_queries: 'Live Queries',
 }
 
 const DEFAULT_WIDGETS: DashboardWidget[] = [
@@ -52,6 +54,7 @@ const DEFAULT_WIDGETS: DashboardWidget[] = [
   { id: 'w7', type: 'slo_overview',      enabled: true, order: 6 },
   { id: 'w8', type: 'insert_rate',       enabled: true, order: 7 },
   { id: 'w9', type: 'uptime',            enabled: true, order: 8 },
+  { id: 'w10', type: 'live_queries',    enabled: true, order: 9 },
 ]
 
 function loadLayout(): DashboardWidget[] {
@@ -455,6 +458,115 @@ function UptimeWidget({ instances }: { instances: string[] }) {
   )
 }
 
+/* ── Widget: Live Queries ───────────────────────────────────────────────── */
+
+interface LiveQuery {
+  instance: string
+  query_id: string
+  query_short: string
+  user: string
+  elapsed: number
+  memory: string
+  read_size: string
+  query_kind: string
+}
+
+function LiveQueriesWidget({ instances }: { instances: string[] }) {
+  const [rows, setRows] = useState<LiveQuery[]>([])
+  const [loading, setLoading] = useState(true)
+  const [tick, setTick] = useState(0)
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  useEffect(() => {
+    if (instances.length === 0) { setLoading(false); return }
+    let cancelled = false
+
+    async function load() {
+      setLoading(true)
+      try {
+        const results = await Promise.all(
+          instances.map(inst =>
+            api.queries(inst)
+              .then((qs: any[]) => qs.map(q => ({ ...q, instance: inst })))
+              .catch(() => [] as LiveQuery[])
+          )
+        )
+        if (!cancelled) {
+          const all = (results.flat() as LiveQuery[])
+            .sort((a, b) => b.elapsed - a.elapsed)
+          setRows(all)
+        }
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    load()
+    // Auto-refresh every 15 seconds — queries change fast
+    timerRef.current = setInterval(load, 15_000)
+    return () => {
+      cancelled = true
+      if (timerRef.current) clearInterval(timerRef.current)
+    }
+  }, [instances.join(','), tick]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const fmtElapsed = (s: number) => {
+    if (s < 60) return `${s.toFixed(0)}s`
+    const m = Math.floor(s / 60)
+    const sec = Math.floor(s % 60)
+    return `${m}m ${sec}s`
+  }
+
+  return (
+    <WidgetCard
+      title="Live Queries"
+      scope="All instances · live"
+      onRefresh={() => setTick(t => t + 1)}
+      loading={loading}
+    >
+      {rows.length === 0 ? (
+        <div className="text-[var(--dim)] text-xs py-4 text-center">No running queries</div>
+      ) : (
+        <div className="space-y-0.5">
+          <div className="grid grid-cols-[auto_auto_1fr_auto] gap-x-2 pb-1 border-b border-[var(--border)] text-[10px] text-[var(--dim)] uppercase tracking-wider">
+            <span>Instance</span>
+            <span className="text-right">Elapsed</span>
+            <span>Query</span>
+            <span className="text-right">Mem</span>
+          </div>
+          {rows.slice(0, 8).map((q, i) => {
+            const isCrit = q.elapsed >= 60
+            const isWarn = !isCrit && q.elapsed >= 30
+            return (
+              <div
+                key={`${q.instance}-${q.query_id}-${i}`}
+                className="grid grid-cols-[auto_auto_1fr_auto] gap-x-2 py-0.5 text-[11px] items-center"
+              >
+                <span className="text-[var(--dim)] text-[10px] font-mono shrink-0">
+                  {q.instance.replace('single-node-', '')}
+                </span>
+                <span
+                  className="tabular-nums font-mono text-right shrink-0"
+                  style={{ color: isCrit ? '#ef4444' : isWarn ? '#eab308' : 'var(--text)' }}
+                >
+                  {fmtElapsed(q.elapsed)}
+                </span>
+                <span className="font-mono text-[10px] text-[var(--dim)] truncate" title={q.query_short}>
+                  {q.query_kind ? `[${q.query_kind}] ` : ''}{q.query_short}
+                </span>
+                <span className="text-[var(--dim)] text-[10px] text-right shrink-0">{q.memory}</span>
+              </div>
+            )
+          })}
+          {rows.length > 8 && (
+            <div className="text-[10px] text-[var(--dim)] pt-1">+{rows.length - 8} more</div>
+          )}
+        </div>
+      )}
+    </WidgetCard>
+  )
+}
+
 /* ── WidgetCard shell ───────────────────────────────────────────────────── */
 
 interface WidgetCardProps {
@@ -536,6 +648,8 @@ function WidgetWrapper({ widget, inst, from, to, instances, setView }: WidgetWra
       return <SLOOverviewWidget instances={instances} />
     case 'uptime':
       return <UptimeWidget instances={instances} />
+    case 'live_queries':
+      return <LiveQueriesWidget instances={instances} />
     default:
       return null
   }

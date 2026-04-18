@@ -1,5 +1,5 @@
-import { useState, useCallback, useEffect } from 'react'
-import { ChevronRight, RotateCcw, Wrench } from 'lucide-react'
+import { useState, useCallback, useEffect, useRef } from 'react'
+import { ChevronRight, RotateCcw, Wrench, Activity, RefreshCw } from 'lucide-react'
 import { flashToast } from '../lib/notify'
 import { cn, scoreColor, sevColor, fmtTime } from '../lib/utils'
 import { api } from '../lib/api'
@@ -101,6 +101,10 @@ export function NodeCard({
 }) {
   const { navToDetail } = useStore()
   const [expanded, setExpanded] = useState(false)
+  const [queriesExpanded, setQueriesExpanded] = useState(false)
+  const [liveQueries, setLiveQueries] = useState<any[]>([])
+  const [queriesLoading, setQueriesLoading] = useState(false)
+  const queriesTimer = useRef<ReturnType<typeof setInterval> | null>(null)
   const [resolvingKey, setResolvingKey] = useState<string | null>(null)
   const [sparklines, setSparklines] = useState<{ cpu: number[]; mem: number[] } | null>(null)
   const [healthTrend, setHealthTrend] = useState<number[]>([])
@@ -130,6 +134,28 @@ export function NodeCard({
       .then(pts => setHealthTrend(pts.map(p => p.score)))
       .catch(() => {}) // silent failure — trend is decorative
   }, [instance.name])
+
+  // Fetch live queries when queriesExpanded — auto-refresh every 15s
+  useEffect(() => {
+    if (!queriesExpanded) {
+      if (queriesTimer.current) clearInterval(queriesTimer.current)
+      return
+    }
+    let cancelled = false
+    const load = () => {
+      setQueriesLoading(true)
+      api.queries(instance.name)
+        .then((qs: any[]) => { if (!cancelled) setLiveQueries(qs ?? []) })
+        .catch(() => { if (!cancelled) setLiveQueries([]) })
+        .finally(() => { if (!cancelled) setQueriesLoading(false) })
+    }
+    load()
+    queriesTimer.current = setInterval(load, 15_000)
+    return () => {
+      cancelled = true
+      if (queriesTimer.current) clearInterval(queriesTimer.current)
+    }
+  }, [queriesExpanded, instance.name])
 
   const handleResolve = useCallback(async (dedupKey: string) => {
     setResolvingKey(dedupKey)
@@ -225,10 +251,15 @@ export function NodeCard({
           {[
             { label: 'CPU', value: cpuPct != null ? `${cpuPct.toFixed(0)}%` : '—', warn: cpuPct != null && cpuPct > 80, crit: cpuPct != null && cpuPct > 95, sparkColor: '#f97316', sparkData: sparklines?.cpu },
             { label: 'MEM', value: memPct != null ? `${memPct.toFixed(0)}%` : '—', warn: memPct != null && memPct > 85, crit: memPct != null && memPct > 95, sparkColor: '#7c3aed', sparkData: sparklines?.mem },
-            { label: 'Queries', value: runningQ != null ? String(Math.round(runningQ)) : '—', warn: false, crit: false, sparkColor: undefined, sparkData: undefined },
-            { label: 'Merges', value: activeMerges != null ? String(Math.round(activeMerges)) : '—', warn: false, crit: false, sparkColor: undefined, sparkData: undefined },
+            { label: 'Queries', value: runningQ != null ? String(Math.round(runningQ)) : '—', warn: false, crit: runningQ != null && runningQ > 0, sparkColor: undefined, sparkData: undefined, clickable: true },
+            { label: 'Merges', value: activeMerges != null ? String(Math.round(activeMerges)) : '—', warn: false, crit: false, sparkColor: undefined, sparkData: undefined, clickable: false },
           ].map(m => (
-            <div key={m.label} className="text-right min-w-[48px]">
+            <div
+              key={m.label}
+              className={cn('text-right min-w-[48px]', (m as any).clickable && 'cursor-pointer')}
+              onClick={(m as any).clickable ? (e) => { e.stopPropagation(); setQueriesExpanded(o => !o) } : undefined}
+              title={(m as any).clickable ? 'Click to see live queries' : undefined}
+            >
               {m.sparkData && m.sparkData.length >= 2 ? (
                 <div className="flex items-end justify-end gap-1">
                   <div className={cn(
@@ -241,9 +272,13 @@ export function NodeCard({
                 <div className={cn(
                   'text-[12px] font-semibold tabular-nums leading-tight',
                   m.crit ? 'text-red-400' : m.warn ? 'text-yellow-400' : 'text-[var(--text)]',
+                  (m as any).clickable && 'underline decoration-dotted',
                 )}>{m.value}</div>
               )}
-              <div className="text-[10px] text-[var(--dim)] uppercase tracking-wider">{m.label}</div>
+              <div className="text-[10px] text-[var(--dim)] uppercase tracking-wider flex items-center justify-end gap-0.5">
+                {(m as any).clickable && queriesExpanded && <Activity size={8} />}
+                {m.label}
+              </div>
             </div>
           ))}
         </div>
@@ -322,6 +357,47 @@ export function NodeCard({
               onSelect={onSelectAlert}
             />
           ))}
+        </div>
+      )}
+
+      {/* Live queries panel — shown when Queries count is clicked */}
+      {queriesExpanded && (
+        <div className="border-t border-[var(--border)] bg-[var(--surface)]/50 px-4 py-2">
+          <div className="flex items-center gap-1.5 text-[10px] text-[var(--dim)] uppercase tracking-wider mb-1.5">
+            <Activity size={9} />
+            Live Queries
+            {queriesLoading && <RefreshCw size={8} className="animate-spin ml-1" />}
+          </div>
+          {liveQueries.length === 0 ? (
+            <div className="text-[11px] text-[var(--dim)]">{queriesLoading ? 'Loading…' : 'No running queries'}</div>
+          ) : (
+            <div className="space-y-0.5">
+              {liveQueries.slice(0, 6).map((q: any, i: number) => {
+                const elapsed = Number(q.elapsed ?? 0)
+                const isCrit = elapsed >= 60
+                const isWarn = !isCrit && elapsed >= 30
+                const elapsedStr = elapsed < 60 ? `${elapsed.toFixed(0)}s` : `${Math.floor(elapsed / 60)}m ${Math.floor(elapsed % 60)}s`
+                return (
+                  <div key={`${q.query_id}-${i}`} className="flex items-center gap-2 text-[11px]">
+                    <span
+                      className="font-mono tabular-nums shrink-0 w-10 text-right"
+                      style={{ color: isCrit ? '#ef4444' : isWarn ? '#eab308' : 'var(--dim)' }}
+                    >
+                      {elapsedStr}
+                    </span>
+                    <span className="text-[var(--dim)] shrink-0">{q.user}</span>
+                    <span className="font-mono text-[10px] text-[var(--dim)] truncate flex-1" title={q.query_short}>
+                      {q.query_short}
+                    </span>
+                    <span className="text-[var(--dim)] text-[10px] shrink-0">{q.memory}</span>
+                  </div>
+                )
+              })}
+              {liveQueries.length > 6 && (
+                <div className="text-[10px] text-[var(--dim)]">+{liveQueries.length - 6} more</div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
