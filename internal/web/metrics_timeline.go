@@ -35,7 +35,7 @@ var timelinePalette = []string{
 // handleCompareMetricsTimeline fans out to all instances and returns a
 // per-instance time-series for a single metric.
 //
-// GET /api/compare/metrics-timeline?metric=MemoryResident&from=<epoch>&to=<epoch>&points=60
+// GET /api/compare/metrics-timeline?metric=system.async.MemoryResident&from=<epoch>&to=<epoch>&points=60
 func (s *Server) handleCompareMetricsTimeline(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 

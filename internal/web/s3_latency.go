@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -42,7 +43,8 @@ func (s *Server) handleS3LatencyByTable(w http.ResponseWriter, r *http.Request) 
 		toEpoch = parseInt64(toStr)
 	}
 
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
 
 	query := fmt.Sprintf(`
 SELECT
