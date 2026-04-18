@@ -381,7 +381,8 @@ LIMIT 15`, from, to)
 
 	rows, err := client.Query(ctx, sql)
 	if err != nil {
-		return toolExecResult{Error: err.Error()}
+		slog.Warn("chat tool exec: query failed", "tool", toolName, "err", err)
+		return toolExecResult{Error: "query failed"}
 	}
 
 	// Cap at 200 rows.
@@ -601,7 +602,7 @@ func (s *Server) handleChatAPI(
 		resp, err := callAnthropic(ctx, apiKey, apiReq)
 		if err != nil {
 			slog.Error("chat: anthropic API error", "instance", instance, "err", err)
-			sendEvent("error", jsonStr(err.Error()))
+			sendEvent("error", jsonStr("Analysis request failed"))
 			return
 		}
 
@@ -753,7 +754,7 @@ func (s *Server) handleChatAPI(
 	})
 	if err != nil {
 		slog.Error("chat: stream error", "instance", instance, "err", err)
-		sendEvent("error", jsonStr(err.Error()))
+		sendEvent("error", jsonStr("Streaming response failed"))
 		return
 	}
 
@@ -782,7 +783,7 @@ func (s *Server) handleChatCLI(
 	claudeBin, err := claudeBinary()
 	if err != nil {
 		slog.Warn("chat: claude CLI not available", "err", err)
-		sendEvent("error", jsonStr("Claude CLI not available: "+err.Error()))
+		sendEvent("error", jsonStr("Claude CLI not available"))
 		return
 	}
 
@@ -825,7 +826,7 @@ func (s *Server) handleChatCLI(
 	planOutput, err := planCmd.Output()
 	if err != nil {
 		slog.Warn("chat: plan pass failed", "err", err)
-		sendEvent("error", jsonStr("Planning step failed: "+err.Error()))
+		sendEvent("error", jsonStr("Planning step failed"))
 		return
 	}
 
@@ -930,7 +931,8 @@ func (s *Server) handleChatCLI(
 		for _, r := range results {
 			contextSB.WriteString(fmt.Sprintf("### %s\n```sql\n%s\n```\n", r.label, r.sql))
 			if r.err != nil {
-				contextSB.WriteString(fmt.Sprintf("**Error:** %s\n\n", r.err.Error()))
+				slog.Warn("chat: query result error", "label", r.label, "err", r.err)
+				contextSB.WriteString("**Error:** query failed\n\n")
 			} else {
 				b, _ := json.MarshalIndent(r.rows, "", "  ")
 				contextSB.WriteString(fmt.Sprintf("```json\n%s\n```\n\n", string(b)))
@@ -990,18 +992,20 @@ Provide specific SQL recommendations where applicable.
 
 	stdout, err := streamCmd.StdoutPipe()
 	if err != nil {
-		sendEvent("error", jsonStr("Failed to create stdout pipe: "+err.Error()))
+		slog.Warn("chat: failed to create stdout pipe", "err", err)
+		sendEvent("error", jsonStr("Failed to start chat"))
 		return
 	}
 	stderrPipe, err := streamCmd.StderrPipe()
 	if err != nil {
-		sendEvent("error", jsonStr("Failed to create stderr pipe: "+err.Error()))
+		slog.Warn("chat: failed to create stderr pipe", "err", err)
+		sendEvent("error", jsonStr("Failed to start chat"))
 		return
 	}
 
 	if err := streamCmd.Start(); err != nil {
 		slog.Warn("chat: claude CLI stream pass failed to start", "err", err)
-		sendEvent("error", jsonStr("Claude CLI failed to start: "+err.Error()))
+		sendEvent("error", jsonStr("Claude CLI failed to start"))
 		return
 	}
 
@@ -1123,7 +1127,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	var req chatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		writeErr(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
@@ -1282,17 +1286,19 @@ func (s *Server) handleChatCLIWithMCP(
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		sendEvent("error", jsonStr("Failed to create stdout pipe: "+err.Error()))
+		slog.Warn("chat: MCP failed to create stdout pipe", "err", err)
+		sendEvent("error", jsonStr("Failed to start chat"))
 		return
 	}
 	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {
-		sendEvent("error", jsonStr("Failed to create stderr pipe: "+err.Error()))
+		slog.Warn("chat: MCP failed to create stderr pipe", "err", err)
+		sendEvent("error", jsonStr("Failed to start chat"))
 		return
 	}
 	if err := cmd.Start(); err != nil {
 		slog.Warn("chat: claude CLI MCP start failed", "err", err)
-		sendEvent("error", jsonStr("Claude CLI failed to start: "+err.Error()))
+		sendEvent("error", jsonStr("Claude CLI failed to start"))
 		return
 	}
 

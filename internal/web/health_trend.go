@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -27,7 +28,8 @@ func (s *Server) handleHealthTrend(w http.ResponseWriter, r *http.Request) {
 
 	snapshots, err := s.store.GetHealthTrend(ctx, instance, from, to)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		slog.Warn("health trend query failed", "instance", instance, "err", err)
+		writeErr(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	if snapshots == nil {

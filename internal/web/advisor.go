@@ -639,7 +639,8 @@ func (s *Server) handleAdvisorCardinality(w http.ResponseWriter, r *http.Request
 			escapeIdent(col), escapeIdent(col), escapeIdent(db), escapeIdent(tbl))
 		cardRows, err := client.Query(ctx, sql)
 		if err != nil {
-			cr.Error = err.Error()
+			slog.Warn("advisor: cardinality query failed", "db", db, "table", tbl, "col", col, "err", err)
+			cr.Error = "query failed"
 			results = append(results, cr)
 			continue
 		}
@@ -939,7 +940,8 @@ func (s *Server) handleTableDetail(w http.ResponseWriter, r *http.Request) {
 			"SELECT total_rows, total_bytes, formatReadableSize(total_bytes) as size_readable "+
 				"FROM system.tables WHERE database = '"+db+"' AND name = '"+table+"'")
 		if err != nil {
-			info.Error = err.Error()
+			slog.Warn("advisor: node table info query failed", "instance", name, "db", db, "table", table, "err", err)
+			info.Error = "query failed"
 			otherNodesMu.Lock()
 			otherNodes = append(otherNodes, info)
 			otherNodesMu.Unlock()

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -28,7 +29,8 @@ func (s *Server) handleAuditLog(w http.ResponseWriter, r *http.Request) {
 
 	events, err := s.store.GetAuditLog(r.Context(), opts)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "failed to query audit log: "+err.Error())
+		slog.Warn("audit log query failed", "err", err)
+		writeErr(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	if events == nil {

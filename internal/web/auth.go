@@ -37,9 +37,10 @@ type authStatusResp struct {
 func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 	bin, err := claudeBinary()
 	if err != nil {
+		slog.Warn("auth status: claude CLI not found", "err", err)
 		writeJSON(w, http.StatusOK, authStatusResp{
 			LoggedIn:  false,
-			Error:     "Claude CLI not found: " + err.Error(),
+			Error:     "Claude CLI not found",
 			CheckedAt: time.Now().UTC().Format(time.RFC3339),
 		})
 		return
@@ -137,7 +138,8 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 	port, err := findListeningPort(pid)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "could not find claude's local callback port: "+err.Error())
+		slog.Warn("auth callback: could not find local callback port", "pid", pid, "err", err)
+		writeErr(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
@@ -150,7 +152,8 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 func (s *Server) proxyLocalCallback(w http.ResponseWriter, localURL string) {
 	resp, err := http.Get(localURL) //nolint:noctx
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, "callback forward failed: "+err.Error())
+		slog.Warn("auth callback: proxy forward failed", "url", localURL, "err", err)
+		writeErr(w, http.StatusBadGateway, "callback forward failed")
 		return
 	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -260,7 +263,8 @@ func findListeningPort(pid int) (int, error) {
 func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	bin, err := claudeBinary()
 	if err != nil {
-		writeErr(w, http.StatusServiceUnavailable, "Claude CLI not found: "+err.Error())
+		slog.Warn("auth login: claude CLI not found", "err", err)
+		writeErr(w, http.StatusServiceUnavailable, "Claude CLI not found")
 		return
 	}
 	home := findClaudeHome()
@@ -345,7 +349,8 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	stderr, _ := cmd.StderrPipe()
 
 	if err := cmd.Start(); err != nil {
-		sendEvent("error", jsonStr("Failed to start login: "+err.Error()))
+		slog.Warn("auth login: failed to start process", "err", err)
+		sendEvent("error", jsonStr("Failed to start login"))
 		return
 	}
 	s.authStdinMu.Lock()
@@ -418,10 +423,7 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	<-stdoutDone
 	if err := cmd.Wait(); err != nil {
 		slog.Warn("auth login: process exited with error", "err", err)
-		// Send the error to the browser so the user isn't left staring at
-		// a spinner. Include the raw error string for diagnostics.
-		sendEvent("error", jsonStr("Login process exited: "+err.Error()+
-			". SSH into the server and run: HOME=/var/lib/ch-analyzer claude auth login"))
+		sendEvent("error", jsonStr("Login process failed. SSH into the server and run: HOME=/var/lib/ch-analyzer claude auth login"))
 	} else {
 		slog.Info("auth login: completed successfully")
 		sendEvent("done", `{"success":true}`)
@@ -455,13 +457,15 @@ func (s *Server) handleAuthRefresh(w http.ResponseWriter, r *http.Request) {
 
 	raw, err := os.ReadFile(credsPath)
 	if err != nil {
-		writeErr(w, http.StatusNotFound, "credentials file not found: "+err.Error())
+		slog.Warn("auth refresh: credentials file not found", "path", credsPath, "err", err)
+		writeErr(w, http.StatusNotFound, "credentials not found — please log in first")
 		return
 	}
 
 	var creds claudeCredentials
 	if err := json.Unmarshal(raw, &creds); err != nil {
-		writeErr(w, http.StatusInternalServerError, "could not parse credentials: "+err.Error())
+		slog.Warn("auth refresh: could not parse credentials", "err", err)
+		writeErr(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
@@ -487,7 +491,8 @@ func (s *Server) handleAuthRefresh(w http.ResponseWriter, r *http.Request) {
 
 	newCreds, err := refreshOAuthToken(oauth.RefreshToken, oauth.Scopes)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, "token refresh failed: "+err.Error())
+		slog.Warn("auth refresh: token refresh failed", "err", err)
+		writeErr(w, http.StatusBadGateway, "token refresh failed")
 		return
 	}
 
@@ -504,11 +509,13 @@ func (s *Server) handleAuthRefresh(w http.ResponseWriter, r *http.Request) {
 
 	out, err := json.Marshal(newCreds)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "could not marshal credentials: "+err.Error())
+		slog.Error("auth refresh: could not marshal credentials", "err", err)
+		writeErr(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	if err := os.WriteFile(credsPath, out, 0o600); err != nil {
-		writeErr(w, http.StatusInternalServerError, "could not write credentials: "+err.Error())
+		slog.Error("auth refresh: could not write credentials", "path", credsPath, "err", err)
+		writeErr(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
@@ -624,7 +631,8 @@ func (s *Server) handleAuthSetTokens(w http.ResponseWriter, r *http.Request) {
 		c.ClaudeAiOauth.ExpiresAt = time.Now().Add(24 * time.Hour).UnixMilli()
 		out, _ := json.Marshal(c)
 		if err := os.WriteFile(credsPath, out, 0o600); err != nil {
-			writeErr(w, http.StatusInternalServerError, "write failed: "+err.Error())
+			slog.Error("auth set-tokens: failed to write credentials", "err", err)
+			writeErr(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
 		slog.Info("auth set-tokens: wrote bare access token", "path", credsPath)
@@ -636,7 +644,8 @@ func (s *Server) handleAuthSetTokens(w http.ResponseWriter, r *http.Request) {
 	var wrapped claudeCredentials
 	if err := json.Unmarshal(body, &wrapped); err == nil && wrapped.ClaudeAiOauth.AccessToken != "" {
 		if err := os.WriteFile(credsPath, body, 0o600); err != nil {
-			writeErr(w, http.StatusInternalServerError, "write failed: "+err.Error())
+			slog.Error("auth set-tokens: failed to write credentials", "err", err)
+			writeErr(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
 		slog.Info("auth set-tokens: wrote wrapped credentials", "path", credsPath)
@@ -671,7 +680,8 @@ func (s *Server) handleAuthSetTokens(w http.ResponseWriter, r *http.Request) {
 
 	out, _ := json.Marshal(c)
 	if err := os.WriteFile(credsPath, out, 0o600); err != nil {
-		writeErr(w, http.StatusInternalServerError, "write failed: "+err.Error())
+		slog.Error("auth set-tokens: failed to write credentials", "err", err)
+		writeErr(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	slog.Info("auth set-tokens: wrote flat credentials", "path", credsPath)

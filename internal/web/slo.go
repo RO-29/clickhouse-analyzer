@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -44,7 +45,8 @@ WHERE instance = '%s' AND ts >= now() - INTERVAL %d DAY`,
 
 	rows, err := client.Query(ctx, sql)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "failed to query health_snapshots: "+err.Error())
+		slog.Warn("SLO query failed", "instance", instance, "err", err)
+		writeErr(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 

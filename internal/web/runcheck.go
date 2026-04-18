@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -52,7 +53,7 @@ func (s *Server) handleGetCollectors(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRunCheck(w http.ResponseWriter, r *http.Request) {
 	var req runCheckRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		writeErr(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
@@ -146,7 +147,8 @@ func (s *Server) handleRunCheck(w http.ResponseWriter, r *http.Request) {
 			result.DurationMs = time.Since(start).Milliseconds()
 
 			if err != nil {
-				result.Error = err.Error()
+				slog.Warn("runcheck: collector failed", "collector", req.Collectors[idx], "err", err)
+				result.Error = "check failed"
 				results[idx] = result
 				return
 			}

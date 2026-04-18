@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -60,7 +61,8 @@ ORDER BY p.partition DESC, bytes DESC
 LIMIT 500
 `)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "failed to query partitions: "+err.Error())
+		slog.Warn("table partitions query failed", "instance", instance, "db", db, "table", table, "err", err)
+		writeErr(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 

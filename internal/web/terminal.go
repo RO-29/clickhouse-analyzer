@@ -228,7 +228,7 @@ type queryResponse struct {
 func (s *Server) handleQueryExecute(w http.ResponseWriter, r *http.Request) {
 	var req queryRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		writeErr(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
@@ -305,11 +305,11 @@ func (s *Server) handleQueryExecute(w http.ResponseWriter, r *http.Request) {
 				"err", err,
 			)
 			s.recordQueryHistory(req.Instance, stmt, 0, elapsedMs, err.Error())
-			errMsg := err.Error()
+			errMsg := "query execution failed"
 			if len(stmts) > 1 {
-				errMsg = fmt.Sprintf("statement %d/%d failed: %s", i+1, len(stmts), errMsg)
+				errMsg = fmt.Sprintf("statement %d/%d failed", i+1, len(stmts))
 			}
-			writeErr(w, http.StatusInternalServerError, "query execution failed: "+errMsg)
+			writeErr(w, http.StatusInternalServerError, errMsg)
 			return
 		}
 

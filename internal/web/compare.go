@@ -1069,7 +1069,8 @@ func (s *Server) handleCompareQueryPatterns(w http.ResponseWriter, r *http.Reque
 				LIMIT 30`, fromTime, toTime)
 				rows, err = client.Query(ctx, sql)
 				if err != nil {
-					results[idx].Error = err.Error()
+					slog.Warn("compare: query failed", "instance", results[idx].Instance, "err", err)
+					results[idx].Error = "query failed"
 					return
 				}
 			}

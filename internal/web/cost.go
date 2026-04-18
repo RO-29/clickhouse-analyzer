@@ -152,7 +152,7 @@ func (s *Server) handleCost(w http.ResponseWriter, r *http.Request) {
 	`)
 	if err != nil {
 		slog.Warn("cost: parts query failed", "instance", instance, "err", err)
-		notes = append(notes, "Storage data unavailable: "+err.Error())
+		notes = append(notes, "Storage data unavailable")
 	} else {
 		for _, row := range partRows {
 			db := fmt.Sprintf("%v", row["database"])

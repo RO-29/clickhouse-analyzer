@@ -137,7 +137,7 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 
 	var req analyzeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		writeErr(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.TimeWindowMins <= 0 {
@@ -279,7 +279,7 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	claudeBin, err := claudeBinary()
 	if err != nil {
 		slog.Warn("claude CLI not available", "err", err)
-		sendEvent("error", jsonStr(err.Error()))
+		sendEvent("error", jsonStr("Claude CLI not available"))
 		return
 	}
 	slog.Info("analyze: claude binary", "path", claudeBin)
@@ -323,18 +323,20 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		sendEvent("error", jsonStr(err.Error()))
+		slog.Warn("analyze: failed to create stdout pipe", "err", err)
+		sendEvent("error", jsonStr("Failed to start analysis"))
 		return
 	}
 	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {
-		sendEvent("error", jsonStr(err.Error()))
+		slog.Warn("analyze: failed to create stderr pipe", "err", err)
+		sendEvent("error", jsonStr("Failed to start analysis"))
 		return
 	}
 
 	if err := cmd.Start(); err != nil {
 		slog.Warn("claude CLI failed to start", "path", claudeBin, "err", err)
-		sendEvent("error", jsonStr("Claude CLI failed to start: "+err.Error()))
+		sendEvent("error", jsonStr("Claude CLI failed to start"))
 		return
 	}
 
@@ -582,7 +584,8 @@ LIMIT 20`, from, to),
 
 	for res := range ch {
 		if res.err != nil {
-			ac.CollectionErrors = append(ac.CollectionErrors, res.label+": "+res.err.Error())
+			slog.Warn("analyze: data collection error", "label", res.label, "err", res.err)
+			ac.CollectionErrors = append(ac.CollectionErrors, res.label+": query failed")
 			continue
 		}
 		switch res.label {
@@ -762,7 +765,7 @@ func (s *Server) handleAnalyzeElement(w http.ResponseWriter, r *http.Request) {
 
 	var req analyzeElementRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		writeErr(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Mode == "" {
@@ -854,7 +857,8 @@ func (s *Server) handleAnalyzeElement(w http.ResponseWriter, r *http.Request) {
 	// ── Spawn claude CLI ──────────────────────────────────────────────────────
 	claudeBin, err := claudeBinary()
 	if err != nil {
-		sendEvent("error", jsonStr(err.Error()))
+		slog.Warn("analyze element: claude CLI not available", "err", err)
+		sendEvent("error", jsonStr("Claude CLI not available"))
 		return
 	}
 
@@ -886,16 +890,19 @@ func (s *Server) handleAnalyzeElement(w http.ResponseWriter, r *http.Request) {
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		sendEvent("error", jsonStr(err.Error()))
+		slog.Warn("analyze element: failed to create stdout pipe", "err", err)
+		sendEvent("error", jsonStr("Failed to start analysis"))
 		return
 	}
 	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {
-		sendEvent("error", jsonStr(err.Error()))
+		slog.Warn("analyze element: failed to create stderr pipe", "err", err)
+		sendEvent("error", jsonStr("Failed to start analysis"))
 		return
 	}
 	if err := cmd.Start(); err != nil {
-		sendEvent("error", jsonStr("Claude CLI failed to start: "+err.Error()))
+		slog.Warn("analyze element: claude CLI failed to start", "path", claudeBin, "err", err)
+		sendEvent("error", jsonStr("Claude CLI failed to start"))
 		return
 	}
 

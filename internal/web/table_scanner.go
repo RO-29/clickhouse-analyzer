@@ -534,7 +534,8 @@ ORDER BY event_time DESC
 LIMIT 10
 `)
 	if sampleErr != nil {
-		out.SampleErr = sampleErr.Error()
+		slog.Warn("table scanner: sample query failed", "instance", instance, "err", sampleErr)
+		out.SampleErr = "query failed"
 	} else {
 		out.SampleRows = sampleRows
 	}
@@ -559,7 +560,8 @@ ORDER BY (select_count + insert_count) DESC
 LIMIT 20
 `)
 	if aggErr != nil {
-		out.AggErr = aggErr.Error()
+		slog.Warn("table scanner: agg query failed", "instance", instance, "err", aggErr)
+		out.AggErr = "query failed"
 	} else {
 		out.AggRows = aggRows
 	}

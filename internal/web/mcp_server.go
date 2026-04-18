@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/rohitjain/ch-analyzer/internal/chclient"
@@ -180,7 +181,8 @@ func RunMCPServer(ctx context.Context, client *chclient.Client) {
 				Arguments map[string]interface{} `json:"arguments"`
 			}
 			if err := json.Unmarshal(req.Params, &params); err != nil {
-				errResp(req.ID, -32602, "invalid params: "+err.Error())
+				slog.Warn("mcp: invalid params", "err", err)
+				errResp(req.ID, -32602, "invalid params")
 				continue
 			}
 
