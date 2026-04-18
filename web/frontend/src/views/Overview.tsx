@@ -236,9 +236,9 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
       ])
       api.health().then(h => { if (!cancelled) setHealthData(h) }).catch(() => {})
       if (!cancelled) {
-        setLocalInstances(inst)
-        setAlerts(alrt)
-        setInstances(inst.map(i => i.name))
+        setLocalInstances(inst ?? [])
+        setAlerts(alrt ?? [])
+        setInstances((inst ?? []).map(i => i.name))
         setLastRefreshed(new Date())
         if (inst.length > 0) {
           const worst = [...inst].sort((a, b) => a.health_score - b.health_score)[0]
@@ -265,7 +265,7 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
 
   if (loading) return <Skeleton />
 
-  if (loadError && instances.length === 0) return (
+  if (loadError && (instances?.length ?? 0) === 0) return (
     <div className="flex flex-col items-center gap-4 py-16 text-center">
       <AlertTriangle size={32} className="text-red-400 opacity-70" />
       <div>
