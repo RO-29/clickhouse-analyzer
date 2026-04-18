@@ -280,6 +280,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Collector registry and ad-hoc run endpoints (from runcheck.go).
 	mux.HandleFunc("GET /api/collectors", s.handleGetCollectors)
 	mux.HandleFunc("POST /api/run-check", s.handleRunCheck)
+	mux.HandleFunc("POST /api/alerts/trigger", s.handleTriggerAlert)
 	mux.HandleFunc("POST /api/force-poll", s.handleForcePoll)
 
 	// Schedule endpoints (from schedule.go).

@@ -280,6 +280,8 @@ export const api = {
   runCheck: (collectors: string[], instances: string[], from?: number, to?: number) =>
     post<RunCheckResponse>('/api/run-check', { collectors, instances, from, to }),
   forcePoll: () => post<{ status: string }>('/api/force-poll', {}),
+  triggerAlert: (alert: { instance: string; severity: string; category: string; title: string; message: string; dedup_key?: string }) =>
+    post<{ id: number; dedup_key: string }>('/api/alerts/trigger', alert),
   schedules: {
     list: () => get<any[]>('/api/schedules'),
     create: (instance: string, collectorName: string, intervalMins: number) =>

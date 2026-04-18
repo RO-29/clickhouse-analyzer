@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   PlayCircle, ChevronDown, ChevronRight, AlertTriangle, CheckCircle2,
   XCircle, BarChart2, Clock, Loader2, Code2, Database, Info, RefreshCw, CalendarRange,
-  Timer, Plus, Trash2, ToggleLeft, ToggleRight, ListChecks,
+  Timer, Plus, Trash2, ToggleLeft, ToggleRight, ListChecks, Zap, BellRing,
 } from 'lucide-react'
 import { api } from '../lib/api'
 import { cn } from '../lib/utils'
@@ -397,7 +397,79 @@ export default function RunCheck() {
     }
   }
 
-  const [activeTab, setActiveTab] = useState<'run' | 'scheduled'>('run')
+  // ── Alert Dry Run tab state ─────────────────────────────────────────────────
+  const [drSelectedCollectors, setDrSelectedCollectors] = useState<Set<string>>(new Set())
+  const [drSelectedInstances, setDrSelectedInstances] = useState<Set<string>>(new Set())
+  const [drResults, setDrResults] = useState<RunCheckResult[]>([])
+  const [drRunning, setDrRunning] = useState(false)
+  const [drError, setDrError] = useState('')
+  // Track which alerts have been manually triggered: key = `instance:category:title`
+  const [triggeredKeys, setTriggeredKeys] = useState<Set<string>>(new Set())
+  const [triggeringKey, setTriggeringKey] = useState<string | null>(null)
+  const drResultsRef = useRef<HTMLDivElement>(null)
+
+  // Initialise dry-run collector selection to all collectors once loaded
+  useEffect(() => {
+    if (collectorMetas.length > 0 && drSelectedCollectors.size === 0) {
+      setDrSelectedCollectors(new Set(collectorMetas.map(m => m.name)))
+    }
+  }, [collectorMetas]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleDrRun = async () => {
+    if (drSelectedCollectors.size === 0 || drSelectedInstances.size === 0) return
+    setDrRunning(true)
+    setDrError('')
+    setDrResults([])
+    setTriggeredKeys(new Set())
+    try {
+      const { from, to } = timeRangeParams()
+      const resp = await api.runCheck(
+        Array.from(drSelectedCollectors),
+        Array.from(drSelectedInstances),
+        from,
+        to,
+      )
+      setDrResults(resp.results ?? [])
+      setTimeout(() => drResultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
+    } catch (e: any) {
+      setDrError(e.message ?? 'Run failed')
+    } finally {
+      setDrRunning(false)
+    }
+  }
+
+  const handleTriggerAlert = async (result: RunCheckResult, alert: RunCheckAlert) => {
+    const key = `${result.instance}:${alert.category}:${alert.title}`
+    setTriggeringKey(key)
+    try {
+      await api.triggerAlert({
+        instance: result.instance,
+        severity: alert.severity,
+        category: alert.category,
+        title: alert.title,
+        message: alert.message,
+      })
+      setTriggeredKeys(prev => new Set([...prev, key]))
+    } catch (e: any) {
+      // show inline error by leaving triggeringKey cleared — caller sees no spinner
+      alert.title && console.error('trigger alert failed:', e)
+    } finally {
+      setTriggeringKey(null)
+    }
+  }
+
+  // Flat list of (result, alert) pairs from dry-run, sorted crit→warn→info
+  const drAlertRows = drResults.flatMap(r =>
+    r.alerts.map(a => ({ result: r, alert: a }))
+  ).sort((x, y) => {
+    const ord: Record<string, number> = { critical: 0, warn: 1, info: 2 }
+    return (ord[x.alert.severity] ?? 3) - (ord[y.alert.severity] ?? 3)
+  })
+
+  const drCleanResults = drResults.filter(r => !r.error && r.alerts.length === 0)
+  const drErrorResults = drResults.filter(r => !!r.error)
+
+  const [activeTab, setActiveTab] = useState<'run' | 'dryrun' | 'scheduled'>('run')
 
   const grouped = groupByCategory(collectorMetas)
   const categories = Object.keys(grouped).sort()
@@ -417,6 +489,7 @@ export default function RunCheck() {
 
   const tabs = [
     { id: 'run' as const, label: 'Run Checks', icon: PlayCircle },
+    { id: 'dryrun' as const, label: 'Alert Dry Run', icon: BellRing },
     { id: 'scheduled' as const, label: 'Scheduled', icon: ListChecks, badge: schedules.length || undefined },
   ]
 
@@ -740,6 +813,330 @@ export default function RunCheck() {
               <ResultCard key={`${r.instance}-${r.collector}-${i}`} result={r} />
             ))}
           </div>
+        </div>
+      )}
+
+      </>)}
+
+      {/* ── Alert Dry Run tab ──────────────────────────────────────────────────── */}
+      {activeTab === 'dryrun' && (<>
+
+      {/* Explanation banner */}
+      <div className="flex items-start gap-3 px-4 py-3 rounded-xl border border-amber-500/25 bg-amber-500/8 text-sm text-amber-400">
+        <BellRing size={15} className="shrink-0 mt-0.5" />
+        <div className="space-y-1">
+          <p className="font-medium">Alert Dry Run — preview without storing</p>
+          <p className="text-amber-400/70 text-xs leading-relaxed">
+            Runs all selected collectors right now and shows every alert that <em>would</em> fire.
+            Nothing is written to the database and no Slack/PagerDuty notifications are sent.
+            Use the <strong>Trigger</strong> button on any alert to write it directly into the Alerts tab.
+          </p>
+        </div>
+      </div>
+
+      {/* Time range (reuses same presets/state as Run Checks tab) */}
+      <div className="bg-[var(--card)] border border-[var(--border)] rounded-xl p-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <CalendarRange size={14} className="text-[var(--dim)]" />
+          <span className="text-sm font-semibold text-[var(--text)]">Time Range</span>
+          <span className="text-xs text-[var(--dim)] ml-1">— same as Run Checks tab</span>
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {PRESETS.map(p => (
+            <button
+              key={p.minutes}
+              onClick={() => setPreset(p.minutes)}
+              className={cn(
+                'px-3 py-1 rounded-lg text-xs font-medium transition-colors border',
+                preset === p.minutes
+                  ? 'bg-[var(--accent)]/15 text-[var(--accent)] border-[var(--accent)]/40'
+                  : 'border-[var(--border)] text-[var(--dim)] hover:text-[var(--text)] hover:border-[var(--accent)]/30',
+              )}
+            >{p.label}</button>
+          ))}
+        </div>
+        {preset === -1 && (
+          <div className="flex flex-wrap items-center gap-3 pt-1">
+            <label className="flex items-center gap-2 text-xs text-[var(--dim)]">
+              <span className="w-6">From</span>
+              <input type="datetime-local" value={customFrom} onChange={e => setCustomFrom(e.target.value)}
+                className="bg-[var(--surface)] border border-[var(--border)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]/60" />
+            </label>
+            <label className="flex items-center gap-2 text-xs text-[var(--dim)]">
+              <span className="w-6">To</span>
+              <input type="datetime-local" value={customTo} onChange={e => setCustomTo(e.target.value)}
+                className="bg-[var(--surface)] border border-[var(--border)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]/60" />
+            </label>
+          </div>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Collector picker */}
+        <div className="lg:col-span-2 bg-[var(--card)] border border-[var(--border)] rounded-xl p-4 space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold text-[var(--text)]">Collectors</h2>
+              <span className="text-[11px] font-medium text-[var(--accent)] bg-[var(--accent)]/10 border border-[var(--accent)]/20 rounded-full px-2 py-0.5">
+                {drSelectedCollectors.size} / {collectorMetas.length}
+              </span>
+            </div>
+            <div className="flex gap-2 text-xs items-center">
+              <button onClick={() => setDrSelectedCollectors(new Set(collectorMetas.map(m => m.name)))} className="text-[var(--accent)] hover:opacity-70 font-medium">All</button>
+              <span className="text-[var(--border)]">·</span>
+              <button onClick={() => setDrSelectedCollectors(new Set())} className="text-[var(--dim)] hover:text-[var(--text)]">None</button>
+            </div>
+          </div>
+          <div className="space-y-4">
+            {categories.map(cat => (
+              <div key={cat}>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-[var(--dim)]">{CATEGORY_LABELS[cat] ?? cat}</span>
+                  <div className="flex-1 h-px bg-[var(--border)]" />
+                  <button
+                    onClick={() => {
+                      const catNames = grouped[cat].map(m => m.name)
+                      const allChecked = catNames.every(n => drSelectedCollectors.has(n))
+                      setDrSelectedCollectors(prev => {
+                        const next = new Set(prev)
+                        catNames.forEach(n => allChecked ? next.delete(n) : next.add(n))
+                        return next
+                      })
+                    }}
+                    className="text-[10px] text-[var(--dim)] hover:text-[var(--accent)] transition-colors"
+                  >
+                    {grouped[cat].every(m => drSelectedCollectors.has(m.name)) ? 'deselect' : 'select all'}
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {grouped[cat].map(m => {
+                    const checked = drSelectedCollectors.has(m.name)
+                    return (
+                      <button key={m.name} onClick={() => setDrSelectedCollectors(prev => { const next = new Set(prev); next.has(m.name) ? next.delete(m.name) : next.add(m.name); return next })}
+                        title={m.description}
+                        className={cn(
+                          'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border transition-all',
+                          checked
+                            ? 'bg-[var(--accent)]/15 text-[var(--accent)] border-[var(--accent)]/40 hover:bg-[var(--accent)]/25'
+                            : 'bg-[var(--surface)] text-[var(--dim)] border-[var(--border)] hover:text-[var(--text)] hover:border-[var(--accent)]/30',
+                        )}>
+                        {checked && <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] shrink-0" />}
+                        {m.display_name}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Instance picker + run */}
+        <div className="space-y-4">
+          <div className="bg-[var(--card)] border border-[var(--border)] rounded-xl p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-[var(--text)] flex items-center gap-1.5">
+                <Database size={13} /> Instances
+                {drSelectedInstances.size > 0 && (
+                  <span className="text-[11px] font-medium text-[var(--accent)] bg-[var(--accent)]/10 border border-[var(--accent)]/20 rounded-full px-2 py-0.5 ml-1">{drSelectedInstances.size}</span>
+                )}
+              </h2>
+              <div className="flex gap-2 text-xs">
+                <button onClick={() => setDrSelectedInstances(new Set(instanceList))} className="text-[var(--accent)] hover:opacity-70 font-medium">All</button>
+                <span className="text-[var(--border)]">·</span>
+                <button onClick={() => setDrSelectedInstances(new Set())} className="text-[var(--dim)] hover:text-[var(--text)]">None</button>
+              </div>
+            </div>
+            {instanceList.length === 0 ? (
+              <p className="text-xs text-[var(--dim)]">No instances available</p>
+            ) : (
+              <div className="flex flex-wrap gap-1.5">
+                {instanceList.map(name => {
+                  const checked = drSelectedInstances.has(name)
+                  return (
+                    <button key={name} onClick={() => setDrSelectedInstances(prev => { const next = new Set(prev); next.has(name) ? next.delete(name) : next.add(name); return next })}
+                      className={cn(
+                        'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full font-mono text-[11px] border transition-all',
+                        checked
+                          ? 'bg-[var(--accent)]/15 text-[var(--accent)] border-[var(--accent)]/40 hover:bg-[var(--accent)]/25'
+                          : 'bg-[var(--surface)] text-[var(--dim)] border-[var(--border)] hover:text-[var(--text)] hover:border-[var(--accent)]/30',
+                      )}>
+                      {checked && <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] shrink-0" />}
+                      {name}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          <button
+            onClick={handleDrRun}
+            disabled={drRunning || drSelectedCollectors.size === 0 || drSelectedInstances.size === 0}
+            className={cn(
+              'w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-semibold text-sm transition-all',
+              drRunning || drSelectedCollectors.size === 0 || drSelectedInstances.size === 0
+                ? 'bg-[var(--surface)] text-[var(--dim)] cursor-not-allowed'
+                : 'bg-amber-500 text-white hover:bg-amber-600 active:scale-95',
+            )}
+          >
+            {drRunning
+              ? <><Loader2 size={16} className="animate-spin" /> Running dry run…</>
+              : <><BellRing size={16} /> Run Alert Dry Run</>}
+          </button>
+          {drSelectedCollectors.size > 0 && drSelectedInstances.size > 0 && !drRunning && (
+            <p className="text-xs text-[var(--dim)] text-center">
+              {drSelectedCollectors.size} collectors × {drSelectedInstances.size} {drSelectedInstances.size === 1 ? 'instance' : 'instances'}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {drError && (
+        <div className="flex items-center gap-2 text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3">
+          <XCircle size={16} />{drError}
+        </div>
+      )}
+
+      {/* Dry run results */}
+      {drResults.length > 0 && (
+        <div className="space-y-4" ref={drResultsRef}>
+          {/* Summary */}
+          <div className="flex items-center gap-3 flex-wrap">
+            <h2 className="text-sm font-semibold text-[var(--text)]">Dry Run Results</h2>
+            <div className="flex items-center gap-2 text-xs flex-wrap">
+              <span className="text-[var(--dim)]">{drResults.length} collectors ran</span>
+              {drAlertRows.length > 0 && (
+                <>
+                  {drAlertRows.filter(r => r.alert.severity === 'critical').length > 0 && (
+                    <span className={cn('px-2 py-0.5 rounded-full border font-medium', severityBg('critical'))}>
+                      {drAlertRows.filter(r => r.alert.severity === 'critical').length} critical
+                    </span>
+                  )}
+                  {drAlertRows.filter(r => r.alert.severity === 'warn').length > 0 && (
+                    <span className={cn('px-2 py-0.5 rounded-full border font-medium', severityBg('warn'))}>
+                      {drAlertRows.filter(r => r.alert.severity === 'warn').length} warn
+                    </span>
+                  )}
+                  {drAlertRows.filter(r => r.alert.severity === 'info').length > 0 && (
+                    <span className={cn('px-2 py-0.5 rounded-full border font-medium', severityBg('info'))}>
+                      {drAlertRows.filter(r => r.alert.severity === 'info').length} info
+                    </span>
+                  )}
+                </>
+              )}
+              {drCleanResults.length > 0 && (
+                <span className="text-green-500 font-medium">{drCleanResults.length} clean</span>
+              )}
+              {drErrorResults.length > 0 && (
+                <span className="text-red-400 font-medium">{drErrorResults.length} collection error{drErrorResults.length !== 1 ? 's' : ''}</span>
+              )}
+              {triggeredKeys.size > 0 && (
+                <span className="text-amber-400 font-medium">{triggeredKeys.size} triggered</span>
+              )}
+            </div>
+          </div>
+
+          {/* No alerts */}
+          {drAlertRows.length === 0 && drErrorResults.length === 0 && (
+            <div className="flex items-center gap-2 text-sm text-green-500 bg-green-500/10 rounded-xl px-4 py-3 border border-green-500/20">
+              <CheckCircle2 size={16} />
+              All collectors passed — no alerts would fire right now.
+            </div>
+          )}
+
+          {/* Collection errors */}
+          {drErrorResults.length > 0 && (
+            <div className="rounded-xl border border-red-500/30 bg-red-500/5 p-3 space-y-1.5">
+              <p className="text-xs font-semibold text-red-400 flex items-center gap-1.5"><XCircle size={12} /> Collection errors</p>
+              {drErrorResults.map((r, i) => (
+                <div key={i} className="text-xs text-red-300/80 flex items-center gap-2">
+                  <span className="font-mono text-[10px] text-[var(--accent)]">{r.instance}</span>
+                  <span className="text-[var(--dim)]">{r.display_name}</span>
+                  <span>— {r.error}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Alert rows */}
+          {drAlertRows.length > 0 && (
+            <div className="space-y-2">
+              {drAlertRows.map(({ result, alert }, i) => {
+                const key = `${result.instance}:${alert.category}:${alert.title}`
+                const isTriggered = triggeredKeys.has(key)
+                const isTriggering = triggeringKey === key
+                return (
+                  <div key={i} className={cn(
+                    'rounded-xl border overflow-hidden transition-all',
+                    isTriggered ? 'border-green-500/30 bg-green-500/5' : severityBg(alert.severity).replace('text-', 'border-').replace(/\s.*/,'') + ' bg-[var(--card)]',
+                  )}>
+                    <div className="flex items-center gap-2.5 px-3 py-2.5 flex-wrap">
+                      {/* Severity */}
+                      <span className={cn('text-[10px] font-bold uppercase px-1.5 py-0.5 rounded border shrink-0', severityBg(alert.severity))}>
+                        {alert.severity}
+                      </span>
+                      {/* Instance */}
+                      <span className="font-mono text-[11px] bg-[var(--accent)]/10 text-[var(--accent)] px-2 py-0.5 rounded border border-[var(--accent)]/20 shrink-0">
+                        {result.instance}
+                      </span>
+                      {/* Category · Collector */}
+                      <span className="text-[11px] text-[var(--dim)] shrink-0">{alert.category} · {result.display_name}</span>
+                      {/* Title */}
+                      <span className="text-sm font-semibold text-[var(--text)] flex-1 min-w-0">{alert.title}</span>
+                      {/* Trigger button */}
+                      <button
+                        onClick={() => !isTriggered && !isTriggering && handleTriggerAlert(result, alert)}
+                        disabled={isTriggered || isTriggering}
+                        className={cn(
+                          'shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all border',
+                          isTriggered
+                            ? 'bg-green-500/15 text-green-400 border-green-500/30 cursor-default'
+                            : isTriggering
+                              ? 'bg-[var(--surface)] text-[var(--dim)] border-[var(--border)] cursor-wait'
+                              : 'bg-amber-500/15 text-amber-400 border-amber-500/30 hover:bg-amber-500/25',
+                        )}
+                      >
+                        {isTriggered
+                          ? <><CheckCircle2 size={11} /> Triggered</>
+                          : isTriggering
+                            ? <><Loader2 size={11} className="animate-spin" /> Triggering…</>
+                            : <><Zap size={11} /> Trigger</>}
+                      </button>
+                    </div>
+                    {/* Message (collapsed to 2 lines) */}
+                    {alert.message && (
+                      <div className="px-3 pb-3 pt-0">
+                        <pre className="text-[11px] font-mono text-[var(--dim)] whitespace-pre-wrap leading-relaxed line-clamp-3 overflow-hidden">
+                          {alert.message}
+                        </pre>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
+          {/* Force poll CTA after triggering */}
+          {triggeredKeys.size > 0 && (
+            <div className="flex items-center gap-3 px-4 py-3 rounded-xl border border-[var(--accent)]/25 bg-[var(--accent)]/8">
+              <Info size={14} className="text-[var(--accent)] shrink-0" />
+              <p className="text-sm text-[var(--dim)] flex-1">
+                {triggeredKeys.size} alert{triggeredKeys.size !== 1 ? 's' : ''} written to the Alerts tab.
+                Run a background poll to also send Slack/PagerDuty notifications:
+              </p>
+              <button
+                onClick={handleForcePoll}
+                disabled={forcingPoll}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--accent)] text-white text-xs font-semibold hover:opacity-90 transition-all shrink-0 disabled:opacity-50"
+              >
+                <RefreshCw size={12} className={forcingPoll ? 'animate-spin' : ''} />
+                {forcingPoll ? 'Polling…' : 'Force Poll Now'}
+              </button>
+            </div>
+          )}
+          {forcePollStatus && <p className="text-xs text-green-400 font-medium">{forcePollStatus}</p>}
         </div>
       )}
 
