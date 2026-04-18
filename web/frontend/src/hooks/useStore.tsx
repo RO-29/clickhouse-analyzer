@@ -175,6 +175,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
+  // Sync chat sessions across tabs — when another tab writes ch-chat-sessions,
+  // update local state so all tabs stay consistent (last-write-wins sync).
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'ch-chat-sessions' && e.newValue) {
+        try {
+          setChatSessionsState(JSON.parse(e.newValue) as ChatSession[])
+        } catch { /* ignore malformed data */ }
+      }
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [])
+
   const [activeChatId, setActiveChatIdState] = useState<string | null>(() => {
     return localStorage.getItem('ch-active-chat')
   })

@@ -108,6 +108,16 @@ function Layout() {
     }).catch(() => {}) // ignore if endpoint unavailable
   }, [])
 
+  // Periodic auth check every 5 minutes — detect token expiry while the app is open
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      api.auth.status().then(s => {
+        if (!s.logged_in) setAuthExpired(true)
+      }).catch(() => {})
+    }, 300_000)
+    return () => clearInterval(id)
+  }, [setAuthExpired])
+
   // Load instances on mount
   useEffect(() => {
     api.overview().then(data => setInstances(data.map(i => i.name))).catch(() => {})
