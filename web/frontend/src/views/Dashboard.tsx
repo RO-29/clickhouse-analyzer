@@ -472,6 +472,7 @@ interface LiveQuery {
 }
 
 function LiveQueriesWidget({ instances }: { instances: string[] }) {
+  const { setView, setSelectedInstance } = useStore()
   const [rows, setRows] = useState<LiveQuery[]>([])
   const [loading, setLoading] = useState(true)
   const [tick, setTick] = useState(0)
@@ -517,6 +518,16 @@ function LiveQueriesWidget({ instances }: { instances: string[] }) {
     return `${m}m ${sec}s`
   }
 
+  const navToLive = (instance: string) => {
+    setSelectedInstance(instance)
+    const url = new URL(window.location.href)
+    url.searchParams.set('view', 'explore')
+    url.searchParams.set('instance', instance)
+    url.searchParams.set('tab', 'live')
+    window.history.pushState(null, '', url.toString())
+    setView('explore')
+  }
+
   return (
     <WidgetCard
       title="Live Queries"
@@ -534,15 +545,17 @@ function LiveQueriesWidget({ instances }: { instances: string[] }) {
             <span>Query</span>
             <span className="text-right">Mem</span>
           </div>
-          {rows.slice(0, 8).map((q, i) => {
+          {rows.slice(0, 15).map((q, i) => {
             const isCrit = q.elapsed >= 60
             const isWarn = !isCrit && q.elapsed >= 30
             return (
               <div
                 key={`${q.instance}-${q.query_id}-${i}`}
-                className="grid grid-cols-[auto_auto_1fr_auto] gap-x-2 py-0.5 text-[11px] items-center"
+                className="grid grid-cols-[auto_auto_1fr_auto] gap-x-2 py-0.5 text-[11px] items-center cursor-pointer hover:bg-[var(--hover)] rounded px-1 -mx-1 group"
+                onClick={() => navToLive(q.instance)}
+                title={`Open Live Queries for ${q.instance}`}
               >
-                <span className="text-[var(--dim)] text-[10px] font-mono shrink-0">
+                <span className="text-[var(--accent)] text-[10px] font-mono shrink-0 group-hover:underline">
                   {q.instance.replace('single-node-', '')}
                 </span>
                 <span
@@ -558,9 +571,20 @@ function LiveQueriesWidget({ instances }: { instances: string[] }) {
               </div>
             )
           })}
-          {rows.length > 8 && (
-            <div className="text-[10px] text-[var(--dim)] pt-1">+{rows.length - 8} more</div>
+          {rows.length > 15 && (
+            <div className="text-[10px] text-[var(--dim)] pt-1">+{rows.length - 15} more</div>
           )}
+          <div className="flex gap-3 pt-1 flex-wrap">
+            {instances.map(inst => (
+              <button
+                key={inst}
+                onClick={() => navToLive(inst)}
+                className="text-[11px] text-[var(--accent)] hover:underline"
+              >
+                {inst.replace('single-node-', '')} live →
+              </button>
+            ))}
+          </div>
         </div>
       )}
     </WidgetCard>
