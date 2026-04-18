@@ -485,6 +485,7 @@ func (s *Server) handleQueries(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/instances/{name}/kill-query — kill a running query by query_id.
 func (s *Server) handleKillQuery(w http.ResponseWriter, r *http.Request) {
+	limitBody(w, r)
 	instance := r.PathValue("name")
 	client := s.manager.Get(instance)
 	if client == nil {
@@ -1374,6 +1375,7 @@ func marshalAlerts(alerts []store.Alert) []alertJSON {
 
 // POST /api/alerts/resolve — resolve a single alert by dedup_key.
 func (s *Server) handleResolveAlert(w http.ResponseWriter, r *http.Request) {
+	limitBody(w, r)
 	var body struct {
 		DedupKey string `json:"dedup_key"`
 	}
@@ -1498,5 +1500,12 @@ func (s *Server) handleReplication(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, out)
+}
+
+// limitBody wraps r.Body with a 1 MiB read limit, preventing excessively large
+// POST/PUT payloads from exhausting server memory. Call once at the top of any
+// handler that decodes a request body.
+func limitBody(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 }
 

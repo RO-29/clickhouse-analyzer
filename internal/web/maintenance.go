@@ -33,6 +33,7 @@ type maintenanceCreateRequest struct {
 
 // handleMaintenanceCreate handles POST /api/maintenance.
 func (s *Server) handleMaintenanceCreate(w http.ResponseWriter, r *http.Request) {
+	limitBody(w, r)
 	if s.maintenance == nil {
 		writeErr(w, http.StatusServiceUnavailable, "maintenance store not available")
 		return
@@ -71,6 +72,7 @@ type maintenanceUpdateRequest struct {
 
 // handleMaintenanceUpdate handles PUT /api/maintenance/{id}.
 func (s *Server) handleMaintenanceUpdate(w http.ResponseWriter, r *http.Request) {
+	limitBody(w, r)
 	if s.maintenance == nil {
 		writeErr(w, http.StatusServiceUnavailable, "maintenance store not available")
 		return

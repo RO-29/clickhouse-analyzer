@@ -32,6 +32,7 @@ type ackCreateRequest struct {
 
 // handleAckCreate handles POST /api/alerts/ack.
 func (s *Server) handleAckCreate(w http.ResponseWriter, r *http.Request) {
+	limitBody(w, r)
 	if s.ackStore == nil {
 		writeErr(w, http.StatusServiceUnavailable, "ack store not available")
 		return

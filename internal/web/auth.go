@@ -104,6 +104,7 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 //   - A bare OAuth code (or code#state) — we find claude's listening port via
 //     ss/lsof and reconstruct the localhost callback URL ourselves.
 func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
+	limitBody(w, r)
 	var req struct {
 		URL string `json:"url"`
 	}

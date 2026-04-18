@@ -51,6 +51,7 @@ func (s *Server) handleGetCollectors(w http.ResponseWriter, r *http.Request) {
 
 // handleRunCheck handles POST /api/run-check.
 func (s *Server) handleRunCheck(w http.ResponseWriter, r *http.Request) {
+	limitBody(w, r)
 	var req runCheckRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid request body")

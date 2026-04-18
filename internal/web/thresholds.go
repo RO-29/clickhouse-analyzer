@@ -310,6 +310,7 @@ func validateThresholds(j ThresholdsJSON) error {
 // handlePostThresholds accepts updated thresholds, persists them, and applies
 // them in-memory so the next poll cycle picks them up.
 func (s *Server) handlePostThresholds(w http.ResponseWriter, r *http.Request) {
+	limitBody(w, r)
 	var incoming ThresholdsJSON
 	if err := json.NewDecoder(r.Body).Decode(&incoming); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid JSON")
@@ -335,6 +336,8 @@ func (s *Server) handlePostThresholds(w http.ResponseWriter, r *http.Request) {
 	s.thresholdsMu.Lock()
 	s.cfg.Thresholds = updated
 	s.thresholdsMu.Unlock()
+
+	_ = s.store.LogAction(r.Context(), "", "threshold_update", r.RemoteAddr, "thresholds updated")
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(thresholdsToJSON(updated))

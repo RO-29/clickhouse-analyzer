@@ -135,6 +135,7 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	limitBody(w, r)
 	var req analyzeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid request body")
@@ -763,6 +764,7 @@ func (s *Server) handleAnalyzeElement(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	limitBody(w, r)
 	var req analyzeElementRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid request body")

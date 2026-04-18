@@ -226,6 +226,7 @@ type queryResponse struct {
 }
 
 func (s *Server) handleQueryExecute(w http.ResponseWriter, r *http.Request) {
+	limitBody(w, r)
 	var req queryRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid request body")

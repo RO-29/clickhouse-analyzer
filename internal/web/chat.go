@@ -1117,6 +1117,7 @@ func extractJSON(s string) string {
 // ---------------------------------------------------------------------------
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
+	limitBody(w, r)
 	instance := r.PathValue("name")
 	client := s.manager.Get(instance)
 	if client == nil {

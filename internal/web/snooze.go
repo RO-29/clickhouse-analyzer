@@ -34,6 +34,7 @@ type snoozeCreateRequest struct {
 
 // handleSnoozeCreate handles POST /api/alerts/snooze.
 func (s *Server) handleSnoozeCreate(w http.ResponseWriter, r *http.Request) {
+	limitBody(w, r)
 	if s.snoozeStore == nil {
 		writeErr(w, http.StatusServiceUnavailable, "snooze store not available")
 		return

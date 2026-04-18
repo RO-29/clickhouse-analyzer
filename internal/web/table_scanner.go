@@ -458,6 +458,15 @@ LIMIT 1000
 		}
 
 		pa := partAggMap[partAggKey{db, tbl}]
+		// Detect heavily skewed partitions: flag when the largest partition is
+		// more than 10x the smallest. Guard against division by zero: if
+		// minBytes is 0 (e.g. empty partitions) the ratio is undefined, so skip.
+		if isMT && pa.count > 1 && pa.minBytes > 0 {
+			skew := pa.maxBytes / pa.minBytes
+			if skew > 10 {
+				issues = append(issues, fmt.Sprintf("partition_skew_%dx", skew))
+			}
+		}
 		entries = append(entries, tableScanEntry{
 			Database:          db,
 			Table:             tbl,

@@ -231,6 +231,7 @@ type scheduleCreateRequest struct {
 
 // handleScheduleCreate handles POST /api/schedules.
 func (s *Server) handleScheduleCreate(w http.ResponseWriter, r *http.Request) {
+	limitBody(w, r)
 	if s.scheduleStore == nil {
 		writeErr(w, http.StatusServiceUnavailable, "schedule store not available")
 		return
@@ -256,6 +257,8 @@ func (s *Server) handleScheduleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	entry := s.scheduleStore.Add(req.Instance, req.CollectorName, req.IntervalMins)
+	details := fmt.Sprintf(`{"id":%q,"collector":%q,"interval_mins":%d}`, entry.ID, req.CollectorName, req.IntervalMins)
+	_ = s.store.LogAction(r.Context(), req.Instance, "schedule_create", r.RemoteAddr, details)
 	writeJSON(w, http.StatusCreated, entry)
 }
 
@@ -277,6 +280,7 @@ func (s *Server) handleScheduleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	_ = s.store.LogAction(r.Context(), "", "schedule_delete", r.RemoteAddr, fmt.Sprintf(`{"id":%q}`, id))
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -287,6 +291,7 @@ type scheduleSetEnabledRequest struct {
 
 // handleScheduleSetEnabled handles PUT /api/schedules/{id}/enabled.
 func (s *Server) handleScheduleSetEnabled(w http.ResponseWriter, r *http.Request) {
+	limitBody(w, r)
 	if s.scheduleStore == nil {
 		writeErr(w, http.StatusServiceUnavailable, "schedule store not available")
 		return
@@ -309,5 +314,10 @@ func (s *Server) handleScheduleSetEnabled(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	action := "schedule_disable"
+	if req.Enabled {
+		action = "schedule_enable"
+	}
+	_ = s.store.LogAction(r.Context(), "", action, r.RemoteAddr, fmt.Sprintf(`{"id":%q,"enabled":%v}`, id, req.Enabled))
 	writeJSON(w, http.StatusOK, map[string]bool{"enabled": req.Enabled})
 }
