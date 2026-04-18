@@ -233,6 +233,7 @@ type SlackConfig struct {
 	SigningSecret   string          `yaml:"signing_secret"`    // from Basic Information
 	ChannelID       string          `yaml:"channel_id"`
 	DashboardURL    string          `yaml:"dashboard_url"`     // public URL for "View in Dashboard" links
+	StateFile       string          `yaml:"state_file"`        // path to persist pinnedTS + instanceTS across restarts
 	DedupWindow     Duration        `yaml:"dedup_window"`
 	ResolveMessages bool            `yaml:"resolve_messages"`
 	Digest          DigestConfig    `yaml:"digest"`
@@ -360,6 +361,7 @@ func Defaults() *Config {
 		Slack: SlackConfig{
 			DedupWindow:     Duration{15 * time.Minute},
 			ResolveMessages: true,
+			StateFile:       "/var/lib/ch-analyzer/slack-state.json",
 			Digest: DigestConfig{
 				Enabled:   true,
 				DailyTime: "09:00",

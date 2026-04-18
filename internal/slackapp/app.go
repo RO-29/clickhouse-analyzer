@@ -4,6 +4,7 @@ package slackapp
 
 import (
 	"context"
+	"encoding/json"
 	golog "log"
 	"log/slog"
 	"os"
@@ -16,6 +17,16 @@ import (
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/socketmode"
 )
+
+// slackState is the subset of runtime state that is persisted to disk so that
+// a process restart does not lose track of existing Slack message timestamps.
+// Losing pinnedTS causes a new pinned dashboard on every restart.
+// Losing instanceTS causes escalation notices to post as new messages instead
+// of thread replies.
+type slackState struct {
+	PinnedTS   string            `json:"pinned_ts,omitempty"`
+	InstanceTS map[string]string `json:"instance_ts,omitempty"`
+}
 
 // App manages the Slack Socket Mode connection, the pinned dashboard message,
 // slash commands (/ch ...), and interactive button/modal responses.
@@ -37,6 +48,10 @@ type App struct {
 
 	// actionDebounce prevents button-spam duplicate actions
 	actionDebounce sync.Map // key: "userID:actionID:instance", value: time.Time
+
+	// stateFile is the path to the JSON state file for restart persistence.
+	// Empty string disables file persistence.
+	stateFile string
 
 	logger *slog.Logger
 }
@@ -63,6 +78,7 @@ func New(cfg config.SlackConfig, webAddr string, alertMgr *alerter.AlertManager,
 		ackStore:       ackStore,
 		chMgr:          chMgr,
 		pendingRefresh: make(chan struct{}, 1),
+		stateFile:      cfg.StateFile,
 		logger:         slog.Default().With(slog.String("component", "slack-app")),
 	}
 
@@ -81,6 +97,10 @@ func New(cfg config.SlackConfig, webAddr string, alertMgr *alerter.AlertManager,
 // If the connection drops (network hiccup, Slack restart, etc.) it reconnects with
 // exponential backoff up to 5 minutes between attempts.
 func (a *App) Run(ctx context.Context) {
+	// Restore pinnedTS and instanceTS from the last run so we don't spawn duplicate
+	// pinned messages or lose escalation thread context after a restart.
+	a.loadState()
+
 	a.alertMgr.SetOnStateChange(a.scheduleRefresh)
 	go a.refreshLoop(ctx)
 
@@ -261,4 +281,78 @@ func (a *App) instanceNames() []string {
 		return nil
 	})
 	return names
+}
+
+// ---------------------------------------------------------------------------
+// State persistence — survives process restarts
+// ---------------------------------------------------------------------------
+
+// loadState reads pinnedTS and instanceTS from the state file (if configured).
+// Errors are logged and silently ignored — a missing file is expected on first run.
+func (a *App) loadState() {
+	if a.stateFile == "" {
+		return
+	}
+	data, err := os.ReadFile(a.stateFile)
+	if os.IsNotExist(err) {
+		return // first run — no state yet
+	}
+	if err != nil {
+		a.logger.Warn("slack state: failed to read state file", "path", a.stateFile, "error", err)
+		return
+	}
+	var s slackState
+	if err := json.Unmarshal(data, &s); err != nil {
+		a.logger.Warn("slack state: failed to parse state file", "path", a.stateFile, "error", err)
+		return
+	}
+
+	a.pinnedMu.Lock()
+	if s.PinnedTS != "" {
+		a.pinnedTS = s.PinnedTS
+	}
+	a.pinnedMu.Unlock()
+
+	if len(s.InstanceTS) > 0 {
+		a.alertMgr.LoadInstanceTSMap(s.InstanceTS)
+	}
+
+	a.logger.Info("slack state: loaded from file",
+		"path", a.stateFile,
+		"pinned_ts", s.PinnedTS,
+		"instance_ts_count", len(s.InstanceTS),
+	)
+}
+
+// saveState atomically writes pinnedTS and instanceTS to the state file.
+// A write failure is logged but never fatal — we lose restart-persistence, not functionality.
+func (a *App) saveState() {
+	if a.stateFile == "" {
+		return
+	}
+
+	a.pinnedMu.Lock()
+	pinnedTS := a.pinnedTS
+	a.pinnedMu.Unlock()
+
+	s := slackState{
+		PinnedTS:   pinnedTS,
+		InstanceTS: a.alertMgr.GetInstanceTSMap(),
+	}
+	data, err := json.Marshal(s)
+	if err != nil {
+		a.logger.Warn("slack state: failed to marshal state", "error", err)
+		return
+	}
+
+	// Atomic write: write to a temp file then rename so readers never see partial data.
+	tmp := a.stateFile + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		a.logger.Warn("slack state: failed to write temp state file", "path", tmp, "error", err)
+		return
+	}
+	if err := os.Rename(tmp, a.stateFile); err != nil {
+		a.logger.Warn("slack state: failed to rename state file", "path", a.stateFile, "error", err)
+		_ = os.Remove(tmp)
+	}
 }

@@ -36,6 +36,12 @@ func (a *App) handleSlashCommand(ctx context.Context, cmd slack.SlashCommand) {
 		a.cmdAlerts(cmd, instance)
 	case "snooze":
 		a.cmdSnooze(ctx, cmd, args)
+	case "unsnooze", "resume":
+		instance := ""
+		if len(args) > 0 {
+			instance = args[0]
+		}
+		a.cmdUnsnooze(cmd, instance)
 	case "snoozed":
 		a.cmdSnoozed(cmd)
 	case "maintenance", "maint":
@@ -259,7 +265,7 @@ func (a *App) cmdSnooze(ctx context.Context, cmd slack.SlashCommand, args []stri
 	}
 
 	a.postEphemeral(cmd.ChannelID, cmd.UserID,
-		fmt.Sprintf("🔇  Snoozed `%s` for %dh. Use `/ch maintenance` to cancel.", instance, hours))
+		fmt.Sprintf("🔇  Snoozed `%s` for %dh. Use `/ch unsnooze %s` to cancel early.", instance, hours, instance))
 	go a.UpdatePinned()
 }
 
@@ -292,6 +298,46 @@ func (a *App) cmdAnalyze(ctx context.Context, cmd slack.SlashCommand, instance s
 	go a.runAnalysis(ctx, cmd.ChannelID, ts, instance)
 }
 
+// cmdUnsnooze cancels the active snooze/maintenance window for an instance.
+func (a *App) cmdUnsnooze(cmd slack.SlashCommand, instance string) {
+	if a.maintStore == nil {
+		a.postEphemeral(cmd.ChannelID, cmd.UserID, "❌  Maintenance store unavailable.")
+		return
+	}
+
+	if instance == "" {
+		// No instance specified — list active snoozes so user can pick one.
+		windows := a.maintStore.List()
+		if len(windows) == 0 {
+			a.postEphemeral(cmd.ChannelID, cmd.UserID, "✅  No active snoozes to cancel.")
+			return
+		}
+		var lines []string
+		for _, w := range windows {
+			until := time.Unix(w.EndTime, 0).UTC().Format("15:04 UTC")
+			inst := w.Instance
+			if inst == "*" {
+				inst = "all instances"
+			}
+			lines = append(lines, fmt.Sprintf("• `%s`  —  until %s", inst, until))
+		}
+		msg := "Active snoozes (use `/ch unsnooze <instance>` to cancel one):\n" + strings.Join(lines, "\n")
+		a.postEphemeral(cmd.ChannelID, cmd.UserID, msg)
+		return
+	}
+
+	w := a.maintStore.GetActiveWindow(instance)
+	if w == nil {
+		a.postEphemeral(cmd.ChannelID, cmd.UserID,
+			fmt.Sprintf("ℹ️  No active snooze for `%s`.", instance))
+		return
+	}
+	a.maintStore.Delete(w.ID)
+	a.postEphemeral(cmd.ChannelID, cmd.UserID,
+		fmt.Sprintf("🔔  Snooze cancelled for `%s`. Alerts will resume immediately.", instance))
+	go a.UpdatePinned()
+}
+
 // cmdRefresh forces an immediate pinned dashboard update.
 func (a *App) cmdRefresh(cmd slack.SlashCommand) {
 	a.UpdatePinned()
@@ -307,6 +353,7 @@ func (a *App) cmdHelp(cmd slack.SlashCommand) {
 		"`/ch status <instance>`  —  Detailed status for one instance",
 		"`/ch alerts [instance]`  —  List active alerts (all or one instance)",
 		"`/ch snooze <instance> <1h|4h|8h|24h>`  —  Snooze alerts for an instance",
+		"`/ch unsnooze <instance>`  —  Cancel an active snooze immediately",
 		"`/ch snoozed`  —  List all active snoozes / maintenance windows",
 		"`/ch maintenance [instance]`  —  Open maintenance window dialog",
 		"`/ch analyze <instance>`  —  Run AI analysis and post result",

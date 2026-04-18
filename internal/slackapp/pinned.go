@@ -17,7 +17,6 @@ func (a *App) postOrUpdatePinned() {
 	blocks := a.buildDashboardBlocks()
 
 	a.pinnedMu.Lock()
-	defer a.pinnedMu.Unlock()
 
 	if a.pinnedTS == "" {
 		// First post — send, then pin.
@@ -27,10 +26,12 @@ func (a *App) postOrUpdatePinned() {
 			slack.MsgOptionDisableLinkUnfurl(),
 		)
 		if err != nil {
+			a.pinnedMu.Unlock()
 			a.logger.Error("failed to post pinned dashboard", "error", err)
 			return
 		}
 		a.pinnedTS = ts
+		a.pinnedMu.Unlock()
 		if err := a.client.AddPin(a.cfg.ChannelID, slack.ItemRef{Channel: a.cfg.ChannelID, Timestamp: ts}); err != nil {
 			if strings.Contains(err.Error(), "missing_scope") {
 				a.logger.Error("slack bot token missing 'pins:write' scope — re-install app with pins:write scope to enable pinned dashboard", "error", err)
@@ -39,19 +40,27 @@ func (a *App) postOrUpdatePinned() {
 			}
 		}
 		a.logger.Info("pinned dashboard posted", slog.String("ts", ts))
+		a.saveState()
 		return
 	}
 
+	pinnedTS := a.pinnedTS
+	a.pinnedMu.Unlock()
+
 	// Update in-place.
-	if _, _, _, err := a.client.UpdateMessage(a.cfg.ChannelID, a.pinnedTS,
+	if _, _, _, err := a.client.UpdateMessage(a.cfg.ChannelID, pinnedTS,
 		slack.MsgOptionBlocks(blocks...),
 		slack.MsgOptionText("CH Monitor — Live Dashboard", false),
 		slack.MsgOptionDisableLinkUnfurl(),
 	); err != nil {
 		a.logger.Warn("pinned message update failed, will repost", "error", err)
 		// Message may have been deleted — clear TS so next call reposts.
+		a.pinnedMu.Lock()
 		a.pinnedTS = ""
+		a.pinnedMu.Unlock()
 	}
+	// Save state so instanceTS (updated by alertMgr before onStateChange fires) is persisted.
+	a.saveState()
 }
 
 // buildDashboardBlocks constructs the full Block Kit layout for the pinned message.

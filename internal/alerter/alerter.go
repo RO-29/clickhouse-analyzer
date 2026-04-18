@@ -897,6 +897,31 @@ func (am *AlertManager) SetOnStateChange(fn func()) {
 	am.mu.Unlock()
 }
 
+// GetInstanceTSMap returns a copy of the instance→SlackTS map for state persistence.
+// Called by SlackApp to snapshot the map before writing to disk.
+func (am *AlertManager) GetInstanceTSMap() map[string]string {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	out := make(map[string]string, len(am.instanceTS))
+	for k, v := range am.instanceTS {
+		out[k] = v
+	}
+	return out
+}
+
+// LoadInstanceTSMap restores instance→SlackTS entries from a persisted snapshot.
+// Only fills in entries that are currently empty (new entries win over old snapshot).
+// Called at startup so escalation notices can thread-reply to existing messages.
+func (am *AlertManager) LoadInstanceTSMap(m map[string]string) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	for k, v := range m {
+		if am.instanceTS[k] == "" && v != "" {
+			am.instanceTS[k] = v
+		}
+	}
+}
+
 // GetActiveAlerts returns copies of all currently-firing alerts across all
 // instances, sorted critical-first then warn-first then alphabetically by
 // instance and title.

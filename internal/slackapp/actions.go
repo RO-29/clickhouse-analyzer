@@ -66,6 +66,9 @@ func (a *App) handleBlockAction(ctx context.Context, payload slack.InteractionCa
 		a.postEphemeral(channelID, userID, "✅  Dashboard refreshed.")
 	case "ch_ack":
 		a.handleAckAction(ctx, payload, action)
+	case "ch_view_dashboard":
+		// Link button — Slack opens the URL in the browser and still sends an
+		// interaction payload. No server-side action needed; just ack (already done).
 	default:
 		a.logger.Warn("unrecognized slack action", "action_id", action.ActionID, "value", action.Value)
 	}
