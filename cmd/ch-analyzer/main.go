@@ -411,7 +411,7 @@ func main() {
 							scheduleStore.UpdateLastRun(sched.ID)
 							return
 						}
-						runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+						runCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 						defer cancel()
 						_, err := coll.Collect(runCtx, client)
 						if err != nil {

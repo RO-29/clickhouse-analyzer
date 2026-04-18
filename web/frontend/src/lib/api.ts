@@ -284,7 +284,7 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled }),
         signal: AbortSignal.timeout(30_000),
-      }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`) }).catch(err => { console.error('delete failed:', err); throw err }),
+      }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`) }).catch(err => { console.error('set enabled failed:', err); throw err }),
   },
   partsAge: (inst: string) => get<PartsAgeEntry[]>(`/api/instances/${inst}/parts-age`),
   audit: (opts?: { from?: number; to?: number; instance?: string; action?: string; limit?: number }) => {
