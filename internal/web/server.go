@@ -1340,15 +1340,23 @@ type alertJSON struct {
 
 func marshalAlerts(alerts []store.Alert) []alertJSON {
 	now := time.Now()
+	nowUnix := now.Unix()
 	out := make([]alertJSON, len(alerts))
 	for i, a := range alerts {
+		// Guard zero/epoch timestamps — a zero time.Time marshals to Unix -62135596800
+		// (year 0001), which makes the frontend think the alert is ancient and hides it
+		// from the Overview's 24h freshness filter.
+		createdAt := a.CreatedAt.Unix()
+		if a.CreatedAt.IsZero() {
+			createdAt = nowUnix
+		}
 		updatedAt := a.UpdatedAt.Unix()
 		if a.UpdatedAt.IsZero() {
-			updatedAt = a.CreatedAt.Unix()
+			updatedAt = createdAt
 		}
 		var durationS int64
 		if a.Resolved && a.ResolvedAt != nil {
-			durationS = a.ResolvedAt.Unix() - a.CreatedAt.Unix()
+			durationS = a.ResolvedAt.Unix() - createdAt
 		} else if !a.CreatedAt.IsZero() {
 			durationS = int64(now.Sub(a.CreatedAt).Seconds())
 		}
@@ -1360,7 +1368,7 @@ func marshalAlerts(alerts []store.Alert) []alertJSON {
 			Title:     a.Title,
 			Message:   a.Message,
 			Resolved:  a.Resolved,
-			CreatedAt: a.CreatedAt.Unix(),
+			CreatedAt: createdAt,
 			UpdatedAt: updatedAt,
 			DedupKey:  a.DedupKey,
 			DurationS: durationS,

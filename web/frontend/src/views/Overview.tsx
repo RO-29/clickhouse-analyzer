@@ -293,9 +293,16 @@ export default function Overview({ refreshKey }: { refreshKey?: number }) {
   const totalInstances = instances.length
   const staleHours = (() => { try { return parseInt(localStorage.getItem('ch-stale-hours') ?? '24', 10) || 24 } catch { return 24 } })()
   const now = Date.now() / 1000
-  const isFresh = (a: Alert) => !a.resolved && (now - (a.updated_at ?? a.created_at)) <= staleHours * 3600
+  // Use updated_at preferring positive values — negative means the backend returned a
+  // zero time.Time (year 0001 = unix -62135596800), which would make every alert look
+  // ancient and hide it from the Overview. Fall back to now so those alerts stay visible.
+  const alertAge = (a: Alert) => {
+    const ts = (a.updated_at ?? a.created_at)
+    return ts > 0 ? now - ts : 0
+  }
+  const isFresh = (a: Alert) => !a.resolved && alertAge(a) <= staleHours * 3600
   const freshAlerts = alerts.filter(isFresh)
-  const staleCount = alerts.filter(a => !a.resolved && (now - (a.updated_at ?? a.created_at)) > staleHours * 3600).length
+  const staleCount = alerts.filter(a => !a.resolved && alertAge(a) > staleHours * 3600).length
 
   const critFiring = freshAlerts.filter(a => a.severity === 'critical').length
   const warnFiring = freshAlerts.filter(a => a.severity === 'warn').length
