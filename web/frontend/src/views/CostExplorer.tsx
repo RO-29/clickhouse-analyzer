@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip as RTooltip, Cell } from 'recharts'
 import { DollarSign, HardDrive, Cloud, Cpu, RefreshCw, AlertTriangle, Info, ChevronDown, ChevronRight } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { api } from '../lib/api'
@@ -127,12 +128,74 @@ function PricingPanel({ pricing }: { pricing: CostReport['pricing'] }) {
 
 /* ─── Per-instance detail ─────────────────────────────────────────────────── */
 
+type TrendRange = '7d' | '30d' | '90d'
+
+const TREND_DAYS: Record<TrendRange, number> = { '7d': 7, '30d': 30, '90d': 90 }
+const TREND_BAR_COLORS = ['#7c3aed', '#3b82f6', '#eab308', '#22c55e', '#ef4444', '#14b8a6', '#f97316', '#ec4899']
+
+function CostTrendChart({ report, range }: { report: CostReport; range: TrendRange }) {
+  // The backend returns a point-in-time snapshot, not historical data.
+  // We build a cost breakdown bar chart (compute vs EBS vs S3) as a visual
+  // composition chart, and show what a full-month projection looks like for
+  // the selected range (pro-rated daily cost × days).
+  const days = TREND_DAYS[range]
+
+  const breakdown = useMemo(() => {
+    const dailyCompute = report.compute.source !== 'unknown'
+      ? report.compute.monthly_total_usd / 30
+      : 0
+    const dailyEBS = report.storage.local_monthly_usd / 30
+    const dailyS3 = report.storage.s3_monthly_usd / 30
+
+    return [
+      { name: 'Compute', value: +(dailyCompute * days).toFixed(2), color: TREND_BAR_COLORS[0] },
+      { name: 'EBS', value: +(dailyEBS * days).toFixed(2), color: TREND_BAR_COLORS[1] },
+      { name: 'S3', value: +(dailyS3 * days).toFixed(2), color: TREND_BAR_COLORS[2] },
+    ].filter(d => d.value > 0)
+  }, [report, days])
+
+  if (breakdown.length === 0) return null
+
+  const total = breakdown.reduce((s, d) => s + d.value, 0)
+
+  return (
+    <div className="bg-[var(--card)] border border-[var(--border)] rounded-xl p-4 space-y-3">
+      <div className="flex items-center gap-2">
+        <div className="text-xs font-semibold uppercase tracking-wider text-[var(--dim)]">
+          Cost Projection ({range})
+        </div>
+        <span className="ml-auto text-sm font-bold tabular-nums">{fmtUSD(total)}</span>
+        <span className="text-xs text-[var(--dim)]">est.</span>
+      </div>
+      <div style={{ height: 120 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={breakdown} margin={{ top: 4, right: 8, bottom: 4, left: 4 }}>
+            <XAxis dataKey="name" tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} />
+            <YAxis tick={{ fill: '#64748b', fontSize: 10 }} tickFormatter={(v) => fmtUSD(Number(v))} axisLine={false} tickLine={false} width={52} />
+            <RTooltip
+              contentStyle={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 11 }}
+              formatter={(v: any) => [fmtUSD(Number(v)), `${range} cost`]}
+            />
+            <Bar dataKey="value" radius={[3, 3, 0, 0]}>
+              {breakdown.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+      <div className="text-[10px] text-[var(--dim)]">
+        Pro-rated from current snapshot · actual costs may vary
+      </div>
+    </div>
+  )
+}
+
 function InstanceCostDetail({ instance }: { instance: string }) {
   const { navToScanner } = useStore()
   const [report, setReport] = useState<CostReport | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [tableSearch, setTableSearch] = useState('')
+  const [trendRange, setTrendRange] = useState<TrendRange>('30d')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -217,6 +280,30 @@ function InstanceCostDetail({ instance }: { instance: string }) {
         />
       </div>
 
+      {/* Cost trend range selector + bar chart */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold uppercase tracking-wider text-[var(--dim)]">Time Range</span>
+          <div className="flex items-center gap-0.5 bg-[var(--surface)] border border-[var(--border)] rounded-lg p-0.5 ml-2">
+            {(['7d', '30d', '90d'] as TrendRange[]).map(r => (
+              <button
+                key={r}
+                onClick={() => setTrendRange(r)}
+                className={cn(
+                  'px-2.5 py-1 rounded text-xs font-medium transition-colors',
+                  trendRange === r
+                    ? 'bg-[var(--accent)]/15 text-[var(--accent)]'
+                    : 'text-[var(--dim)] hover:text-[var(--text)]',
+                )}
+              >
+                {r}
+              </button>
+            ))}
+          </div>
+        </div>
+        <CostTrendChart report={report} range={trendRange} />
+      </div>
+
       {/* Storage split + Compute details */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Storage breakdown */}
@@ -271,6 +358,9 @@ function InstanceCostDetail({ instance }: { instance: string }) {
             <div className="text-xs font-semibold uppercase tracking-wider text-[var(--dim)]">
               Top Tables by Storage Cost
             </div>
+            {report.by_table.length >= 50 && (
+              <span className="text-xs text-[var(--dim)]">Showing top 50 of all tables</span>
+            )}
             <div className="ml-auto">
               <input
                 value={tableSearch}

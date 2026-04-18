@@ -714,6 +714,15 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
     [baseRows],
   )
 
+  // Pre-compute DDL results for all visible rows to avoid re-computing per-render
+  const ddlResultMap = useMemo(() => {
+    const map = new Map<string, { criticality: DDLCriticality | ''; changes: string[] }>()
+    for (const t of filtered) {
+      map.set(`${t.database}.${t.table}`, computeNodeDDL(t, activeNodes))
+    }
+    return map
+  }, [filtered, activeNodes])
+
   return (
     <div className="space-y-4">
       {/* Node selector */}
@@ -887,7 +896,7 @@ function TablesView({ data, instances, onAnalyze }: { data: TablesData; instance
                   const missing = isRowMissing(t, activeNodes)
                   const drift = rowDrift(t, activeNodes)
                   const diverging = !missing && drift > 0.01
-                  const ddl = computeNodeDDL(t, activeNodes)
+                  const ddl = ddlResultMap.get(`${t.database}.${t.table}`) ?? { criticality: '' as const, changes: [] }
 
                   return (
                     <tr
@@ -1533,7 +1542,22 @@ function CrossQueryView({ from, to }: { from: number; to: number }) {
     return () => { c = true }
   }, [from, to])
 
-  if (loading) return <LoadingSkeleton />
+  if (loading) return (
+    <div className="space-y-2 animate-pulse">
+      <div className="h-4 w-48 rounded bg-[var(--hover)]" />
+      <div className="border border-[var(--border)] rounded-xl overflow-hidden">
+        <div className="h-8 bg-[var(--surface)] border-b border-[var(--border)]" />
+        {Array.from({ length: 6 }).map((_, i) => (
+          <div key={i} className="flex gap-3 px-4 py-2.5 border-b border-[var(--border)] last:border-0">
+            <div className="h-4 w-24 rounded bg-[var(--hover)]" />
+            <div className="h-4 flex-1 rounded bg-[var(--hover)]" />
+            <div className={cn('h-4 rounded bg-[var(--hover)]', i % 2 === 0 ? 'w-16' : 'w-20')} />
+            <div className={cn('h-4 rounded bg-[var(--hover)]', i % 2 === 0 ? 'w-20' : 'w-16')} />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
   if (error) return <div className="text-sm text-red-400 p-4">{error}</div>
 
   // Merge all patterns by hash — build a map: hash → { label, kind, byInstance }
@@ -1715,9 +1739,12 @@ function TimelineView({ from, to }: { from: number; to: number }) {
           : <MultiInstanceChart series={data.series} title={metric} height={300} yFormat={yFormat as any} />
       )}
 
-      {loading && !data && (
-        <div className="h-[300px] flex items-center justify-center text-[var(--dim)] text-sm">
-          Loading…
+      {loading && (
+        <div className="space-y-2 animate-pulse">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className={cn('h-4 rounded bg-[var(--hover)]', i % 3 === 0 ? 'w-3/4' : i % 3 === 1 ? 'w-1/2' : 'w-2/3')} />
+          ))}
+          <div className="h-48 rounded-xl bg-[var(--hover)] mt-4" />
         </div>
       )}
     </div>
