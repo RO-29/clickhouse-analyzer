@@ -162,7 +162,6 @@ func main() {
 		os.Exit(1)
 	}
 	defer metricStore.Close()
-	metricStore.InitAuditLog()
 
 	// Initialize analyzer
 	az := analyzer.New(analyzer.AnalyzerThresholds{

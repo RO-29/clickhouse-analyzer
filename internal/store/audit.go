@@ -7,8 +7,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/rohitjain/ch-analyzer/internal/chclient"
 )
 
 // AuditEvent represents a tracked action.
@@ -28,31 +26,6 @@ type AuditLogQuery struct {
 	From     time.Time
 	To       time.Time
 	Limit    int // default 200
-}
-
-// InitAuditLog creates the audit_log table on every CH instance.
-// Safe to call multiple times — CREATE TABLE IF NOT EXISTS is idempotent.
-func (s *Store) InitAuditLog() {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	sql := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.audit_log (
-		id       String,
-		instance LowCardinality(String) DEFAULT '',
-		action   LowCardinality(String),
-		actor    String DEFAULT '',
-		details  String DEFAULT '',
-		ts       DateTime DEFAULT now()
-	) ENGINE = MergeTree()
-	ORDER BY (ts, instance, action)
-	TTL ts + INTERVAL 90 DAY`, s.database)
-
-	s.manager.ForEach(func(name string, client *chclient.Client) error {
-		if _, err := client.QuerySingleValue(ctx, sql); err != nil {
-			slog.Warn("audit_log: create table failed", "instance", name, "err", err)
-		}
-		return nil
-	})
 }
 
 // LogAction inserts one audit event into the relevant instance's CH.

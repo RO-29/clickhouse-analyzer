@@ -38,47 +38,9 @@ func (c *QuerySamplesCollector) logger() *slog.Logger {
 	return slog.Default()
 }
 
-const querySamplesCreateDB = `CREATE DATABASE IF NOT EXISTS ch_analyzer`
-
-const querySamplesCreateTable = `
-CREATE TABLE IF NOT EXISTS ch_analyzer.query_samples
-(
-    collected_at              DateTime DEFAULT now(),
-    event_time                DateTime,
-    user                      LowCardinality(String),
-    query_kind                LowCardinality(String),
-    normalized_query_hash     UInt64,
-    query_text                String,
-    query_duration_ms         UInt64,
-    memory_usage              UInt64,
-    read_rows                 UInt64,
-    read_bytes                UInt64,
-    written_rows              UInt64,
-    written_bytes             UInt64,
-    result_rows               UInt64,
-    result_bytes              UInt64,
-    exception_code            Int32,
-    is_exception              UInt8,
-    client_name               LowCardinality(String),
-    interface                 LowCardinality(String)
-) ENGINE = MergeTree()
-PARTITION BY toYYYYMM(event_time)
-ORDER BY (event_time, normalized_query_hash)
-TTL event_time + INTERVAL 30 DAY
-SETTINGS index_granularity = 8192`
-
 func (c *QuerySamplesCollector) Collect(ctx context.Context, client *chclient.Client) (*CollectResult, error) {
 	start := time.Now()
 	result := &CollectResult{}
-
-	// Ensure schema exists.
-	if err := c.ensureSchema(ctx, client); err != nil {
-		c.logger().Warn("query_samples: failed to ensure schema, skipping",
-			slog.String("instance", client.Name()),
-			slog.String("error", err.Error()))
-		result.Duration = time.Since(start)
-		return result, nil
-	}
 
 	// Determine watermark.
 	watermark := c.getWatermark(ctx, client)
@@ -114,21 +76,6 @@ func (c *QuerySamplesCollector) Collect(ctx context.Context, client *chclient.Cl
 
 	result.Duration = time.Since(start)
 	return result, nil
-}
-
-func (c *QuerySamplesCollector) ensureSchema(ctx context.Context, client *chclient.Client) error {
-	if _, err := client.QuerySingleValue(ctx, querySamplesCreateDB); err != nil {
-		// DB might already exist — CH returns exception, ignore.
-		if !strings.Contains(err.Error(), "already exists") {
-			return fmt.Errorf("create database: %w", err)
-		}
-	}
-	if _, err := client.QuerySingleValue(ctx, querySamplesCreateTable); err != nil {
-		if !strings.Contains(err.Error(), "already exists") {
-			return fmt.Errorf("create table: %w", err)
-		}
-	}
-	return nil
 }
 
 // getWatermark returns the high-water mark for incremental collection.

@@ -30,6 +30,7 @@ func (c *InsertCollector) Collect(ctx context.Context, client *chclient.Client) 
 	}
 
 	c.collectInsertThroughput(ctx, client, result, interval)
+	c.collectInsertErrors(ctx, client, result, interval)
 	c.collectSmallInserts(ctx, client, result, interval)
 	c.collectPipelineStalls(ctx, client, result)
 
@@ -253,6 +254,97 @@ func (c *InsertCollector) collectPipelineStalls(ctx context.Context, client *chc
 			fmt.Sprintf("%s has not received inserts for %.0fs (had inserts earlier in the hour, stall threshold: %ds)",
 				fqn, secsSince, stallWindowSec),
 			fmt.Sprintf("%s:inserts:stall:%s", client.Name(), fqn))
+	}
+}
+
+// collectInsertErrors directly counts INSERT exceptions from system.query_log.
+// Unlike throughput drop (which is indirect), this fires immediately when inserts fail.
+func (c *InsertCollector) collectInsertErrors(ctx context.Context, client *chclient.Client, result *CollectResult, interval time.Duration) {
+	intervalSec := int(interval.Seconds())
+	if intervalSec < 1 {
+		intervalSec = 60
+	}
+
+	sql := fmt.Sprintf(`
+		SELECT
+			databases[1] AS database,
+			tables[1] AS table,
+			count() AS failed_inserts,
+			any(exception) AS last_exception
+		FROM system.query_log
+		WHERE type = 'ExceptionWhileProcessing'
+		  AND query_kind = 'Insert'
+		  AND length(databases) >= 1
+		  AND databases[1] != 'ch_analyzer'
+		  AND event_time >= now() - INTERVAL %d SECOND
+		GROUP BY database, table
+		ORDER BY failed_inserts DESC
+		LIMIT 20`, intervalSec)
+
+	rows, err := client.Query(ctx, sql)
+	if err != nil {
+		c.logger().Warn("failed to query insert errors", slog.String("error", err.Error()))
+		return
+	}
+
+	if len(rows) == 0 {
+		return
+	}
+
+	// Also get total successful inserts in same window for error rate.
+	totalSQL := fmt.Sprintf(`
+		SELECT count() AS total
+		FROM system.query_log
+		WHERE type = 'QueryFinish'
+		  AND query_kind = 'Insert'
+		  AND length(databases) >= 1
+		  AND databases[1] != 'ch_analyzer'
+		  AND event_time >= now() - INTERVAL %d SECOND`, intervalSec)
+
+	var totalSuccess float64
+	if totRows, totErr := client.Query(ctx, totalSQL); totErr == nil && len(totRows) > 0 {
+		totalSuccess = getFloat(totRows[0], "total")
+	}
+
+	for _, row := range rows {
+		db := getString(row, "database")
+		table := getString(row, "table")
+		failed := getFloat(row, "failed_inserts")
+		lastExc := getString(row, "last_exception")
+
+		fqn := db + "." + table
+		result.AddMetric(client.Name(), "inserts.errors.count", failed, map[string]string{
+			"database": db,
+			"table":    table,
+		})
+
+		if len(lastExc) > 200 {
+			lastExc = lastExc[:200] + "…"
+		}
+
+		// Compute error rate if we have success counts.
+		errRate := 0.0
+		totalOps := totalSuccess + failed
+		if totalOps > 0 {
+			errRate = (failed / totalOps) * 100
+		}
+
+		severity := SeverityWarn
+		if errRate >= 5 || (totalSuccess == 0 && failed >= 5) {
+			severity = SeverityCritical
+		}
+
+		result.AddAlert(client.Name(), severity, "inserts",
+			fmt.Sprintf("Insert failures on %s: %.0f in last %ds", fqn, failed, intervalSec),
+			fmt.Sprintf("*%.0f INSERT exception(s)* on `%s` in the last %ds (error rate: %.1f%%).\n\n"+
+				"*Last exception:* %s\n\n"+
+				"*Investigate:*\n```\nSELECT query, exception, event_time, query_duration_ms\n"+
+				"FROM system.query_log\nWHERE type = 'ExceptionWhileProcessing'\n"+
+				"  AND query_kind = 'Insert'\n  AND databases[1] = '%s'\n"+
+				"  AND tables[1] = '%s'\n  AND event_time > now() - INTERVAL 1 HOUR\n"+
+				"ORDER BY event_time DESC LIMIT 20\n```",
+				failed, fqn, intervalSec, errRate, lastExc, db, table),
+			fmt.Sprintf("%s:inserts:errors:%s", client.Name(), fqn))
 	}
 }
 

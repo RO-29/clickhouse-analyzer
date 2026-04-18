@@ -58,7 +58,7 @@ type Store struct {
 	alertSeq atomic.Int64
 }
 
-// New creates a Store. Creates tables on every CH instance.
+// New creates a Store. Schema must already exist (see schema.sql).
 func New(manager *chclient.Manager, database string) (*Store, error) {
 	if database == "" {
 		database = "ch_analyzer"
@@ -75,34 +75,8 @@ func New(manager *chclient.Manager, database string) (*Store, error) {
 	// Migrate: add first_seen_at and fire_count columns (no-op on new installs).
 	s.migrateAlertFireTracking()
 
-	// Create health_snapshots table on every instance.
-	s.InitHealthSnapshots()
-
 	slog.Info("store initialized", "backend", "clickhouse-distributed", "database", database, "instances", manager.Len())
 	return s, nil
-}
-
-// InitHealthSnapshots creates the health_snapshots table on all CH instances.
-// Safe to call on existing installs — CREATE TABLE IF NOT EXISTS is idempotent.
-func (s *Store) InitHealthSnapshots() {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	sql := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.health_snapshots (
-  instance    LowCardinality(String),
-  score       Float32,
-  criticals   UInt16,
-  warns       UInt16,
-  infos       UInt16,
-  ts          DateTime DEFAULT now()
-) ENGINE = MergeTree()
-ORDER BY (instance, ts)
-TTL ts + INTERVAL 30 DAY`, s.database)
-	s.manager.ForEach(func(name string, client *chclient.Client) error {
-		if _, err := client.QuerySingleValue(ctx, sql); err != nil {
-			slog.Warn("health_snapshots: create table failed", "instance", name, "err", err)
-		}
-		return nil
-	})
 }
 
 // migrateAlertUpdatedAt adds the updated_at column to existing alerts tables.

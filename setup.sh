@@ -43,53 +43,19 @@ echo ""
 # ---------------------------------------------------------------------------
 echo "[2/3] Creating ch_analyzer database and tables on all instances..."
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCHEMA_FILE="$SCRIPT_DIR/schema.sql"
+
+if [ ! -f "$SCHEMA_FILE" ]; then
+  echo "  ERROR: schema.sql not found at $SCHEMA_FILE"
+  exit 1
+fi
+
 for HOST in "${CH_HOSTS[@]}"; do
   echo "  -> $HOST"
   clickhouse-client --host "$HOST" --port "$CH_PORT" --secure \
     --user "$CH_ADMIN_USER" --password "$CH_ADMIN_PASS" \
-    --multiquery -q "
-    CREATE DATABASE IF NOT EXISTS ch_analyzer;
-
-    CREATE TABLE IF NOT EXISTS ch_analyzer.metrics (
-        instance String,
-        name String,
-        labels String DEFAULT '{}',
-        value Float64,
-        ts DateTime
-    ) ENGINE = MergeTree()
-    PARTITION BY toYYYYMM(ts)
-    ORDER BY (instance, name, ts)
-    TTL ts + INTERVAL 365 DAY
-    SETTINGS index_granularity = 8192;
-
-    CREATE TABLE IF NOT EXISTS ch_analyzer.alerts (
-        id Int64,
-        instance String,
-        severity String,
-        category String,
-        title String,
-        message String,
-        resolved UInt8 DEFAULT 0,
-        resolved_at Nullable(DateTime),
-        created_at DateTime,
-        dedup_key String,
-        version UInt64 DEFAULT 1,
-        updated_at DateTime DEFAULT created_at
-    ) ENGINE = ReplacingMergeTree(version)
-    PARTITION BY toYYYYMM(created_at)
-    ORDER BY (dedup_key, created_at)
-    SETTINGS index_granularity = 8192;
-
-    CREATE TABLE IF NOT EXISTS ch_analyzer.digest_snapshots (
-        instance String,
-        snapshot String,
-        ts DateTime
-    ) ENGINE = MergeTree()
-    PARTITION BY toYYYYMM(ts)
-    ORDER BY (instance, ts)
-    TTL ts + INTERVAL 365 DAY
-    SETTINGS index_granularity = 8192;
-  " 2>&1 | grep -v "^$" || true
+    --multiquery < "$SCHEMA_FILE" 2>&1 | grep -v "^$" || true
 done
 echo "  Done."
 echo ""
