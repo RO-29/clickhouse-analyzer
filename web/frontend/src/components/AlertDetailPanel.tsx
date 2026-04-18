@@ -17,6 +17,10 @@ interface PlaybookQuery { label: string; sql: string }
 interface Playbook {
   what: string
   why: string[]
+  /** The exact SQL ch-analyzer ran to detect this condition */
+  triggerSql?: string
+  /** Short annotation explaining the threshold / firing condition */
+  triggerNote?: string
   queries: PlaybookQuery[]
 }
 
@@ -29,11 +33,24 @@ const PLAYBOOKS: Record<string, Playbook> = {
       'CH applying back-pressure — too many parts or merges backing up',
       'A single large slow insert blocking the pipeline',
     ],
+    triggerSql: `-- Computes rolling 10-min average and compares to current poll interval
+SELECT count() / 10 AS avg_insert_count,
+  sum(written_rows) / 10 AS avg_rows,
+  sum(written_bytes) / 10 AS avg_bytes
+FROM system.query_log
+WHERE type = 'QueryFinish'
+  AND query_kind = 'Insert'
+  AND length(databases) >= 1
+  AND databases[1] != 'ch_analyzer'
+  AND event_time >= now() - INTERVAL 600 SECOND   -- 10-min rolling window
+  AND event_time < now() - INTERVAL 60 SECOND     -- exclude current poll interval`,
+    triggerNote: `Fires when current-interval rows < rolling_avg × (1 − throughput_drop_percent/100). Default: 50% drop.`,
     queries: [
-      { label: 'Insert rate per table (last 5 min)', sql: `SELECT\n    databases[1] AS database,\n    tables[1] AS table,\n    count() AS inserts,\n    sum(written_rows) AS rows_written\nFROM system.query_log\nWHERE type = 'QueryFinish'\n  AND query_kind = 'Insert'\n  AND event_time > now() - INTERVAL 5 MINUTE\n  AND length(databases) >= 1\nGROUP BY database, table\nORDER BY rows_written DESC` },
-      { label: 'Insert exceptions in the last hour', sql: `SELECT\n    databases[1] AS database,\n    tables[1] AS table,\n    count() AS failed,\n    any(exception) AS last_error\nFROM system.query_log\nWHERE type = 'ExceptionWhileProcessing'\n  AND query_kind = 'Insert'\n  AND event_time > now() - INTERVAL 1 HOUR\n  AND length(databases) >= 1\nGROUP BY database, table\nORDER BY failed DESC` },
-      { label: 'Merge backlog (causes insert back-pressure)', sql: `SELECT database, table, elapsed, progress, num_parts\nFROM system.merges\nORDER BY elapsed DESC` },
-      { label: 'Active connections by user', sql: `SELECT user, query_kind, count() AS cnt\nFROM system.processes\nGROUP BY user, query_kind\nORDER BY cnt DESC` },
+      { label: 'Insert rate by window: 5 min vs 30 min (spot the drop)', sql: `SELECT\n  multiIf(\n    event_time > now() - INTERVAL 5 MINUTE, '0–5 min ago',\n    event_time > now() - INTERVAL 10 MINUTE, '5–10 min ago',\n    event_time > now() - INTERVAL 20 MINUTE, '10–20 min ago',\n    '20–30 min ago'\n  ) AS window,\n  count() AS inserts,\n  sum(written_rows) AS rows_written,\n  round(avg(written_rows)) AS avg_batch_size\nFROM system.query_log\nWHERE type = 'QueryFinish'\n  AND query_kind = 'Insert'\n  AND event_time > now() - INTERVAL 30 MINUTE\nGROUP BY window\nORDER BY window` },
+      { label: 'Per-table insert rate right now (last 5 min)', sql: `SELECT\n  databases[1] AS database,\n  tables[1] AS table,\n  count() AS inserts,\n  sum(written_rows) AS rows_written,\n  round(avg(written_rows)) AS avg_batch\nFROM system.query_log\nWHERE type = 'QueryFinish'\n  AND query_kind = 'Insert'\n  AND event_time > now() - INTERVAL 5 MINUTE\n  AND length(databases) >= 1\nGROUP BY database, table\nORDER BY rows_written DESC` },
+      { label: 'Insert exceptions in last hour (data loss risk)', sql: `SELECT\n  event_time,\n  databases[1] AS database,\n  tables[1] AS table,\n  exception_code,\n  substring(exception, 1, 250) AS error,\n  substring(query, 1, 150) AS q\nFROM system.query_log\nWHERE type = 'ExceptionWhileProcessing'\n  AND query_kind = 'Insert'\n  AND event_time > now() - INTERVAL 1 HOUR\nORDER BY event_time DESC\nLIMIT 20` },
+      { label: 'Merge backlog — is CH applying back-pressure?', sql: `SELECT\n  database, table,\n  count() AS active_merges,\n  max(elapsed) AS longest_merge_s,\n  sum(num_parts) AS total_parts_merging\nFROM system.merges\nGROUP BY database, table\nORDER BY longest_merge_s DESC` },
+      { label: 'Too-many-parts throttle check', sql: `SELECT metric, value FROM system.metrics\nWHERE metric IN (\n  'DelayedInserts',\n  'DelayedInsertsMilliseconds',\n  'RejectedInserts'\n)` },
     ],
   },
 
@@ -44,6 +61,20 @@ const PLAYBOOKS: Record<string, Playbook> = {
       'No buffer layer — Buffer table or async inserts not configured',
       'Each microservice event triggering a separate INSERT call',
     ],
+    triggerSql: `SELECT databases[1] AS database, tables[1] AS table,
+  count() AS small_insert_count,
+  avg(written_rows) AS avg_rows_per_insert
+FROM system.query_log
+WHERE type = 'QueryFinish'
+  AND query_kind = 'Insert'
+  AND length(databases) >= 1
+  AND databases[1] != 'ch_analyzer'
+  AND written_rows < 100        -- small_insert_threshold (configurable)
+  AND written_rows > 0
+  AND event_time >= now() - INTERVAL 60 SECOND
+GROUP BY database, table
+HAVING small_insert_count >= 10  -- small_insert_warn_count (configurable)`,
+    triggerNote: `Fires when ≥10 inserts per poll each have <100 rows. Both thresholds are configurable.`,
     queries: [
       { label: 'Small inserts per table (last 10 min)', sql: `SELECT\n    databases[1] AS database,\n    tables[1] AS table,\n    count() AS insert_count,\n    round(avg(written_rows), 1) AS avg_rows_per_insert,\n    min(written_rows) AS min_rows\nFROM system.query_log\nWHERE type = 'QueryFinish'\n  AND query_kind = 'Insert'\n  AND written_rows < 1000\n  AND event_time > now() - INTERVAL 10 MINUTE\n  AND length(databases) >= 1\nGROUP BY database, table\nORDER BY insert_count DESC\nLIMIT 20` },
       { label: 'Part count for affected tables', sql: `SELECT database, table, count() AS part_count, sum(rows) AS total_rows\nFROM system.parts\nWHERE active\nGROUP BY database, table\nHAVING part_count > 100\nORDER BY part_count DESC\nLIMIT 20` },
@@ -59,6 +90,21 @@ const PLAYBOOKS: Record<string, Playbook> = {
       'Network partition or DNS failure preventing the producer from reaching CH',
       'Table was dropped, renamed, or permissions were revoked',
     ],
+    triggerSql: `SELECT database, table,
+  max(event_time) AS last_insert_time,
+  dateDiff('second', max(event_time), now()) AS seconds_since_last
+FROM (
+  SELECT databases[1] AS database, tables[1] AS table, event_time
+  FROM system.query_log
+  WHERE type = 'QueryFinish'
+    AND query_kind = 'Insert'
+    AND length(databases) >= 1
+    AND databases[1] != 'ch_analyzer'
+    AND event_time >= now() - INTERVAL 3600 SECOND
+)
+GROUP BY database, table
+HAVING seconds_since_last > 300   -- stall_window = 5 × poll_interval`,
+    triggerNote: `Fires when a previously-active table shows no inserts for 5 consecutive poll intervals (~5 min). Only tables that had inserts in the last hour are checked.`,
     queries: [
       { label: 'Last insert time for recently-active tables', sql: `SELECT\n    databases[1] AS database,\n    tables[1] AS table,\n    max(event_time) AS last_insert,\n    dateDiff('second', max(event_time), now()) AS seconds_ago\nFROM system.query_log\nWHERE type = 'QueryFinish'\n  AND query_kind = 'Insert'\n  AND event_time > now() - INTERVAL 2 HOUR\n  AND length(databases) >= 1\nGROUP BY database, table\nORDER BY seconds_ago DESC\nLIMIT 20` },
       { label: 'Recent exceptions on this table', sql: `SELECT event_time, exception, substring(query, 1, 200) AS q\nFROM system.query_log\nWHERE type = 'ExceptionWhileProcessing'\n  AND query_kind = 'Insert'\n  AND tables[1] = '{table}'\n  AND event_time > now() - INTERVAL 1 HOUR\nORDER BY event_time DESC\nLIMIT 20` },
@@ -74,6 +120,17 @@ const PLAYBOOKS: Record<string, Playbook> = {
       'Disk space exhausted — CH cannot write new parts',
       'NOT NULL constraint violation or unexpected NULL value',
     ],
+    triggerSql: `SELECT databases[1] AS database, tables[1] AS table,
+  count() AS failed_inserts,
+  any(exception) AS last_exception
+FROM system.query_log
+WHERE type = 'ExceptionWhileProcessing'
+  AND query_kind = 'Insert'
+  AND length(databases) >= 1
+  AND databases[1] != 'ch_analyzer'
+  AND event_time >= now() - INTERVAL 60 SECOND
+GROUP BY database, table`,
+    triggerNote: `Fires on any failed_inserts > 0 (warn). Escalates to critical when error rate ≥ 5% of total inserts or ≥ 5 absolute failures.`,
     queries: [
       { label: 'Recent INSERT exceptions with error details', sql: `SELECT\n    event_time,\n    exception_code,\n    substring(exception, 1, 300) AS exception,\n    substring(query, 1, 200) AS query_excerpt\nFROM system.query_log\nWHERE type = 'ExceptionWhileProcessing'\n  AND query_kind = 'Insert'\n  AND event_time > now() - INTERVAL 1 HOUR\nORDER BY event_time DESC\nLIMIT 20` },
       { label: 'Grouped by exception code', sql: `SELECT\n    exception_code, count() AS cnt, any(exception) AS sample_error\nFROM system.query_log\nWHERE type = 'ExceptionWhileProcessing'\n  AND query_kind = 'Insert'\n  AND event_time > now() - INTERVAL 1 HOUR\nGROUP BY exception_code\nORDER BY cnt DESC` },
@@ -84,6 +141,12 @@ const PLAYBOOKS: Record<string, Playbook> = {
 
   'async_inserts:errors': {
     what: 'Async insert buffers are failing to flush to storage. Data in the buffer may be permanently lost if CH restarts before a successful retry.',
+    triggerSql: `SELECT count() AS total,
+  countIf(status = 'ExceptionWhileFlushing') AS errors,
+  countIf(status = 'Flushed') AS flushed
+FROM system.asynchronous_insert_log
+WHERE event_time > now() - INTERVAL 5 MINUTE`,
+    triggerNote: `Fires when errors > 0 AND (errors/total ≥ 10% OR errors ≥ 5 absolute) in the last 5 minutes.`,
     why: [
       'Disk space exhausted — CH cannot write the buffered data',
       'Schema changed after the buffer was filled (column mismatch on flush)',
@@ -99,6 +162,9 @@ const PLAYBOOKS: Record<string, Playbook> = {
 
   'async_inserts:queue': {
     what: 'The async insert queue is growing — the flush thread cannot keep up with incoming data. If the queue fills completely, new inserts will be rejected.',
+    triggerSql: `SELECT count() AS queue_depth
+FROM system.asynchronous_insertions`,
+    triggerNote: `Fires when queue_depth > 50 (warn) or > 100 (critical).`,
     why: [
       'Insert rate exceeds the flush thread throughput',
       'Flush thread blocked by slow disk or overloaded CH',
@@ -118,11 +184,26 @@ const PLAYBOOKS: Record<string, Playbook> = {
       'Merge or mutation operations competing for I/O bandwidth',
       'Cold data requiring S3 fetches adding significant latency',
     ],
+    triggerSql: `-- Concurrent / long-running query check (every poll):
+SELECT query_id, user, client_name,
+  elapsed, query, memory_usage, read_rows, read_bytes
+FROM system.processes
+WHERE is_cancelled = 0
+  AND is_initial_query = 1
+
+-- Failure rate check (last 5 min from query_log):
+SELECT count() AS failures, any(exception_code) AS code
+FROM system.query_log
+WHERE type = 'ExceptionWhileProcessing'
+  AND exception_code NOT IN (159, 160, 394)   -- excludes user-cancelled
+  AND event_time > now() - INTERVAL 5 MINUTE`,
+    triggerNote: `Fires when: concurrent queries ≥ warn_concurrent (50) or max_concurrent (100); OR elapsed ≥ long_running_threshold (60s); OR failures ≥ 1 in 5 min; OR read_rows > 1B (full scan).`,
     queries: [
-      { label: 'Currently running queries (slowest first)', sql: `SELECT query_id, elapsed, read_rows,\n  formatReadableSize(memory_usage) AS mem, user,\n  substring(query, 1, 200) AS q\nFROM system.processes\nORDER BY elapsed DESC` },
-      { label: 'Slowest queries in last 10 min', sql: `SELECT query_duration_ms, read_rows,\n  formatReadableSize(memory_usage) AS mem, user, exception_code,\n  substring(query, 1, 300) AS q\nFROM system.query_log\nWHERE type IN ('QueryFinish', 'ExceptionWhileProcessing')\n  AND event_time > now() - INTERVAL 10 MINUTE\nORDER BY query_duration_ms DESC\nLIMIT 20` },
-      { label: 'Query exceptions in last hour by error code', sql: `SELECT exception_code, count() AS cnt, any(exception) AS sample\nFROM system.query_log\nWHERE type = 'ExceptionWhileProcessing'\n  AND event_time > now() - INTERVAL 1 HOUR\nGROUP BY exception_code\nORDER BY cnt DESC` },
-      { label: 'Active merges / mutations (I/O competition)', sql: `SELECT database, table, elapsed, progress, is_mutation\nFROM system.merges\nORDER BY elapsed DESC` },
+      { label: 'Live queries right now (slowest first)', sql: `SELECT\n  query_id,\n  round(elapsed, 1) AS elapsed_s,\n  read_rows,\n  formatReadableSize(read_bytes) AS read_bytes,\n  formatReadableSize(memory_usage) AS mem,\n  user,\n  databases[1] AS database,\n  tables[1] AS tbl,\n  substring(query, 1, 250) AS q\nFROM system.processes\nORDER BY elapsed DESC` },
+      { label: 'Slowest completed queries (last 10 min)', sql: `SELECT\n  query_duration_ms,\n  read_rows,\n  formatReadableSize(read_bytes) AS read_bytes,\n  formatReadableSize(memory_usage) AS mem,\n  user,\n  exception_code,\n  databases[1] AS database,\n  tables[1] AS tbl,\n  substring(query, 1, 300) AS q\nFROM system.query_log\nWHERE type IN ('QueryFinish', 'ExceptionWhileProcessing')\n  AND event_time > now() - INTERVAL 10 MINUTE\nORDER BY query_duration_ms DESC\nLIMIT 20` },
+      { label: 'Query latency trend (5-min buckets, last hour)', sql: `SELECT\n  toStartOfFiveMinutes(event_time) AS t,\n  count() AS queries,\n  round(avg(query_duration_ms)) AS avg_ms,\n  round(quantile(0.95)(query_duration_ms)) AS p95_ms,\n  max(query_duration_ms) AS max_ms,\n  countIf(type = 'ExceptionWhileProcessing') AS errors\nFROM system.query_log\nWHERE type IN ('QueryFinish', 'ExceptionWhileProcessing')\n  AND event_time > now() - INTERVAL 1 HOUR\nGROUP BY t\nORDER BY t` },
+      { label: 'Queries causing full table scans (no PK pruning)', sql: `SELECT\n  user,\n  read_rows,\n  formatReadableSize(read_bytes) AS read_bytes,\n  query_duration_ms AS ms,\n  databases[1] AS database,\n  tables[1] AS tbl,\n  substring(query, 1, 300) AS q\nFROM system.query_log\nWHERE type = 'QueryFinish'\n  AND event_time > now() - INTERVAL 30 MINUTE\n  AND read_rows > 10000000\nORDER BY read_rows DESC\nLIMIT 20` },
+      { label: 'Exception breakdown (last hour)', sql: `SELECT\n  exception_code,\n  count() AS cnt,\n  any(exception) AS sample\nFROM system.query_log\nWHERE type = 'ExceptionWhileProcessing'\n  AND event_time > now() - INTERVAL 1 HOUR\nGROUP BY exception_code\nORDER BY cnt DESC` },
     ],
   },
 
@@ -134,16 +215,34 @@ const PLAYBOOKS: Record<string, Playbook> = {
       'Recent large bulk load not yet merged down',
       'Background pool full with other operations (mutations, etc.)',
     ],
+    triggerSql: `SELECT database, table,
+  count() AS active_parts,
+  sum(rows) AS total_rows,
+  sum(bytes_on_disk) AS total_bytes
+FROM system.parts
+WHERE active
+GROUP BY database, table
+-- Alert fires when active_parts > warn_count (1000) → warn
+--                              > critical_count (3000) → critical
+-- Also fires per-partition when count > warn_per_partition (300)`,
+    triggerNote: `Default thresholds: warn at 1000 parts/table, critical at 3000. Also warns when any single partition exceeds 300 parts.`,
     queries: [
-      { label: 'Tables with highest part count', sql: `SELECT database, table,\n  count() AS part_count,\n  sum(rows) AS total_rows,\n  formatReadableSize(sum(bytes_on_disk)) AS size\nFROM system.parts\nWHERE active\nGROUP BY database, table\nORDER BY part_count DESC\nLIMIT 20` },
-      { label: 'Current merge operations', sql: `SELECT database, table, elapsed,\n  round(progress*100,1) AS progress_pct,\n  num_parts, is_mutation\nFROM system.merges\nORDER BY elapsed DESC` },
-      { label: 'Background pool utilization', sql: `SELECT metric, value FROM system.metrics\nWHERE metric IN (\n  'BackgroundMergesAndMutationsPoolTask',\n  'BackgroundMergesAndMutationsPoolSize',\n  'BackgroundCommonPoolTask'\n)` },
-      { label: 'Force merge (manual — run on the node, not here)', sql: `-- OPTIMIZE TABLE {database}.{table} FINAL\n-- WARNING: expensive on large tables, use during low traffic` },
+      { label: 'Part count for {database}.{table} right now', sql: `SELECT\n  count() AS active_parts,\n  sum(rows) AS total_rows,\n  formatReadableSize(sum(bytes_on_disk)) AS disk_size,\n  countIf(level = 0) AS level0_parts,\n  min(modification_time) AS oldest_part,\n  max(modification_time) AS newest_part\nFROM system.parts\nWHERE active\n  AND database = '{database}'\n  AND table = '{table}'` },
+      { label: 'All tables with high part count (>300)', sql: `SELECT\n  database, table,\n  count() AS parts,\n  countIf(level = 0) AS level0,\n  sum(rows) AS total_rows,\n  formatReadableSize(sum(bytes_on_disk)) AS size\nFROM system.parts\nWHERE active\nGROUP BY database, table\nHAVING parts > 300\nORDER BY parts DESC\nLIMIT 20` },
+      { label: 'Insert rate to {database}.{table} (creates new parts)', sql: `SELECT\n  toStartOfMinute(event_time) AS minute,\n  count() AS inserts,\n  sum(written_rows) AS rows,\n  round(avg(written_rows)) AS avg_batch\nFROM system.query_log\nWHERE type = 'QueryFinish'\n  AND query_kind = 'Insert'\n  AND event_time > now() - INTERVAL 30 MINUTE\n  AND databases[1] = '{database}'\n  AND tables[1] = '{table}'\nGROUP BY minute\nORDER BY minute` },
+      { label: 'Active merges and background pool', sql: `SELECT database, table, elapsed,\n  round(progress*100, 1) AS pct, num_parts, is_mutation\nFROM system.merges\nORDER BY elapsed DESC` },
+      { label: 'Background pool slots (are merges blocked?)', sql: `SELECT metric, value FROM system.metrics\nWHERE metric IN (\n  'BackgroundMergesAndMutationsPoolTask',\n  'BackgroundMergesAndMutationsPoolSize',\n  'BackgroundCommonPoolTask'\n)` },
+      { label: 'OPTIMIZE TABLE to force merge (run manually if safe)', sql: `-- OPTIMIZE TABLE {database}.{table}\n-- Use FINAL only if you need dedup (slow on large tables):\n-- OPTIMIZE TABLE {database}.{table} FINAL` },
     ],
   },
 
   'tables:detached': {
     what: 'Detached parts found — parts excluded from all queries. They consume disk space and typically indicate a data integrity issue.',
+    triggerSql: `SELECT database, table, name, reason, disk
+FROM system.detached_parts
+WHERE reason NOT IN ('', 'ignored')
+  AND database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA')`,
+    triggerNote: `Fires on any result — any detached parts with a non-empty reason are surfaced immediately.`,
     why: [
       'Checksum mismatch after partial write or disk error',
       'A merge was rolled back, leaving intermediate parts behind',
@@ -165,11 +264,20 @@ const PLAYBOOKS: Record<string, Playbook> = {
       'Active large mutation consuming all I/O bandwidth',
       'ZooKeeper session expired — replica becomes read-only until reconnected',
     ],
+    triggerSql: `SELECT database, table, replica_name,
+  is_leader, is_readonly, is_session_expired,
+  future_parts, parts_to_check,
+  queue_size, inserts_in_queue, merges_in_queue,
+  log_max_index, log_pointer,
+  absolute_delay, replica_is_active
+FROM system.replicas`,
+    triggerNote: `Fires when: is_readonly = 1 or is_session_expired = 1; OR absolute_delay ≥ lag_warn_secs (30s) or lag_critical_secs (120s); OR parts_to_check > 5; OR queue_size > 1000.`,
     queries: [
-      { label: 'Replication status (lagging tables)', sql: `SELECT database, table, is_leader, is_readonly,\n  absolute_delay, queue_size, inserts_in_queue,\n  merges_in_queue, last_exception\nFROM system.replicas\nWHERE absolute_delay > 0 OR last_exception != ''\nORDER BY absolute_delay DESC` },
-      { label: 'Replication queue depth', sql: `SELECT database, table, type, source_replica,\n  created_time, exception\nFROM system.replication_queue\nORDER BY created_time\nLIMIT 30` },
-      { label: 'Stuck mutations', sql: `SELECT database, table, mutation_id, command,\n  create_time, is_done, latest_fail_reason\nFROM system.mutations\nWHERE is_done = 0\nORDER BY create_time` },
-      { label: 'ZooKeeper connectivity', sql: `SELECT * FROM system.zookeeper WHERE path = '/'` },
+      { label: 'Replication lag right now — all tables', sql: `SELECT\n  database, table,\n  is_leader, is_readonly, is_session_expired,\n  absolute_delay AS lag_sec,\n  queue_size, inserts_in_queue, merges_in_queue,\n  parts_to_check,\n  last_exception\nFROM system.replicas\nORDER BY absolute_delay DESC, queue_size DESC` },
+      { label: 'Replication queue items (pending ops)', sql: `SELECT\n  database, table, type,\n  source_replica,\n  formatDateTime(create_time, '%H:%M:%S') AS created,\n  exception\nFROM system.replication_queue\nORDER BY create_time\nLIMIT 30` },
+      { label: 'Part transfers in progress (fetches)', sql: `SELECT metric, value FROM system.metrics\nWHERE metric IN (\n  'ReplicatedFetch', 'ReplicatedSend',\n  'ReplicatedChecks',\n  'BackgroundFetchesPoolTask'\n)` },
+      { label: 'Stuck or failed mutations', sql: `SELECT\n  database, table, mutation_id,\n  command, create_time,\n  latest_fail_reason,\n  parts_to_do,\n  is_done\nFROM system.mutations\nWHERE is_done = 0\nORDER BY create_time` },
+      { label: 'ZooKeeper/Keeper health', sql: `SELECT * FROM system.zookeeper WHERE path = '/'` },
     ],
   },
 
@@ -181,11 +289,15 @@ const PLAYBOOKS: Record<string, Playbook> = {
       'Orphaned temp files from failed mutations or imports',
       'S3 tiered storage not draining local disk fast enough',
     ],
+    triggerSql: `SELECT name, path, free_space, total_space, type, keep_free_space
+FROM system.disks`,
+    triggerNote: `Fires when (1 − free_space/total_space) ≥ warn_percent (80%) → warn, or ≥ critical_percent (90%) → critical. Also fires as "broken" when free_space = 0 AND total_space > 0.`,
     queries: [
-      { label: 'Disk free space', sql: `SELECT name, path,\n  formatReadableSize(free_space) AS free,\n  formatReadableSize(total_space) AS total,\n  round((1 - free_space/total_space)*100, 1) AS used_pct\nFROM system.disks\nORDER BY used_pct DESC` },
-      { label: 'Largest tables on disk', sql: `SELECT database, table,\n  formatReadableSize(sum(bytes_on_disk)) AS size,\n  count() AS parts\nFROM system.parts\nWHERE active\nGROUP BY database, table\nORDER BY sum(bytes_on_disk) DESC\nLIMIT 20` },
-      { label: 'Tables with TTL configured', sql: `SELECT database, name AS table, engine_full\nFROM system.tables\nWHERE engine LIKE '%MergeTree%'\n  AND engine_full LIKE '%TTL%'` },
-      { label: 'Disk space reserved for merges', sql: `SELECT metric, value FROM system.metrics\nWHERE metric IN ('DiskSpaceReservedForMerge', 'BackgroundMergesAndMutationsPoolTask')` },
+      { label: 'Disk free space right now', sql: `SELECT\n  name, path, type,\n  formatReadableSize(free_space) AS free,\n  formatReadableSize(total_space) AS total,\n  round((1 - free_space / total_space) * 100, 1) AS used_pct\nFROM system.disks\nORDER BY used_pct DESC` },
+      { label: 'Top 20 tables by disk size', sql: `SELECT\n  database, table,\n  formatReadableSize(sum(bytes_on_disk)) AS size,\n  count() AS parts,\n  sum(rows) AS total_rows\nFROM system.parts\nWHERE active\nGROUP BY database, table\nORDER BY sum(bytes_on_disk) DESC\nLIMIT 20` },
+      { label: 'Tables with TTL — check if TTL is deleting', sql: `SELECT\n  database, name AS table,\n  formatReadableSize(total_bytes) AS total_size,\n  engine_full\nFROM system.tables\nWHERE engine LIKE '%MergeTree%'\n  AND engine_full LIKE '%TTL%'\nORDER BY total_bytes DESC` },
+      { label: 'Detached parts consuming disk space', sql: `SELECT\n  database, table, reason,\n  count() AS parts,\n  formatReadableSize(sum(bytes_on_disk)) AS wasted_size\nFROM system.detached_parts\nGROUP BY database, table, reason\nORDER BY sum(bytes_on_disk) DESC` },
+      { label: 'Disk reserved for merges (temp space usage)', sql: `SELECT metric, value FROM system.metrics\nWHERE metric IN (\n  'DiskSpaceReservedForMerge',\n  'BackgroundMergesAndMutationsPoolTask'\n)` },
     ],
   },
 
@@ -197,6 +309,14 @@ const PLAYBOOKS: Record<string, Playbook> = {
       'Large number of simultaneous cold-data queries',
       'S3 service degradation in the region',
     ],
+    triggerSql: `SELECT query_id, query_duration_ms, read_rows, read_bytes,
+  ProfileEvents['S3ReadMicroseconds'] AS s3_read_us,
+  ProfileEvents['S3ReadRequestsCount'] AS s3_read_requests
+FROM system.query_log
+WHERE type = 'QueryFinish'
+  AND event_time >= now() - INTERVAL 5 MINUTE
+  AND ProfileEvents['S3ReadRequestsCount'] > 0`,
+    triggerNote: `Fires when avg S3 latency (s3_read_us / s3_read_requests / 1000) ≥ latency_warn_secs (5s) → warn, or ≥ latency_critical_secs (15s) → critical.`,
     queries: [
       { label: 'S3 / object storage metrics', sql: `SELECT metric, value FROM system.metrics\nWHERE metric LIKE '%S3%' OR metric LIKE '%ObjectStorage%'\nORDER BY metric` },
       { label: 'Queries currently reading cold data', sql: `SELECT query_id, elapsed, read_rows,\n  formatReadableSize(read_bytes) AS read_bytes,\n  substring(query, 1, 200) AS q\nFROM system.processes\nORDER BY read_bytes DESC` },
@@ -207,15 +327,22 @@ const PLAYBOOKS: Record<string, Playbook> = {
   'errors:system': {
     what: 'ClickHouse internal error counters are elevated. These accumulate in system.errors since the last restart and indicate recurring internal failures.',
     why: [
-      'MEMORY_LIMIT_EXCEEDED: queries or server hitting memory caps',
-      'KEEPER_EXCEPTION / NO_ZOOKEEPER: ZooKeeper cluster unreachable',
+      'MEMORY_LIMIT_EXCEEDED (241): queries or server hitting memory caps',
+      'KEEPER_EXCEPTION / NO_ZOOKEEPER: ZooKeeper/Keeper cluster unreachable',
       'CORRUPTED_DATA / CHECKSUM_DOESNT_MATCH: disk or network corruption',
-      'TOO_MANY_SIMULTANEOUS_QUERIES: connection flood from application',
+      'TOO_MANY_SIMULTANEOUS_QUERIES (202): connection flood from application',
+      'QUERY_WAS_CANCELLED (394): client disconnecting mid-query (usually benign)',
     ],
+    triggerSql: `SELECT name, value AS cnt, last_error_time, last_error_message
+FROM system.errors
+WHERE value > 0
+  AND last_error_time > now() - INTERVAL 1 HOUR`,
+    triggerNote: `Fires when serious error types (MEMORY_LIMIT_EXCEEDED, KEEPER_EXCEPTION, CORRUPTED_DATA, etc.) have cnt ≥ 5 → critical. Other error types at cnt ≥ 10 → warn.`,
     queries: [
-      { label: 'All recent errors with count and last message', sql: `SELECT name, value AS count, last_error_time,\n  substring(last_error_message, 1, 250) AS last_message\nFROM system.errors\nWHERE value > 0\n  AND last_error_time > now() - INTERVAL 1 HOUR\nORDER BY value DESC\nLIMIT 20` },
-      { label: 'Fatal/Critical log entries', sql: `SELECT event_time, level, logger_name,\n  substring(message, 1, 300) AS message\nFROM system.text_log\nWHERE level IN ('Fatal', 'Critical')\n  AND event_time > now() - INTERVAL 1 HOUR\nORDER BY event_time DESC\nLIMIT 20` },
-      { label: 'Currently running queries (check for problem queries)', sql: `SELECT user, elapsed, formatReadableSize(memory_usage) AS mem,\n  substring(query, 1, 200) AS q\nFROM system.processes\nORDER BY memory_usage DESC` },
+      { label: 'Active errors right now — counts + last message', sql: `SELECT\n  name AS error_name,\n  value AS total_count,\n  formatDateTime(last_error_time, '%Y-%m-%d %H:%M:%S') AS last_seen,\n  substring(last_error_message, 1, 250) AS last_message\nFROM system.errors\nWHERE value > 0\nORDER BY last_error_time DESC\nLIMIT 20` },
+      { label: 'Error rate per code in last 30 min (query_log)', sql: `SELECT\n  exception_code,\n  count() AS cnt,\n  any(exception) AS sample_error,\n  any(user) AS user\nFROM system.query_log\nWHERE type = 'ExceptionWhileProcessing'\n  AND event_time > now() - INTERVAL 30 MINUTE\nGROUP BY exception_code\nORDER BY cnt DESC\nLIMIT 20` },
+      { label: 'Error detail for code {errorCode} (last hour)', sql: `SELECT\n  event_time, user, exception_code,\n  substring(exception, 1, 400) AS error,\n  substring(query, 1, 200) AS q\nFROM system.query_log\nWHERE type = 'ExceptionWhileProcessing'\n  AND exception_code = {errorCode}\n  AND event_time > now() - INTERVAL 1 HOUR\nORDER BY event_time DESC\nLIMIT 20` },
+      { label: 'Fatal/Critical log entries (server issues)', sql: `SELECT\n  event_time, level, logger_name,\n  substring(message, 1, 400) AS message\nFROM system.text_log\nWHERE level IN ('Fatal', 'Critical', 'Error')\n  AND event_time > now() - INTERVAL 1 HOUR\nORDER BY event_time DESC\nLIMIT 20` },
     ],
   },
 
@@ -227,6 +354,11 @@ const PLAYBOOKS: Record<string, Playbook> = {
       'Corrupted metadata on disk',
       'OS signal received (SIGKILL from Kubernetes eviction, SIGSEGV)',
     ],
+    triggerSql: `SELECT level, message, logger_name, event_time
+FROM system.text_log
+WHERE level IN ('Fatal', 'Critical')
+  AND event_time > now() - INTERVAL 10 MINUTE`,
+    triggerNote: `Any match → immediate critical alert. Fatal/Critical log entries from system.text_log are always surfaced.`,
     queries: [
       { label: 'Recent Fatal/Critical entries', sql: `SELECT event_time, level, logger_name,\n  substring(message, 1, 400) AS message\nFROM system.text_log\nWHERE level IN ('Fatal', 'Critical')\n  AND event_time > now() - INTERVAL 1 HOUR\nORDER BY event_time DESC\nLIMIT 30` },
       { label: 'CH error counters', sql: `SELECT name, value, last_error_time,\n  substring(last_error_message, 1, 200) AS last_msg\nFROM system.errors\nWHERE value > 0\nORDER BY last_error_time DESC\nLIMIT 20` },
@@ -242,6 +374,22 @@ const PLAYBOOKS: Record<string, Playbook> = {
       'Schema mismatch between source and MV — exception on write',
       'Chained MVs compounding latency (MV → MV)',
     ],
+    triggerSql: `-- Failure detection:
+SELECT view_name, view_target, count() AS failure_count,
+  any(exception) AS sample_exception, max(event_time) AS last_failure
+FROM system.query_views_log
+WHERE status = 'ExceptionWhileProcessing'
+  AND event_time >= now() - INTERVAL 5 MINUTE
+GROUP BY view_name, view_target
+
+-- Latency detection:
+SELECT view_name, view_target,
+  avg(view_duration_ms) AS avg_ms, max(view_duration_ms) AS max_ms
+FROM system.query_views_log
+WHERE status = 'QueryFinish'
+  AND event_time >= now() - INTERVAL 5 MINUTE
+GROUP BY view_name, view_target`,
+    triggerNote: `Failures: fires on any exception in last 5 min → critical. Latency: fires when avg_ms > mv.lag_warn_secs × 1000 (default 5000ms).`,
     queries: [
       { label: 'MV execution times (last 10 min)', sql: `SELECT view,\n  round(avg(view_duration_ms), 1) AS avg_ms,\n  max(view_duration_ms) AS max_ms,\n  count() AS executions,\n  countIf(status = 'ExceptionWhileProcessing') AS errors\nFROM system.query_views_log\nWHERE event_time > now() - INTERVAL 10 MINUTE\nGROUP BY view\nORDER BY avg_ms DESC\nLIMIT 20` },
       { label: 'MV exceptions (last hour)', sql: `SELECT event_time, view, status, exception\nFROM system.query_views_log\nWHERE status = 'ExceptionWhileProcessing'\n  AND event_time > now() - INTERVAL 1 HOUR\nORDER BY event_time DESC\nLIMIT 20` },
@@ -257,6 +405,12 @@ const PLAYBOOKS: Record<string, Playbook> = {
       'Schema change in the source — column names no longer match',
       'Dictionary load timed out (slow source)',
     ],
+    triggerSql: `SELECT database, name, status, origin, type,
+  element_count, loading_duration,
+  last_successful_update_time, last_exception,
+  bytes_allocated
+FROM system.dictionaries`,
+    triggerNote: `Fires when status ≠ 'LOADED' (load failure); OR status = 'LOADED' but element_count = 0 (empty); OR reload failures ≥ reload_fail_threshold (3) consecutive polls.`,
     queries: [
       { label: 'Dictionary status overview', sql: `SELECT name, status, element_count, bytes_allocated,\n  last_successful_update_time, last_exception\nFROM system.dictionaries\nORDER BY name` },
       { label: 'Reload a dictionary', sql: `-- SYSTEM RELOAD DICTIONARY '<dictionary_name>'` },
@@ -271,10 +425,20 @@ const PLAYBOOKS: Record<string, Playbook> = {
       'OS page cache accumulating CH data files (shows in CGroup, but evictable)',
       'Memory leak in a long-running CH process (rare)',
     ],
+    triggerSql: `SELECT metric, value
+FROM system.asynchronous_metrics
+WHERE metric IN (
+  'OSMemoryTotal', 'OSMemoryAvailable',
+  'OSMemoryFreePlusCached', 'CGroupMemoryUsed',
+  'MemoryResident'
+)`,
+    triggerNote: `Fires when OS used% = (1 − available/total) ≥ warn_percent (80%) → warn, or ≥ critical_percent (90%) → critical. Also fires on RSS: MemoryResident/OSMemoryTotal ≥ rss_warn_percent (85%) or rss_critical_percent (95%).`,
     queries: [
-      { label: 'Current memory-heavy queries', sql: `SELECT query_id,\n  formatReadableSize(memory_usage) AS mem,\n  formatReadableSize(peak_memory_usage) AS peak,\n  elapsed, user,\n  substring(query, 1, 200) AS q\nFROM system.processes\nORDER BY memory_usage DESC` },
-      { label: 'Memory metrics (OS + CH)', sql: `SELECT metric, value\nFROM system.asynchronous_metrics\nWHERE metric IN (\n  'MemoryResident', 'OSMemoryAvailable', 'OSMemoryTotal',\n  'CGroupMemoryUsed'\n)\nORDER BY metric` },
-      { label: 'Cache sizes', sql: `SELECT metric, value FROM system.metrics\nWHERE metric IN (\n  'MarkCacheBytes', 'MarkCacheFiles',\n  'UncompressedCacheBytes', 'CompiledExpressionCacheCount'\n)` },
+      { label: 'Memory breakdown right now', sql: `SELECT\n  metric,\n  formatReadableSize(toUInt64(value)) AS current_value\nFROM system.asynchronous_metrics\nWHERE metric IN (\n  'MemoryResident', 'MemoryVirtual',\n  'OSMemoryTotal', 'OSMemoryFreeWithoutCaches',\n  'OSMemoryBuffers', 'CGroupMemoryUsed'\n)\nORDER BY metric` },
+      { label: 'Queries using the most memory right now', sql: `SELECT\n  query_id,\n  formatReadableSize(memory_usage) AS mem,\n  formatReadableSize(peak_memory_usage) AS peak_mem,\n  round(elapsed, 1) AS elapsed_s,\n  user,\n  databases[1] AS database,\n  tables[1] AS tbl,\n  substring(query, 1, 200) AS q\nFROM system.processes\nWHERE memory_usage > 0\nORDER BY memory_usage DESC\nLIMIT 10` },
+      { label: 'Memory settings and limits configured', sql: `SELECT name, value\nFROM system.settings\nWHERE name IN (\n  'max_memory_usage',\n  'max_memory_usage_for_user',\n  'max_server_memory_usage',\n  'max_bytes_before_external_group_by',\n  'use_uncompressed_cache'\n)\nORDER BY name` },
+      { label: 'Cache utilization (mark + uncompressed)', sql: `SELECT metric, value\nFROM system.metrics\nWHERE metric IN (\n  'MarkCacheBytes', 'MarkCacheFiles',\n  'UncompressedCacheBytes', 'CompiledExpressionCacheCount',\n  'QueryCacheBytes'\n)\nORDER BY metric` },
+      { label: 'Top tables by in-memory footprint (parts index)', sql: `SELECT\n  database, table,\n  count() AS parts,\n  formatReadableSize(sum(primary_key_bytes_in_memory)) AS pk_mem,\n  formatReadableSize(sum(bytes_on_disk)) AS disk_size\nFROM system.parts\nWHERE active\nGROUP BY database, table\nORDER BY sum(primary_key_bytes_in_memory) DESC\nLIMIT 15` },
     ],
   },
 
@@ -287,10 +451,11 @@ const PLAYBOOKS: Record<string, Playbook> = {
       'High data compression/decompression overhead at peak load',
     ],
     queries: [
-      { label: 'Currently running queries (by elapsed time)', sql: `SELECT query_id, elapsed, read_rows,\n  formatReadableSize(memory_usage) AS mem, user,\n  substring(query, 1, 200) AS q\nFROM system.processes\nORDER BY elapsed DESC` },
-      { label: 'CPU metrics timeline (last 30 min)', sql: `SELECT event_time, metric, value\nFROM system.asynchronous_metric_log\nWHERE metric IN ('OSUserTimeCPUMicroseconds','OSSystemTimeCPUMicroseconds','LoadAverage1')\n  AND event_time > now() - INTERVAL 30 MINUTE\nORDER BY event_time DESC\nLIMIT 100` },
-      { label: 'Active merges and mutations', sql: `SELECT database, table, elapsed, progress, is_mutation\nFROM system.merges\nORDER BY elapsed DESC` },
-      { label: 'Background pool utilization', sql: `SELECT metric, value FROM system.metrics\nWHERE metric IN (\n  'BackgroundMergesAndMutationsPoolTask',\n  'BackgroundMergesAndMutationsPoolSize',\n  'ConcurrentInsertThreads'\n)` },
+      { label: 'Active load right now (queries, connections, threads)', sql: `SELECT metric, value\nFROM system.metrics\nWHERE metric IN (\n  'Query', 'Read', 'Write', 'Merge',\n  'HTTPConnection', 'TCPConnection',\n  'BackgroundMergesAndMutationsPoolTask',\n  'BackgroundMergesAndMutationsPoolSize',\n  'ConcurrentInsertThreads'\n)\nORDER BY metric` },
+      { label: 'Currently running queries (slowest first)', sql: `SELECT\n  query_id, elapsed, read_rows,\n  formatReadableSize(read_bytes) AS read_bytes,\n  formatReadableSize(memory_usage) AS mem,\n  user,\n  substring(query, 1, 200) AS q\nFROM system.processes\nORDER BY elapsed DESC` },
+      { label: 'Top CPU consumers by user (last 5 min)', sql: `SELECT\n  user,\n  count() AS queries,\n  sum(query_duration_ms) AS total_ms,\n  round(avg(query_duration_ms)) AS avg_ms,\n  max(query_duration_ms) AS max_ms,\n  sum(read_rows) AS total_rows_read\nFROM system.query_log\nWHERE type = 'QueryFinish'\n  AND event_time > now() - INTERVAL 5 MINUTE\nGROUP BY user\nORDER BY total_ms DESC` },
+      { label: 'CPU trend — load average last 30 min', sql: `SELECT\n  toStartOfMinute(event_time) AS t,\n  max(value) AS load_avg\nFROM system.asynchronous_metric_log\nWHERE metric = 'LoadAverage1'\n  AND event_time > now() - INTERVAL 30 MINUTE\nGROUP BY t\nORDER BY t` },
+      { label: 'Active merges and mutations consuming CPU', sql: `SELECT\n  database, table,\n  round(elapsed, 1) AS elapsed_s,\n  round(progress*100, 1) AS pct,\n  num_parts, is_mutation,\n  formatReadableSize(memory_usage) AS mem\nFROM system.merges\nORDER BY elapsed DESC` },
     ],
   },
 
@@ -376,16 +541,91 @@ function buildPlaybookQueries(alert: Alert, queries: PlaybookQuery[]): PlaybookQ
   const to = new Date((alert.created_at + 600) * 1000).toISOString().replace('T', ' ').slice(0, 19)
   const fromH = new Date((alert.created_at - 3600) * 1000).toISOString().replace('T', ' ').slice(0, 19)
   const toH = new Date((alert.created_at + 3600) * 1000).toISOString().replace('T', ' ').slice(0, 19)
+
+  // Extract database.table: dedup_key first, then alert message
   const tableMatch = (alert.dedup_key ?? '').match(/:([^:.]+)\.([^:]+)$/)
-  const database = tableMatch?.[1] ?? ''
-  const table = tableMatch?.[2] ?? ''
-  const metricMatch = (alert.title ?? '').match(/[:\s]([a-zA-Z0-9_.]+)\s*$/)
+  let database = tableMatch?.[1] ?? ''
+  let table = tableMatch?.[2] ?? ''
+  if (!database || !table) {
+    const msgTbl = (alert.message ?? '').match(/\b(\w+)\.(\w+)\b/)
+    if (msgTbl && msgTbl[1] !== 'system' && msgTbl[1] !== 'ch_analyzer') {
+      database = database || msgTbl[1]
+      table = table || msgTbl[2]
+    }
+  }
+
+  // Extract user from message (e.g. "user: analytics", "by user default")
+  const userMatch = (alert.message ?? '').match(/(?:by\s+user|user[:\s]+)\s*([a-zA-Z0-9_-]+)/i)
+  const user = userMatch?.[1] ?? ''
+
+  // Extract exception/error code from message
+  const errCodeMatch = (alert.message ?? '').match(/(?:code|exception)[:\s]+(\d+)/i) ?? (alert.message ?? '').match(/\b(2[0-9]{2}|1[0-9]{2}|[3-9][0-9]{2})\b/)
+  const errorCode = errCodeMatch?.[1] ?? ''
+
+  // Extract metric name from dedup_key or title
+  const metricMatch = (alert.dedup_key ?? '').match(/:([a-zA-Z0-9_]+)$/) ?? (alert.title ?? '').match(/[:\s]([a-zA-Z0-9_.]+)\s*$/)
   const metric = metricMatch?.[1] ?? ''
-  const vars: Record<string, string> = { from, to, fromH, toH, database, table, metric }
+
+  const vars: Record<string, string> = { from, to, fromH, toH, database, table, metric, user, errorCode }
   return queries.map(q => ({
     label: q.label,
     sql: q.sql.replace(/\{(\w+)\}/g, (_, key) => vars[key] ?? `{${key}}`),
   }))
+}
+
+/* ------------------------------------------------------------------ */
+/*  Alert signal parser — extracts key numeric facts from message      */
+/* ------------------------------------------------------------------ */
+interface AlertSignal { label: string; value: string; color?: 'red' | 'amber' | 'blue' }
+
+function parseAlertSignals(alert: Alert): AlertSignal[] {
+  const msg = alert.message ?? ''
+  const signals: AlertSignal[] = []
+  const seen = new Set<string>()
+
+  // Percentages with context
+  for (const m of msg.matchAll(/(\d+(?:\.\d+)?)\s*%/g)) {
+    const pct = parseFloat(m[1])
+    const ctx = msg.slice(Math.max(0, (m.index ?? 0) - 25), m.index ?? 0).toLowerCase()
+    const label = /memory|mem/.test(ctx) ? 'Memory'
+      : /disk|used|space/.test(ctx) ? 'Disk used'
+      : /cpu|load/.test(ctx) ? 'CPU'
+      : /pool/.test(ctx) ? 'Pool'
+      : /drop/.test(ctx) ? 'Drop'
+      : /hit|cache/.test(ctx) ? 'Cache hit'
+      : 'Threshold'
+    const key = `${label}:${pct}`
+    if (!seen.has(key)) {
+      seen.add(key)
+      signals.push({ label, value: `${pct}%`, color: pct >= 90 ? 'red' : pct >= 75 ? 'amber' : 'blue' })
+    }
+    if (signals.length >= 3) break
+  }
+
+  // Sizes  (34.2 GB, 1.2 TB)
+  const sizeM = msg.match(/(\d+(?:\.\d+)?\s*(?:TB|GB|MB|KB))/i)
+  if (sizeM && !seen.has(sizeM[1])) { seen.add(sizeM[1]); signals.push({ label: 'Size', value: sizeM[1] }) }
+
+  // Counts near nouns
+  const cntM = msg.match(/(\d[\d,]*)\s+(rows?|parts?|queries?|inserts?|errors?|replicas?)/i)
+  if (cntM) {
+    const noun = cntM[2].replace(/s$/i, '').toLowerCase()
+    const key = `cnt:${noun}`
+    if (!seen.has(key)) { seen.add(key); signals.push({ label: noun, value: cntM[1] }) }
+  }
+
+  // Duration (45000ms, 2m 30s, 120s)
+  const durM = msg.match(/(\d+(?:\.\d+)?)\s*(ms|sec(?:ond)?s?|min(?:ute)?s?)\b/i)
+  if (durM) {
+    const key = `dur:${durM[0]}`
+    if (!seen.has(key)) { seen.add(key); signals.push({ label: 'Duration', value: durM[0] }) }
+  }
+
+  // Error code
+  const ecM = msg.match(/(?:exception|error)\s+code[:\s]+(\d+)/i)
+  if (ecM) signals.push({ label: 'Error code', value: ecM[1], color: 'red' })
+
+  return signals.slice(0, 5)
 }
 
 /* ------------------------------------------------------------------ */
@@ -771,6 +1011,30 @@ export function AlertDetailPanel({
                 </ul>
               </div>
 
+              {/* What was detected — parsed signals from alert message */}
+              {(() => {
+                const signals = parseAlertSignals(alert)
+                if (signals.length === 0) return null
+                return (
+                  <div className="rounded-lg border border-[var(--border)] p-3 space-y-2">
+                    <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--dim)]">What was detected</div>
+                    <div className="flex flex-wrap gap-2">
+                      {signals.map((s, i) => (
+                        <div key={i} className={cn(
+                          'rounded-md px-2.5 py-1.5 text-xs font-medium border',
+                          s.color === 'red' ? 'bg-red-500/10 border-red-500/30 text-red-400'
+                          : s.color === 'amber' ? 'bg-amber-500/10 border-amber-500/30 text-amber-400'
+                          : 'bg-[var(--hover)] border-[var(--border)] text-[var(--text)]',
+                        )}>
+                          <span className="text-[var(--dim)] mr-1.5 font-normal">{s.label}</span>
+                          <strong>{s.value}</strong>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })()}
+
               {/* Alert details */}
               {alert.message && (
                 <div>
@@ -820,6 +1084,19 @@ export function AlertDetailPanel({
                 <Search size={11} />
                 Open Explore at alert time ±10m
               </button>
+
+              {/* How this was detected */}
+              {playbook.triggerSql && (
+                <div className="space-y-1.5">
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--dim)] flex items-center gap-1.5">
+                    <span className="text-amber-400">⚡</span> How ch-analyzer detected this
+                  </div>
+                  <SqlBlock sql={playbook.triggerSql} instance={alert.instance} />
+                  {playbook.triggerNote && (
+                    <p className="text-[11px] text-[var(--dim)] leading-relaxed pl-1">{playbook.triggerNote}</p>
+                  )}
+                </div>
+              )}
 
               {/* Playbook queries */}
               <div className="space-y-4">

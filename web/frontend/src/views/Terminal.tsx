@@ -287,7 +287,7 @@ function StatementPane({ stmt, index, total }: StatementPaneProps) {
   const opts = useMemo(() => chartOptions(chartInfo?.type ?? chartMode), [chartInfo, chartMode])
 
   return (
-    <Card className="overflow-hidden !p-0">
+    <Card className="!p-0 min-w-0">
       {/* Statement section header — only shown when multiple stmts */}
       {total > 1 && (
         <div className="flex items-center gap-3 border-b border-[var(--border)] bg-[var(--surface)] px-3 py-2">
@@ -384,17 +384,18 @@ interface NodePaneProps {
   result: QueryResult | null
   error: string | null
   loading: boolean
+  isSplit?: boolean
   onRemove?: () => void
 }
 
-function NodePane({ instance, result, error, loading, onRemove }: NodePaneProps) {
+function NodePane({ instance, result, error, loading, isSplit, onRemove }: NodePaneProps) {
   const stmts = result?.results ?? (result ? [{
     sql: '', columns: result.columns, types: result.types ?? [],
     rows: result.rows, row_count: result.row_count, elapsed_ms: result.elapsed_ms,
   }] : [])
 
   return (
-    <div className="flex-1 min-w-0 space-y-3">
+    <div className={cn('space-y-3', isSplit ? 'min-w-[460px] flex-1' : 'min-w-0')}>
       {/* Node label */}
       <div className="flex items-center gap-2">
         <div className="flex items-center gap-1.5 rounded-md bg-[var(--hover)] px-2.5 py-1 text-xs font-mono font-medium text-[var(--fg)]">
@@ -909,8 +910,8 @@ export default function Terminal() {
               <span>Results from {execTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
             </div>
           )}
-          <div className={cn(isSplit ? 'overflow-x-auto' : '')}>
-          <div className={cn('flex gap-4', isSplit ? 'flex-row items-start min-w-max' : 'flex-col')}>
+          <div className="overflow-x-auto">
+          <div className={cn('flex gap-4', isSplit ? 'flex-row items-start' : 'flex-col')}>
             {allInstances.map((i, idx) => {
               const nr = nodeResults[i] ?? { result: null, error: null, loading: false }
               return (
@@ -920,6 +921,7 @@ export default function Terminal() {
                   result={nr.result}
                   error={nr.error}
                   loading={nr.loading}
+                  isSplit={isSplit}
                   onRemove={idx > 0 ? () => removeSplitNode(i) : undefined}
                 />
               )
