@@ -48,7 +48,7 @@ func New(cfg config.SlackConfig, webAddr string, alertMgr *alerter.AlertManager,
 		socketmode.OptionLog(stdLogger),
 	)
 
-	return &App{
+	app := &App{
 		client:         client,
 		socket:         socket,
 		cfg:            cfg,
@@ -59,6 +59,14 @@ func New(cfg config.SlackConfig, webAddr string, alertMgr *alerter.AlertManager,
 		pendingRefresh: make(chan struct{}, 1),
 		logger:         slog.Default().With(slog.String("component", "slack-app")),
 	}
+
+	if cfg.SigningSecret == "" {
+		app.logger.Warn("slack signing_secret is not configured; " +
+			"HTTP-based Slack endpoints will not verify request signatures — " +
+			"set slack.signing_secret in your config to enable verification")
+	}
+
+	return app
 }
 
 // Run starts the Socket Mode WebSocket connection and event loop.
