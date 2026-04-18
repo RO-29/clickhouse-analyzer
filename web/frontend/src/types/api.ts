@@ -44,6 +44,8 @@ export interface Alert {
   title: string; message: string; resolved: boolean
   resolved_at?: number; created_at: number; updated_at: number; dedup_key: string
   duration_s: number
+  first_seen_at?: number
+  fire_count?: number
 }
 
 export interface AlertStats {

@@ -1,9 +1,9 @@
 import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from 'react'
 import { presetToRange } from '../lib/utils'
 import type { ChatSession } from '../types/api'
-import { resolveView } from './viewRouting'
+import { resolveView, type View } from './viewRouting'
 
-export type { View } from './viewRouting'
+export type { View }
 
 export interface Store {
   // State
