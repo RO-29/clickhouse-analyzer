@@ -162,6 +162,9 @@ func (ms *MaintenanceStore) IsInMaintenance(instance string) bool {
 // ── File persistence ──────────────────────────────────────────────────────────
 
 func (ms *MaintenanceStore) saveToFile() {
+	// Hold the read lock for the entire snapshot-and-marshal sequence so that
+	// concurrent modifications cannot interleave between the copy and the write,
+	// preventing a race where an older snapshot overwrites a newer one.
 	ms.mu.RLock()
 	path := ms.filePath
 	windows := make([]*MaintenanceWindow, 0, len(ms.windows))
@@ -169,15 +172,15 @@ func (ms *MaintenanceStore) saveToFile() {
 		cp := *w
 		windows = append(windows, &cp)
 	}
+	data, marshalErr := json.MarshalIndent(windows, "", "  ")
 	ms.mu.RUnlock()
 
 	if path == "" {
 		return
 	}
 
-	data, err := json.MarshalIndent(windows, "", "  ")
-	if err != nil {
-		slog.Warn("maintenance: failed to marshal windows", "error", err)
+	if marshalErr != nil {
+		slog.Warn("maintenance: failed to marshal windows", "error", marshalErr)
 		return
 	}
 	if err := os.WriteFile(path, data, 0644); err != nil {

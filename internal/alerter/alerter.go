@@ -372,11 +372,28 @@ func (am *AlertManager) Process(alerts []collector.Alert) {
 		am.mu.Unlock()
 
 		if isNew && am.store != nil {
-			if id, err := am.store.InsertAlert(alert); err != nil {
-				am.logger.Error("failed to persist alert",
-					slog.String("dedup_key", key), slog.String("error", err.Error()))
-			} else {
-				am.logger.Debug("alert persisted", slog.Int64("id", id), slog.String("dedup_key", key))
+			storeCtx, storeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			type insertResult struct {
+				id  int64
+				err error
+			}
+			ch := make(chan insertResult, 1)
+			go func() {
+				id, err := am.store.InsertAlert(alert)
+				ch <- insertResult{id, err}
+			}()
+			select {
+			case res := <-ch:
+				storeCancel()
+				if res.err != nil {
+					am.logger.Error("failed to persist alert",
+						slog.String("dedup_key", key), slog.String("error", res.err.Error()))
+				} else {
+					am.logger.Debug("alert persisted", slog.Int64("id", res.id), slog.String("dedup_key", key))
+				}
+			case <-storeCtx.Done():
+				storeCancel()
+				am.logger.Error("timeout persisting alert", slog.String("dedup_key", key))
 			}
 		}
 	}
@@ -387,8 +404,18 @@ func (am *AlertManager) Process(alerts []collector.Alert) {
 		for k := range seen {
 			keys = append(keys, k)
 		}
-		if err := am.store.TouchAlerts(keys); err != nil {
-			am.logger.Debug("touch alerts failed", slog.String("err", err.Error()))
+		touchCtx, touchCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		touchCh := make(chan error, 1)
+		go func() { touchCh <- am.store.TouchAlerts(keys) }()
+		select {
+		case err := <-touchCh:
+			touchCancel()
+			if err != nil {
+				am.logger.Debug("touch alerts failed", slog.String("err", err.Error()))
+			}
+		case <-touchCtx.Done():
+			touchCancel()
+			am.logger.Debug("touch alerts timed out")
 		}
 	}
 
@@ -542,7 +569,11 @@ func (am *AlertManager) updateInstanceMessage(instance string) {
 	cb := am.onStateChange
 	am.mu.Unlock()
 	if cb != nil {
-		go cb()
+		am.wg.Add(1)
+		go func() {
+			defer am.wg.Done()
+			cb()
+		}()
 	}
 }
 
@@ -566,9 +597,20 @@ func (am *AlertManager) persistFireCounts() {
 	am.mu.Unlock()
 
 	for _, e := range entries {
-		if err := am.store.UpdateFireCount(e.key, e.count, e.firstSeen); err != nil {
-			am.logger.Debug("failed to persist fire count",
-				slog.String("dedup_key", e.key), slog.String("err", err.Error()))
+		e := e
+		fcCtx, fcCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		fcCh := make(chan error, 1)
+		go func() { fcCh <- am.store.UpdateFireCount(e.key, e.count, e.firstSeen) }()
+		select {
+		case err := <-fcCh:
+			fcCancel()
+			if err != nil {
+				am.logger.Debug("failed to persist fire count",
+					slog.String("dedup_key", e.key), slog.String("err", err.Error()))
+			}
+		case <-fcCtx.Done():
+			fcCancel()
+			am.logger.Debug("timeout persisting fire count", slog.String("dedup_key", e.key))
 		}
 	}
 }
@@ -713,9 +755,19 @@ func (am *AlertManager) checkResolutions() {
 		duration := now.Sub(active.FirstSeen)
 
 		if am.store != nil {
-			if err := am.store.ResolveAlert(key); err != nil {
-				am.logger.Error("failed to persist alert resolution",
-					slog.String("dedup_key", key), slog.String("error", err.Error()))
+			resolveCtx, resolveCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			resolveCh := make(chan error, 1)
+			go func() { resolveCh <- am.store.ResolveAlert(key) }()
+			select {
+			case err := <-resolveCh:
+				resolveCancel()
+				if err != nil {
+					am.logger.Error("failed to persist alert resolution",
+						slog.String("dedup_key", key), slog.String("error", err.Error()))
+				}
+			case <-resolveCtx.Done():
+				resolveCancel()
+				am.logger.Error("timeout resolving alert", slog.String("dedup_key", key))
 			}
 		}
 

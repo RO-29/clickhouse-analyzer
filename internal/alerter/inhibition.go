@@ -1,9 +1,7 @@
 package alerter
 
-import "strings"
-
 // InhibitionRule suppresses target alerts when a matching source alert is active.
-// All non-empty fields must match (empty = wildcard).
+// All non-empty fields must match exactly (empty = wildcard).
 type InhibitionRule struct {
 	SourceCategory string // e.g. "memory"
 	SourceSeverity string // e.g. "critical"
@@ -21,7 +19,8 @@ type InhibitionMatcher struct {
 func (m *InhibitionMatcher) IsInhibited(alert ActiveAlert, activeAlerts map[string]*ActiveAlert) bool {
 	for _, rule := range m.Rules {
 		// Check if the candidate alert matches the target side of the rule.
-		if rule.TargetCategory != "" && !strings.Contains(alert.Alert.Category, rule.TargetCategory) {
+		// Use exact equality to prevent "disk" from inhibiting "disk_usage_warning".
+		if rule.TargetCategory != "" && alert.Alert.Category != rule.TargetCategory {
 			continue
 		}
 		if rule.TargetSeverity != "" && string(alert.Alert.Severity) != rule.TargetSeverity {
@@ -30,7 +29,7 @@ func (m *InhibitionMatcher) IsInhibited(alert ActiveAlert, activeAlerts map[stri
 
 		// Check if any active alert matches the source side of the rule.
 		for _, active := range activeAlerts {
-			if rule.SourceCategory != "" && !strings.Contains(active.Alert.Category, rule.SourceCategory) {
+			if rule.SourceCategory != "" && active.Alert.Category != rule.SourceCategory {
 				continue
 			}
 			if rule.SourceSeverity != "" && string(active.Alert.Severity) != rule.SourceSeverity {
