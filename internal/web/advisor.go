@@ -13,6 +13,16 @@ import (
 	"github.com/rohitjain/ch-analyzer/internal/chclient"
 )
 
+// sqlEscape sanitizes a string for safe interpolation into ClickHouse SQL
+// string literals by escaping single quotes and backslashes.
+// Prefer parameterised queries where the driver supports them; use this
+// helper for drivers/paths that require literal interpolation.
+func sqlEscape(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `'`, `''`)
+	return s
+}
+
 // ---------------------------------------------------------------------------
 // 1. Advisor: Compression
 // ---------------------------------------------------------------------------
@@ -787,8 +797,8 @@ func (s *Server) handleTableDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	db := r.PathValue("db")
-	table := r.PathValue("table")
+	db := sqlEscape(r.PathValue("db"))
+	table := sqlEscape(r.PathValue("table"))
 	if db == "" || table == "" {
 		writeErr(w, http.StatusBadRequest, "database and table path parameters are required")
 		return
