@@ -338,7 +338,7 @@ function AnomalySection({ alert }: { alert: Alert }) {
   }, [alert.instance, metric]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!isAnomalyAlert(alert)) return null
-  if (!metric || !ctx || ctx.values.length === 0) return null
+  if (!metric || !ctx || !ctx.values || ctx.values.length === 0) return null
   const { z_score, mean, std_dev, current, threshold, values } = ctx
   if (z_score < 1.5) return null
 

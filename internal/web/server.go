@@ -1029,7 +1029,7 @@ func (s *Server) handleAlertStats(w http.ResponseWriter, r *http.Request) {
 		avgDurationSecs = sum / float64(len(durationSecs))
 	}
 
-	var topCats []catEntry
+	topCats := make([]catEntry, 0)
 	for cat, cnt := range catCounts {
 		topCats = append(topCats, catEntry{Category: cat, Count: cnt})
 	}

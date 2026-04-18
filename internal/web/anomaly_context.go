@@ -31,7 +31,7 @@ func (s *Server) handleAnomalyContext(w http.ResponseWriter, r *http.Request) {
 	}
 	values := s.analyzer.GetMetricHistory(instance, metric)
 	if len(values) == 0 {
-		writeJSON(w, http.StatusOK, AnomalyContext{Metric: metric})
+		writeJSON(w, http.StatusOK, AnomalyContext{Metric: metric, Values: []float64{}})
 		return
 	}
 
