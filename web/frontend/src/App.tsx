@@ -177,9 +177,11 @@ function Layout() {
       <div className={cn("flex-1 flex flex-col transition-all duration-200", sidebarCollapsed ? "md:ml-14" : "md:ml-[220px]")}>
         <TopBar onMobileMenuClick={() => setMobileSidebarOpen(o => !o)} />
         <main className={cn(
-          'flex-1 w-full',
-          view === 'analyzer' || view === 'terminal'
+          'flex-1 w-full min-h-0',
+          view === 'analyzer'
             ? 'overflow-hidden flex flex-col'
+            : view === 'terminal' || view === 'scanner'
+            ? 'overflow-hidden flex flex-col p-3 sm:p-4'
             : 'p-3 sm:p-6 max-w-[1600px] mx-auto overflow-y-auto overflow-x-hidden',
         )}>
           {/* Chat Analyzer: mount once and keep alive (hidden when inactive) to preserve session */}
