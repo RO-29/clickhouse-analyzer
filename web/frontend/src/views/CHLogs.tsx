@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo, type ReactNode } from 'react'
-import { RefreshCw, Sparkles } from 'lucide-react'
+import { RefreshCw, Sparkles, Download, ChevronDown, ChevronRight } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
@@ -54,7 +54,8 @@ export default function CHLogs({ refreshKey }: { refreshKey?: number }) {
   const { analyze } = useAIAnalysis(selectedInstance)
 
   const [inst, setInst] = useState(() => selectedInstance || instances[0] || '')
-  const [selectedLevel, setSelectedLevel] = useState<CHLevel | null>(null)
+  const [selectedLevels, setSelectedLevels] = useState<Set<CHLevel>>(new Set())
+  const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [minutes, setMinutes] = useState(60)
@@ -83,8 +84,11 @@ export default function CHLogs({ refreshKey }: { refreshKey?: number }) {
     setError(null)
     try {
       const effectiveLimit = limit === 0 ? 10000 : limit
-      const data = await api.chLogs(inst, selectedLevel ?? undefined, debouncedSearch || undefined, minutes, effectiveLimit)
+      // Backend supports a single level filter — pass the first selected level if any
+      const levelArg = selectedLevels.size > 0 ? [...selectedLevels][0] : undefined
+      const data = await api.chLogs(inst, levelArg, debouncedSearch || undefined, minutes, effectiveLimit)
       setLogs(data)
+      setExpanded(new Set())
       setLoadedAt(new Date())
     } catch (e: any) {
       setError(e.message)
@@ -92,7 +96,7 @@ export default function CHLogs({ refreshKey }: { refreshKey?: number }) {
     } finally {
       setLoading(false)
     }
-  }, [inst, selectedLevel, debouncedSearch, minutes, limit])
+  }, [inst, selectedLevels, debouncedSearch, minutes, limit])
 
   // Fetch when params change
   useEffect(() => { fetchLogs() }, [fetchLogs])
@@ -114,6 +118,34 @@ export default function CHLogs({ refreshKey }: { refreshKey?: number }) {
     return map
   }, [logs])
 
+  function downloadLogs() {
+    const blob = new Blob([logs.map(l => JSON.stringify(l)).join('\n')], { type: 'application/x-ndjson' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `ch-logs-${new Date().toISOString().slice(0, 19)}.ndjson`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  function toggleLevel(l: CHLevel) {
+    setSelectedLevels(prev => {
+      const next = new Set(prev)
+      if (next.has(l)) next.delete(l)
+      else next.add(l)
+      return next
+    })
+  }
+
+  function toggleExpand(i: number) {
+    setExpanded(prev => {
+      const next = new Set(prev)
+      if (next.has(i)) next.delete(i)
+      else next.add(i)
+      return next
+    })
+  }
+
   return (
     <div className="space-y-4">
       {/* Controls */}
@@ -128,13 +160,13 @@ export default function CHLogs({ refreshKey }: { refreshKey?: number }) {
           ))}
         </select>
 
-        {/* Level pills */}
+        {/* Level pills — multi-select */}
         <div className="flex rounded-lg border border-[var(--border)] overflow-hidden text-xs">
           <button
-            onClick={() => setSelectedLevel(null)}
+            onClick={() => setSelectedLevels(new Set())}
             className={cn(
               'px-3 py-1.5 font-medium border-r border-[var(--border)] transition-colors',
-              selectedLevel === null
+              selectedLevels.size === 0
                 ? 'bg-[var(--accent)]/15 text-[var(--accent)]'
                 : 'text-[var(--dim)] hover:bg-[var(--hover)]',
             )}
@@ -144,10 +176,10 @@ export default function CHLogs({ refreshKey }: { refreshKey?: number }) {
           {CH_LEVELS.map((l) => (
             <button
               key={l}
-              onClick={() => setSelectedLevel(selectedLevel === l ? null : l)}
+              onClick={() => toggleLevel(l)}
               className={cn(
                 'px-2.5 py-1.5 font-medium border-r border-[var(--border)] last:border-0 transition-colors',
-                selectedLevel === l
+                selectedLevels.has(l)
                   ? LEVEL_BG[l]
                   : 'text-[var(--dim)] hover:bg-[var(--hover)]',
               )}
@@ -206,7 +238,16 @@ export default function CHLogs({ refreshKey }: { refreshKey?: number }) {
           Refresh
         </button>
         <button
-          onClick={() => analyze('CH Logs', { logs, instance: inst, level: selectedLevel, search, timeWindow_minutes: minutes, stats }, { contextType: 'tab', tab: 'chlogs' })}
+          onClick={downloadLogs}
+          disabled={logs.length === 0}
+          className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--dim)] hover:text-[var(--fg)] hover:border-[var(--accent)] transition-colors disabled:opacity-50"
+          title="Download logs as NDJSON"
+        >
+          <Download size={14} />
+          Download
+        </button>
+        <button
+          onClick={() => analyze('CH Logs', { logs, instance: inst, levels: [...selectedLevels], search, timeWindow_minutes: minutes, stats }, { contextType: 'tab', tab: 'chlogs' })}
           disabled={logs.length === 0}
           className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium text-purple-400 hover:bg-purple-500/15 border border-purple-500/20 transition-colors disabled:opacity-30"
         >
@@ -264,25 +305,56 @@ export default function CHLogs({ refreshKey }: { refreshKey?: number }) {
           </div>
         ) : (
           <div className="divide-y divide-[var(--border)] font-mono text-xs max-h-[600px] overflow-y-auto">
-            {logs.map((entry, i) => (
-              <div key={i} className="flex items-start gap-2 px-4 py-1.5 hover:bg-[var(--hover)]">
-                <span className="text-[var(--dim)] shrink-0 w-36">{entry.event_time}</span>
-                <span className={cn('shrink-0 w-20', LEVEL_COLOR[entry.level] ?? 'text-gray-400')}>
-                  {entry.level}
-                </span>
-                <span className="text-[var(--accent)] shrink-0 max-w-32 truncate" title={entry.logger_name}>
-                  {entry.logger_name}
-                </span>
-                <span className="text-[var(--fg)] break-all flex-1 min-w-0">
-                  {highlightSearch(entry.message, debouncedSearch)}
-                </span>
-                {entry.query_id && (
-                  <span className="text-[var(--dim)] shrink-0 max-w-24 truncate" title={entry.query_id}>
-                    {entry.query_id}
-                  </span>
-                )}
-              </div>
-            ))}
+            {logs.map((entry, i) => {
+              const isExpanded = expanded.has(i)
+              // Collect all fields for the detail panel
+              const extraFields = Object.entries(entry).filter(([k]) => !['event_time', 'level', 'logger_name', 'message'].includes(k))
+              const hasExtra = extraFields.length > 0
+
+              return (
+                <div key={i}>
+                  <div
+                    className={cn('flex items-start gap-2 px-4 py-1.5 hover:bg-[var(--hover)]', hasExtra && 'cursor-pointer')}
+                    onClick={() => hasExtra && toggleExpand(i)}
+                  >
+                    {hasExtra ? (
+                      isExpanded
+                        ? <ChevronDown size={11} className="shrink-0 mt-0.5 text-[var(--dim)]" />
+                        : <ChevronRight size={11} className="shrink-0 mt-0.5 text-[var(--dim)]" />
+                    ) : (
+                      <span className="w-3 shrink-0" />
+                    )}
+                    <span className="text-[var(--dim)] shrink-0 w-36">{entry.event_time}</span>
+                    <span className={cn('shrink-0 w-20', LEVEL_COLOR[entry.level] ?? 'text-gray-400')}>
+                      {entry.level}
+                    </span>
+                    <span className="text-[var(--accent)] shrink-0 max-w-32 truncate" title={entry.logger_name}>
+                      {entry.logger_name}
+                    </span>
+                    <span className="text-[var(--fg)] break-all flex-1 min-w-0">
+                      {highlightSearch(entry.message, debouncedSearch)}
+                    </span>
+                    {entry.query_id && (
+                      <span className="text-[var(--dim)] shrink-0 max-w-24 truncate" title={entry.query_id}>
+                        {entry.query_id}
+                      </span>
+                    )}
+                  </div>
+                  {isExpanded && (
+                    <div className="px-4 pb-2 pl-12">
+                      <div className="rounded-lg bg-[var(--hover)] p-2.5 space-y-0.5">
+                        {extraFields.map(([k, v]) => (
+                          <div key={k} className="flex gap-2">
+                            <span className="text-[var(--dim)] shrink-0 min-w-[100px]">{k}</span>
+                            <span className="text-[var(--fg)] break-all">{String(v ?? '')}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
           </div>
         )}
       </div>

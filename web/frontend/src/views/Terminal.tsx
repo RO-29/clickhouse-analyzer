@@ -344,6 +344,12 @@ function StatementPane({ stmt, index, total }: StatementPaneProps) {
       {tab === 'table' ? (
         <div className="px-3 pb-3">
           <DataTable columns={tableCols} data={stmt.rows} maxHeight="340px" emptyText="No results" />
+          {stmt.rows.length > 0 && stmt.rows.length < stmt.row_count && (
+            <div className="mt-2 flex items-center gap-2 rounded-md bg-yellow-500/10 border border-yellow-500/20 px-3 py-2 text-xs text-yellow-400">
+              <svg className="shrink-0 w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" /></svg>
+              Showing first {stmt.rows.length.toLocaleString()} of {stmt.row_count.toLocaleString()} rows — results truncated at row limit
+            </div>
+          )}
         </div>
       ) : chartInfo ? (
         <div className="px-3 pb-3">
