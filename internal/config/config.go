@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -487,6 +488,11 @@ func (c *Config) Validate() error {
 	// Replication
 	if c.Thresholds.Replication.LagWarn.Duration >= c.Thresholds.Replication.LagCritical.Duration {
 		errs = append(errs, "replication: lag_warn must be less than lag_critical")
+	}
+
+	// Slack token format validation — warn on obviously wrong token prefixes.
+	if c.Slack.AppToken != "" && !strings.HasPrefix(c.Slack.AppToken, "xapp-") {
+		slog.Warn("slack.app_token should start with 'xapp-' for Socket Mode; got different prefix — check your config")
 	}
 
 	// Slack digest validation

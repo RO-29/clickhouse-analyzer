@@ -32,7 +32,11 @@ func (a *App) postOrUpdatePinned() {
 		}
 		a.pinnedTS = ts
 		if err := a.client.AddPin(a.cfg.ChannelID, slack.ItemRef{Channel: a.cfg.ChannelID, Timestamp: ts}); err != nil {
-			a.logger.Warn("failed to pin dashboard message", "error", err)
+			if strings.Contains(err.Error(), "missing_scope") {
+				a.logger.Error("slack bot token missing 'pins:write' scope — re-install app with pins:write scope to enable pinned dashboard", "error", err)
+			} else {
+				a.logger.Warn("failed to pin dashboard message", "error", err)
+			}
 		}
 		a.logger.Info("pinned dashboard posted", slog.String("ts", ts))
 		return
