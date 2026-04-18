@@ -62,6 +62,55 @@ func (s *Server) handleMaintenanceCreate(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusCreated, window)
 }
 
+// maintenanceUpdateRequest is the PUT body for editing a maintenance window.
+type maintenanceUpdateRequest struct {
+	Instance        string `json:"instance"`
+	Reason          string `json:"reason"`
+	DurationMinutes int    `json:"duration_minutes"` // if > 0, sets EndsAt = now + duration
+}
+
+// handleMaintenanceUpdate handles PUT /api/maintenance/{id}.
+func (s *Server) handleMaintenanceUpdate(w http.ResponseWriter, r *http.Request) {
+	if s.maintenance == nil {
+		writeErr(w, http.StatusServiceUnavailable, "maintenance store not available")
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" {
+		writeErr(w, http.StatusBadRequest, "id is required")
+		return
+	}
+
+	var req maintenanceUpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	var endsAt time.Time
+	if req.DurationMinutes > 0 {
+		endsAt = time.Now().Add(time.Duration(req.DurationMinutes) * time.Minute)
+	}
+
+	if !s.maintenance.Update(id, req.Instance, req.Reason, endsAt) {
+		writeErr(w, http.StatusNotFound, "maintenance window not found")
+		return
+	}
+
+	// Audit log — best-effort.
+	if err := s.store.LogAction(r.Context(), req.Instance, "maintenance_update", r.RemoteAddr, id); err != nil {
+		slog.Debug("audit log failed for maintenance_update", "err", err)
+	}
+
+	// Return the updated window list so the caller can refresh.
+	windows := s.maintenance.List()
+	if windows == nil {
+		windows = []*alerter.MaintenanceWindow{}
+	}
+	writeJSON(w, http.StatusOK, windows)
+}
+
 // handleMaintenanceDelete handles DELETE /api/maintenance/{id}.
 func (s *Server) handleMaintenanceDelete(w http.ResponseWriter, r *http.Request) {
 	if s.maintenance == nil {

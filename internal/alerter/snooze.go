@@ -11,13 +11,13 @@ import (
 
 // SnoozeEntry represents a snoozed alert rule.
 type SnoozeEntry struct {
-	ID        string    `json:"id"`
-	DedupKey  string    `json:"dedup_key"`  // e.g. "prod:queries:HighQueryDuration"
-	Instance  string    `json:"instance"`
-	Reason    string    `json:"reason"`
-	SnoozedBy string    `json:"snoozed_by"`
-	SnoozedAt time.Time `json:"snoozed_at"`
-	ExpiresAt time.Time `json:"expires_at"`
+	ID        string `json:"id"`
+	DedupKey  string `json:"dedup_key"`  // e.g. "prod:queries:HighQueryDuration"
+	Instance  string `json:"instance"`
+	Reason    string `json:"reason"`
+	SnoozedBy string `json:"snoozed_by"`
+	SnoozedAt int64  `json:"snoozed_at"` // unix epoch seconds
+	ExpiresAt int64  `json:"expires_at"` // unix epoch seconds
 }
 
 // SnoozeStore holds active snoozes in memory and optionally persists them to a
@@ -44,7 +44,7 @@ func NewSnoozeStore(persistPath string) *SnoozeStore {
 // Add creates a new snooze for the given dedupKey starting now and lasting dur.
 // Returns the newly created entry.
 func (ss *SnoozeStore) Add(dedupKey, instance, reason, snoozedBy string, dur time.Duration) *SnoozeEntry {
-	now := time.Now()
+	now := time.Now().UTC()
 	id := fmt.Sprintf("%d", now.UnixNano())
 	e := &SnoozeEntry{
 		ID:        id,
@@ -52,8 +52,8 @@ func (ss *SnoozeStore) Add(dedupKey, instance, reason, snoozedBy string, dur tim
 		Instance:  instance,
 		Reason:    reason,
 		SnoozedBy: snoozedBy,
-		SnoozedAt: now,
-		ExpiresAt: now.Add(dur),
+		SnoozedAt: now.Unix(),
+		ExpiresAt: now.Add(dur).Unix(),
 	}
 	ss.mu.Lock()
 	ss.snoozes[id] = e
@@ -65,14 +65,14 @@ func (ss *SnoozeStore) Add(dedupKey, instance, reason, snoozedBy string, dur tim
 // IsSnoozed returns true if there is an active (non-expired) snooze for the
 // given dedupKey. Expired entries are pruned as a side effect.
 func (ss *SnoozeStore) IsSnoozed(dedupKey string) bool {
-	now := time.Now()
+	nowSec := time.Now().UTC().Unix()
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 
 	// Prune expired entries while we hold the lock.
 	var expired []string
 	for id, e := range ss.snoozes {
-		if !e.ExpiresAt.After(now) {
+		if e.ExpiresAt <= nowSec {
 			expired = append(expired, id)
 		}
 	}
@@ -81,7 +81,7 @@ func (ss *SnoozeStore) IsSnoozed(dedupKey string) bool {
 	}
 
 	for _, e := range ss.snoozes {
-		if e.DedupKey == dedupKey && e.ExpiresAt.After(now) {
+		if e.DedupKey == dedupKey && e.ExpiresAt > nowSec {
 			return true
 		}
 	}
@@ -90,13 +90,13 @@ func (ss *SnoozeStore) IsSnoozed(dedupKey string) bool {
 
 // List returns all active (not yet expired) snooze entries.
 func (ss *SnoozeStore) List() []*SnoozeEntry {
-	now := time.Now()
+	nowSec := time.Now().UTC().Unix()
 	ss.mu.RLock()
 	defer ss.mu.RUnlock()
 
 	var out []*SnoozeEntry
 	for _, e := range ss.snoozes {
-		if e.ExpiresAt.After(now) {
+		if e.ExpiresAt > nowSec {
 			cp := *e
 			out = append(out, &cp)
 		}
@@ -121,12 +121,12 @@ func (ss *SnoozeStore) Delete(id string) bool {
 
 // Prune removes all expired snooze entries from the store.
 func (ss *SnoozeStore) Prune() {
-	now := time.Now()
+	nowSec := time.Now().UTC().Unix()
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 
 	for id, e := range ss.snoozes {
-		if !e.ExpiresAt.After(now) {
+		if e.ExpiresAt <= nowSec {
 			delete(ss.snoozes, id)
 		}
 	}
@@ -192,11 +192,11 @@ func (ss *SnoozeStore) loadFromFile() {
 		return
 	}
 
-	now := time.Now()
+	nowSec := time.Now().UTC().Unix()
 	loaded := 0
 	ss.mu.Lock()
 	for _, e := range entries {
-		if e.ExpiresAt.After(now) { // skip already-expired snoozes
+		if e.ExpiresAt > nowSec { // skip already-expired snoozes
 			ss.snoozes[e.ID] = e
 			loaded++
 		}

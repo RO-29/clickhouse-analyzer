@@ -210,7 +210,7 @@ func (a *App) submitMaintenance(payload slack.InteractionCallback) {
 	a.postEphemeral(channelID, payload.User.ID,
 		fmt.Sprintf("🔧  Maintenance window started for `%s` until %s.\nReason: %s",
 			instance,
-			win.EndsAt.UTC().Format("15:04 UTC"),
+			time.Unix(win.EndTime, 0).UTC().Format("15:04 UTC"),
 			reason,
 		))
 	go a.UpdatePinned()

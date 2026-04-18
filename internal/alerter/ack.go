@@ -13,12 +13,12 @@ import (
 // An ACK keeps the alert firing but suppresses notifications and
 // surfaces an "acked" indicator in the UI.
 type AckEntry struct {
-	ID       string    `json:"id"`
-	DedupKey string    `json:"dedup_key"`
-	Instance string    `json:"instance"`
-	Reason   string    `json:"reason"`
-	AckedBy  string    `json:"acked_by"`
-	AckedAt  time.Time `json:"acked_at"`
+	ID       string `json:"id"`
+	DedupKey string `json:"dedup_key"`
+	Instance string `json:"instance"`
+	Reason   string `json:"reason"`
+	AckedBy  string `json:"acked_by"`
+	AckedAt  int64  `json:"acked_at"` // unix epoch seconds
 }
 
 // AckStore holds acknowledged alerts in memory and optionally persists
@@ -44,7 +44,7 @@ func NewAckStore(persistPath string) *AckStore {
 
 // Add creates a new acknowledgment entry and persists it.
 func (as *AckStore) Add(dedupKey, instance, reason, ackedBy string) *AckEntry {
-	now := time.Now()
+	now := time.Now().UTC()
 	id := fmt.Sprintf("%d", now.UnixNano())
 	e := &AckEntry{
 		ID:       id,
@@ -52,7 +52,7 @@ func (as *AckStore) Add(dedupKey, instance, reason, ackedBy string) *AckEntry {
 		Instance: instance,
 		Reason:   reason,
 		AckedBy:  ackedBy,
-		AckedAt:  now,
+		AckedAt:  now.Unix(),
 	}
 	as.mu.Lock()
 	as.entries[id] = e

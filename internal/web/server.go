@@ -264,6 +264,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/auth/set-tokens", s.handleAuthSetTokens)
 	mux.HandleFunc("GET /api/maintenance", s.handleMaintenanceList)
 	mux.HandleFunc("POST /api/maintenance", s.handleMaintenanceCreate)
+	mux.HandleFunc("PUT /api/maintenance/{id}", s.handleMaintenanceUpdate)
 	mux.HandleFunc("DELETE /api/maintenance/{id}", s.handleMaintenanceDelete)
 	mux.HandleFunc("GET /api/alerts/snoozes", s.handleSnoozeList)
 	mux.HandleFunc("POST /api/alerts/snooze", s.handleSnoozeCreate)
@@ -465,7 +466,8 @@ func (s *Server) handleQueries(w http.ResponseWriter, r *http.Request) {
 			elapsed,
 			read_rows,
 			formatReadableSize(memory_usage) AS memory,
-			formatReadableSize(read_bytes) AS read_size
+			formatReadableSize(read_bytes) AS read_size,
+			query_kind
 		FROM system.processes
 		WHERE is_initial_query = 1
 		ORDER BY elapsed DESC
@@ -516,7 +518,7 @@ func (s *Server) handleKillQuery(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		slog.Warn("kill query", "err", err, "instance", instance, "query_id", body.QueryID)
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
@@ -876,7 +878,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		if s.maintenance != nil {
 			if win := s.maintenance.GetActiveWindow(name); win != nil {
 				summary.InMaintenance = true
-				summary.MaintenanceUntil = win.EndsAt.UTC().Format(time.RFC3339)
+				summary.MaintenanceUntil = time.Unix(win.EndTime, 0).UTC().Format(time.RFC3339)
 				summary.MaintenanceReason = win.Reason
 			}
 		}
@@ -898,8 +900,8 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 //	category string filter by category
 func (s *Server) handleAlertHistory(w http.ResponseWriter, r *http.Request) {
 	limit := parseIntParam(r, "limit", 500)
-	fromUnix := int64(parseIntParam(r, "from", 0))
-	toUnix := int64(parseIntParam(r, "to", 0))
+	fromUnix := parseInt64Param(r, "from", 0)
+	toUnix := parseInt64Param(r, "to", 0)
 	instanceFilter := r.URL.Query().Get("instance")
 	severityFilter := r.URL.Query().Get("severity")
 	categoryFilter := r.URL.Query().Get("category")
@@ -1093,7 +1095,7 @@ func (s *Server) handlePartsAge(w http.ResponseWriter, r *http.Request) {
 	rows, err := client.Query(ctx, sql)
 	if err != nil {
 		slog.Error("parts-age query failed", "instance", instance, "err", err)
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
@@ -1277,6 +1279,18 @@ func parseIntParam(r *http.Request, key string, defaultVal int) int {
 	return n
 }
 
+func parseInt64Param(r *http.Request, key string, defaultVal int64) int64 {
+	v := r.URL.Query().Get(key)
+	if v == "" {
+		return defaultVal
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n <= 0 {
+		return defaultVal
+	}
+	return n
+}
+
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -1353,7 +1367,8 @@ func (s *Server) handleResolveAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.ResolveAlert(body.DedupKey); err != nil {
-		writeErr(w, http.StatusInternalServerError, "resolve failed: "+err.Error())
+		slog.Warn("resolve alert failed", "err", err, "dedup_key", body.DedupKey)
+		writeErr(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	slog.Info("alert resolved via API", "dedup_key", body.DedupKey)
@@ -1374,7 +1389,8 @@ func (s *Server) handleResolveStale(w http.ResponseWriter, r *http.Request) {
 	}
 	resolved, err := s.store.BulkResolveStale(hours)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "resolve stale failed: "+err.Error())
+		slog.Warn("bulk resolve stale failed", "err", err, "hours", hours)
+		writeErr(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	slog.Info("bulk resolved stale alerts", "hours", hours, "count", resolved)
