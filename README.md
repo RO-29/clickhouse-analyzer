@@ -1,6 +1,6 @@
 # ch-analyzer
 
-A lightweight, self-hosted ClickHouse monitoring and alerting tool. Polls multiple CH instances every minute, stores metrics back into ClickHouse itself, sends Slack alerts, and serves a React dashboard — all in a single Go binary.
+A self-hosted ClickHouse monitoring and alerting tool. Polls multiple CH instances every minute, stores metrics back into ClickHouse itself, sends Slack alerts, and serves a React dashboard — all in a single Go binary.
 
 ## Features
 
@@ -12,9 +12,21 @@ A lightweight, self-hosted ClickHouse monitoring and alerting tool. Polls multip
 | Queries | Long-running queries (>1m), failed queries, query storms, full-table scans |
 | Tables | Active parts per table/partition, merge throughput, stuck/slow mutations |
 | Storage | Disk usage per tier, S3 read latency, S3 concurrency contention, tier movement |
-| Inserts | Insert throughput drops, small-insert anti-pattern detection |
+| Inserts | Insert throughput drops, small-insert anti-pattern, insert exception tracking |
+| Async Inserts | Async insert queue depth, error rate, flush failures |
+| Errors | Exception rates by code, fatal errors from system.crash_log |
+| Replication | Per-table replica status, absolute delay, readonly replicas, queue backlog |
+| Background Pool | Background merge/fetch pool utilization, saturation warnings |
+| Cache Health | Mark cache, uncompressed cache, query cache hit rates |
 | MVs | Materialized view lag, failures, bloat, chained MV breakage |
 | Dictionaries | Reload failures, stale dictionaries |
+| Projections | Projection part counts, coverage analysis |
+| TTL | Tables with TTL enabled but not deleting, TTL reclaim rates |
+| Parts Age | Oldest part age per table, age distribution anomalies |
+| Keeper | ClickHouse Keeper health, latency, leader election, session timeouts |
+| Freshness | Data freshness gaps — tables that stopped receiving inserts |
+| Schema Drift | Schema differences between replicas on the same table |
+| Slow Query Fingerprint | Fingerprint-based slow query detection with regression factor |
 | K8s | OOMKills, pod restarts, resource limits vs actual (optional, in-cluster only) |
 
 **Analyzer** — cross-collector signal correlation:
@@ -22,21 +34,35 @@ A lightweight, self-hosted ClickHouse monitoring and alerting tool. Polls multip
 - Sustained-elevation detection across consecutive poll cycles
 - Cross-collector rules: OOM risk (high memory + many queries), merge overload, S3 contention
 
-**Alerting**:
-- Slack bot with configurable severity routing: critical → immediate, warn → batched 5m, info → digest only
-- 15-minute dedup window, "all clear" resolution messages
-- Daily and weekly Slack digests with per-instance health scores
+**Alert System**:
+- 20+ alert categories with `fire_count` tracking and `first_seen_at`
+- Every alert type ships with a plain-English playbook: what it means, why it fires, and named SQL investigation queries pre-populated with the alert's time window
+- Snooze with expiry (default 24h), acknowledge with reason
+- Alert inhibition: CPU spike suppresses query slowdown alerts; disk critical suppresses disk warn
+- Escalation: sustained warn → critical after configurable consecutive polls
+- Maintenance windows: suppress all alerts for a specific instance or globally
+- Slack notifications: immediate (critical), batched 5m (warn), digest only (info)
 
-**Dashboard** (React + Tailwind, no auth required):
-- Overview with per-node health score cards and triage view
+**Dashboard** (React + Tailwind):
+- Overview with per-node health score cards and triage NodeCard view
 - Per-instance detail: metrics history charts, running queries, top tables
-- Alerts page with active/resolved history
-- Query Analyzer: normalized query patterns ranked by impact
+- Alerts page: active/resolved history, snooze and acknowledge actions, playbook drawer
+- Query Analyzer: patterns, samples, live queries, users, anti-patterns, failures, S3 latency, merges, disk I/O
+- Table Scanner: multi-instance table search by pattern, engine, or size
+- Cost Explorer: storage breakdown by table/tier with monthly cost estimates
+- Compare: DDL, settings, metrics, and query patterns across instances
+- AI Analyzer (Chat): conversational analysis, context-aware per view, agentic tool use
+- Feature Guide (formerly Discover): onboarding reference for all views
 - Advisor: remediation suggestions per alert category (customizable via YAML)
-- Schema Explorer and Compare views
-- Live app logs and terminal passthrough
+- Run Checks: on-demand collector execution for spot diagnostics
 
-**Storage**: metrics stored back into `ch_analyzer` database on every monitored instance — no external TSDB needed. 1-year TTL enforced via ClickHouse TTL rules.
+**Slack App** (Socket Mode — no public HTTP endpoint required):
+- Pinned dashboard message with live health scores updated every poll
+- Alert notifications with inline Resolve / Snooze / Details buttons
+- Slash commands: `/status`, `/alerts`, `/runcheck <collector> <instance>`
+- Per-instance channel routing: route critical alerts from prod to a dedicated channel
+
+**Storage**: metrics stored back into `ch_analyzer` database on every monitored instance — no external TSDB needed.
 
 **Optional**: Prometheus `/metrics` endpoint.
 
@@ -46,18 +72,26 @@ A lightweight, self-hosted ClickHouse monitoring and alerting tool. Polls multip
 
 ### 1. Create monitoring user on each CH instance
 
-Run `setup.sh` (edit credentials at the top first), or manually:
-
 ```sql
 CREATE USER IF NOT EXISTS monitoring IDENTIFIED BY 'your_password';
 GRANT SELECT ON system.* TO monitoring;
-GRANT SELECT ON your_database.* TO monitoring;
+GRANT SELECT ON *.* TO monitoring;
 GRANT SELECT, INSERT ON ch_analyzer.* TO monitoring;
 ```
 
-The `ch_analyzer` database and tables are created automatically on first run.
+### 2. Run the schema
 
-### 2. Configure
+The `ch_analyzer` database and tables are **not** created automatically. Run the schema first:
+
+```bash
+clickhouse-client --host your-host --port 8443 --secure \
+  --user admin --password your_password \
+  --multiquery < schema.sql
+```
+
+Or just run `./setup.sh` (edit the credentials at the top first) — it handles the user, schema, binary install, and systemd service in one shot.
+
+### 3. Configure
 
 ```bash
 cp configs/ch-analyzer.yaml /etc/ch-analyzer/config.yaml
@@ -81,13 +115,13 @@ slack:
   channel_id: "C0XXXXXXXXX"
 ```
 
-### 3. Run
+### 4. Run
 
 **Binary + systemd (recommended):**
 
 ```bash
 make build-linux
-sudo ./setup.sh            # creates user, tables, installs binary + service
+sudo ./setup.sh            # creates user, schema, installs binary + service
 sudo systemctl enable --now ch-analyzer
 sudo journalctl -u ch-analyzer -f
 ```
@@ -136,7 +170,7 @@ thresholds:
 
   queries:
     long_running_threshold: "1m"
-    max_concurrent: 100             # Critical
+    max_concurrent: 100
     warn_concurrent: 50
 
   parts:
@@ -171,6 +205,29 @@ thresholds:
 
   dictionaries:
     reload_fail_threshold: 3
+
+  replication:
+    lag_warn: "30s"
+    lag_critical: "2m"
+
+  background_pool:
+    warn_percent: 80
+    critical_percent: 95
+
+  cache_health:
+    mark_hit_rate_warn_percent: 70
+    mark_hit_rate_critical_percent: 50
+    min_queries_for_alert: 100
+
+  query_latency:
+    spike_warn_multiplier: 2.0
+    spike_critical_multiplier: 5.0
+    min_baseline_ms: 100
+    min_query_count: 10
+
+  freshness:
+    gap_minutes: 60
+    min_daily_inserts: 10
 
 slack:
   bot_token: "xoxb-..."
@@ -216,6 +273,25 @@ memory:
 
 ---
 
+## Schema
+
+Six tables in the `ch_analyzer` database. **These must be created before starting ch-analyzer** — run `schema.sql` manually or via `setup.sh`.
+
+| Table | Engine | Purpose |
+|-------|--------|---------|
+| `metrics` | MergeTree | All collected metric values, 1-year TTL |
+| `alerts` | ReplacingMergeTree | Alert history with dedup, snooze, ack, fire_count |
+| `digest_snapshots` | MergeTree | Daily/weekly digest state |
+| `health_snapshots` | MergeTree | Per-poll instance health summaries, 30-day TTL |
+| `audit_log` | MergeTree | All mutations: alert resolutions, snooze, maintenance, 90-day TTL |
+| `query_samples` | MergeTree | Per-query samples with full SQL and execution stats, 30-day TTL |
+
+Each instance stores only its own data — no single bottleneck, no cross-instance writes.
+
+All alert resolutions, snoozes, acknowledges, and maintenance window changes are recorded in `ch_analyzer.audit_log`.
+
+---
+
 ## Building
 
 ```bash
@@ -245,20 +321,6 @@ Set `k8s.enabled: true` in config only when the binary runs inside the cluster (
 
 ---
 
-## Schema
-
-Three tables created automatically in the `ch_analyzer` database on every monitored instance:
-
-| Table | Engine | Purpose |
-|-------|--------|---------|
-| `metrics` | MergeTree | All collected metric values, 1-year TTL |
-| `alerts` | ReplacingMergeTree | Alert history with dedup and resolution tracking |
-| `digest_snapshots` | MergeTree | Daily/weekly digest state |
-
-Each instance stores only its own data — no single bottleneck, no cross-instance writes.
-
----
-
 ## Grafana
 
 `deploy/grafana-dashboard.json` is an importable Grafana dashboard that reads from the `ch_analyzer` tables if you want to overlay ch-analyzer metrics alongside your existing Grafana setup.
@@ -270,4 +332,4 @@ Each instance stores only its own data — no single bottleneck, no cross-instan
 - Go 1.23+
 - Node 22+ (for frontend builds)
 - ClickHouse 22.x+ on monitored instances
-- `clickhouse-client` in PATH (for `setup.sh` and audit script only)
+- `clickhouse-client` in PATH (for `setup.sh` only)
