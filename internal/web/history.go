@@ -891,7 +891,7 @@ func (s *Server) handleHistoryAsyncMetrics(w http.ResponseWriter, r *http.Reques
 	for _, m := range metricNames {
 		m = strings.TrimSpace(m)
 		if m != "" {
-			quoted = append(quoted, fmt.Sprintf("'%s'", m))
+			quoted = append(quoted, fmt.Sprintf("'%s'", sqlSafeStr(m)))
 		}
 	}
 	if len(quoted) == 0 {
