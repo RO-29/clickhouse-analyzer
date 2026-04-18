@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { ChevronDown, ChevronRight, Play, AlertTriangle, Zap, Search, Sparkles, HelpCircle } from 'lucide-react'
+import { ChevronDown, ChevronRight, Play, AlertTriangle, Zap, Search, Sparkles, HelpCircle, Copy, Check } from 'lucide-react'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
@@ -125,6 +125,30 @@ function FixButton({ sql, instance }: { sql: string; instance: string }) {
     >
       <Play size={10} />
       Fix
+    </button>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/*  Copy SQL button                                                   */
+/* ------------------------------------------------------------------ */
+function CopySqlButton({ sql }: { sql: string }) {
+  const [copied, setCopied] = useState(false)
+  const handleCopy = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    navigator.clipboard.writeText(sql).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    })
+  }
+  return (
+    <button
+      title="Copy SQL"
+      onClick={handleCopy}
+      className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium text-[var(--dim)] hover:text-[var(--fg)] hover:bg-[var(--hover)] transition-colors"
+    >
+      {copied ? <Check size={10} className="text-green-400" /> : <Copy size={10} />}
+      {copied ? 'Copied' : 'Copy'}
     </button>
   )
 }
@@ -435,7 +459,7 @@ export default function Advisor() {
                 {
                   key: 'fix_sql',
                   label: '',
-                  format: (v: any) => v ? <FixButton sql={v} instance={inst} /> : null,
+                  format: (v: any) => v ? <span className="inline-flex items-center gap-1"><FixButton sql={v} instance={inst} /><CopySqlButton sql={v} /></span> : null,
                 },
               ]}
               data={limitRows('compression', [...compression.data].sort((a: any, b: any) => {
@@ -691,7 +715,7 @@ export default function Advisor() {
                 {
                   key: '_drop',
                   label: '',
-                  format: (v: any) => v ? <FixButton sql={v} instance={inst} /> : null,
+                  format: (v: any) => v ? <span className="inline-flex items-center gap-1"><FixButton sql={v} instance={inst} /><CopySqlButton sql={v} /></span> : null,
                 },
               ]}
               data={limitRows('unusedTables', unusedTables.data.map((r: any) => ({
@@ -834,7 +858,7 @@ export default function Advisor() {
                 {
                   key: '_fix',
                   label: '',
-                  format: (v: any) => v ? <FixButton sql={v} instance={inst} /> : null,
+                  format: (v: any) => v ? <span className="inline-flex items-center gap-1"><FixButton sql={v} instance={inst} /><CopySqlButton sql={v} /></span> : null,
                 },
               ]}
               data={limitRows('cardinality', cardinality.data.map((r: any) => ({
@@ -1076,7 +1100,7 @@ export default function Advisor() {
                         {
                           key: 'fix_hint',
                           label: '',
-                          format: (v: any) => v ? <FixButton sql={v} instance={inst} /> : null,
+                          format: (v: any) => v ? <span className="inline-flex items-center gap-1"><FixButton sql={v} instance={inst} /><CopySqlButton sql={v} /></span> : null,
                         },
                       ]}
                       data={limitRows(`tap_${group.type}`, group.tables.map((t: any) => ({ ...t, severity: group.severity })))}

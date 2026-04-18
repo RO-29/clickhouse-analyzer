@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { Play, History, X, Loader2, Download, BarChart2, ScatterChart, PieChart, LineChart, LayoutGrid, Plus, Columns2, ChevronDown, Bookmark, BookmarkPlus } from 'lucide-react'
+import { Play, History, X, Loader2, Download, BarChart2, ScatterChart, PieChart, LineChart, LayoutGrid, Plus, Columns2, ChevronDown, Bookmark, BookmarkPlus, StopCircle } from 'lucide-react'
 import { Line, Bar, Doughnut, Scatter } from 'react-chartjs-2'
 import {
   Chart as ChartJS,
@@ -454,6 +454,8 @@ export default function Terminal() {
   const compareRef = useRef<HTMLDivElement>(null)
   const editorRef = useRef<SqlEditorHandle>(null)
 
+  const abortControllerRef = useRef<AbortController | null>(null)
+
   const [bookmarks, setBookmarks] = useState<BookmarkEntry[]>(() => {
     try { return JSON.parse(localStorage.getItem('ch-terminal-bookmarks') ?? '[]') } catch { return [] }
   })
@@ -549,8 +551,31 @@ export default function Terminal() {
     return () => { cancelled = true }
   }, [inst])
 
+  const abortQuery = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+      abortControllerRef.current = null
+    }
+    setRunning(false)
+    setNodeResults(prev => {
+      const next = { ...prev }
+      for (const key of Object.keys(next)) {
+        if (next[key].loading) {
+          next[key] = { result: null, error: 'Query cancelled', loading: false }
+        }
+      }
+      return next
+    })
+  }, [])
+
   const execute = useCallback(async () => {
     if (!query.trim() || allInstances.length === 0) return
+
+    // Abort any in-flight request
+    if (abortControllerRef.current) abortControllerRef.current.abort()
+    const controller = new AbortController()
+    abortControllerRef.current = controller
+
     setRunning(true)
     setExecTime(null)
 
@@ -563,14 +588,17 @@ export default function Terminal() {
     const queryText = query.trim()
     const results = await Promise.all(allInstances.map(async (i) => {
       try {
-        const res = await api.terminal.execute(i, queryText, maxRows)
+        const res = await api.terminal.execute(i, queryText, maxRows, controller.signal)
         setNodeResults(prev => ({ ...prev, [i]: { result: res, error: null, loading: false } }))
         return res
       } catch (e: any) {
+        if (e?.name === 'AbortError') return null
         setNodeResults(prev => ({ ...prev, [i]: { result: null, error: e.message ?? 'Request failed', loading: false } }))
         return null
       }
     }))
+
+    if (controller.signal.aborted) return
 
     // Push to in-memory query history on any success
     const firstSuccess = results.find(r => r !== null)
@@ -583,6 +611,7 @@ export default function Terminal() {
 
     setExecTime(new Date())
     setRunning(false)
+    abortControllerRef.current = null
   }, [query, allInstances, maxRows])
 
   useEffect(() => {
@@ -741,6 +770,16 @@ export default function Terminal() {
             {running ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
             {isSplit ? `Run on ${allInstances.length} nodes` : 'Run'}
           </button>
+          {running && (
+            <button
+              onClick={abortQuery}
+              className="inline-flex items-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium border border-red-500/40 text-red-400 hover:bg-red-500/10 transition-colors"
+              title="Cancel running query"
+            >
+              <StopCircle size={14} />
+              Abort
+            </button>
+          )}
           <span className="text-xs text-[var(--dim)]">Ctrl+Enter to run · Ctrl+L to clear</span>
           <div className="ml-auto flex items-center gap-3">
             {query.trim() && (

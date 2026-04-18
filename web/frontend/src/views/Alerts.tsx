@@ -74,12 +74,12 @@ function isStale(a: Alert, staleHours: number): boolean {
 
 function isSnoozed(dedupKey: string, snoozed: Record<string, number>): boolean {
   const exp = snoozed[dedupKey]
-  return exp != null && exp > Date.now() / 1000
+  return exp != null && exp * 1000 > Date.now()
 }
 
 function snoozeUntil(dedupKey: string, snoozed: Record<string, number>): number | null {
   const exp = snoozed[dedupKey]
-  return exp != null && exp > Date.now() / 1000 ? exp : null
+  return exp != null && exp * 1000 > Date.now() ? exp : null
 }
 
 function isAcked(dedupKey: string, acked: Record<string, any>): boolean {
@@ -605,6 +605,10 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null)
   const [cursorIdx, setCursorIdx] = useState(-1)
   const rowRefs = useRef<(HTMLDivElement | null)[]>([])
+  // Keep a ref to selectedInstance so the auto-refresh effect always reads the
+  // current value at fetch time, not a stale closure capture.
+  const selectedInstanceRef = useRef(selectedInstance)
+  useEffect(() => { selectedInstanceRef.current = selectedInstance }, [selectedInstance])
   const { analyze } = useAIAnalysis(selectedInstance)
   const handleAnalyzeAlert = useCallback((alert: Alert) => {
     analyze(`Alert: ${alert.title}`, { row: alert }, { contextType: 'row', tab: 'alerts', elementId: String(alert.id) })
@@ -713,10 +717,10 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
   const refreshSnoozeAck = useCallback(async () => {
     try {
       const [snoozes, acks] = await Promise.all([api.snooze.list(), api.ack.list()])
-      const now = Date.now() / 1000
+      const nowMs = Date.now()
       const snoozedMap: Record<string, number> = {}
       for (const s of snoozes) {
-        if (s.expires_at > now) snoozedMap[s.dedup_key] = s.expires_at
+        if (s.expires_at * 1000 > nowMs) snoozedMap[s.dedup_key] = s.expires_at
       }
       setSnoozed(snoozedMap)
       const ackedMap: Record<string, any> = {}
@@ -750,13 +754,19 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
     if (resolvingRef.current) return
     let cancelled = false
     async function load() {
+      // Read selectedInstance from the ref so we always use the current value
+      // even if the effect closure was created before the instance changed.
+      const inst = selectedInstanceRef.current
       if (isFirstLoad.current) {
         setLoading(true)
       } else {
         setRefreshing(true)
       }
       try {
-        const [active, history] = await Promise.all([api.alerts.active(), api.alerts.history()])
+        const [active, history] = await Promise.all([
+          api.alerts.active(),
+          api.alerts.history(inst ? { instance: inst } : undefined),
+        ])
         if (!cancelled) { setActiveAlerts(active); setHistoryAlerts(history); setLoadError(null); setLastRefreshed(new Date()) }
       } catch (e: any) {
         if (!cancelled) setLoadError(e?.message ?? 'Failed to load alerts')
@@ -770,7 +780,7 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
     }
     load()
     return () => { cancelled = true }
-  }, [customFrom, customTo, refreshKey, manualTick])
+  }, [customFrom, customTo, refreshKey, manualTick, selectedInstance])
 
   const allAlerts = useMemo(() => {
     const map = new Map<number, Alert>()

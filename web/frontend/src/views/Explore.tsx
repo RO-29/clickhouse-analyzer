@@ -1377,6 +1377,9 @@ function LiveTab({ instance, onShowQuery }: { instance: string; onShowQuery: (q:
   const [killing, setKilling] = useState(false)
   const [killError, setKillError] = useState<string | null>(null)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  // loadedAt + snapshot elapsed so we can tick live
+  const loadedAtRef = useRef<number>(Date.now())
+  const [tick, setTick] = useState(0)
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => { if (e.key === 'Escape' && killTarget) { setKillTarget(null); setKillError(null) } }
@@ -1386,7 +1389,11 @@ function LiveTab({ instance, onShowQuery }: { instance: string; onShowQuery: (q:
 
   const load = useCallback(() => {
     api.queries(instance)
-      .then(d => { setRows(Array.isArray(d) ? d : []); setError(null) })
+      .then(d => {
+        loadedAtRef.current = Date.now()
+        setRows(Array.isArray(d) ? d : [])
+        setError(null)
+      })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false))
   }, [instance])
@@ -1397,6 +1404,12 @@ function LiveTab({ instance, onShowQuery }: { instance: string; onShowQuery: (q:
     intervalRef.current = setInterval(load, 5000)
     return () => { if (intervalRef.current) clearInterval(intervalRef.current) }
   }, [load])
+
+  // Tick every second so elapsed time updates live between data refreshes
+  useEffect(() => {
+    const id = setInterval(() => setTick(t => t + 1), 1000)
+    return () => clearInterval(id)
+  }, [])
 
   const handleKill = async () => {
     if (!killTarget) return
@@ -1413,20 +1426,30 @@ function LiveTab({ instance, onShowQuery }: { instance: string; onShowQuery: (q:
     }
   }
 
+  // Compute live elapsed: base value from last fetch + seconds since fetch
+  const liveElapsed = (snapshotSec: any) => {
+    const base = Number(snapshotSec) || 0
+    const driftSec = (Date.now() - loadedAtRef.current) / 1000
+    return base + driftSec
+  }
+
   const elapsed = (v: any) => {
-    const s = Number(v) || 0
+    const s = liveElapsed(v)
     if (s >= 3600) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`
     if (s >= 60) return `${Math.floor(s / 60)}m ${Math.floor(s % 60)}s`
-    return `${s.toFixed(1)}s`
+    return `${s.toFixed(0)}s`
   }
 
   const elapsedColor = (v: any) => {
-    const s = Number(v) || 0
+    const s = liveElapsed(v)
     if (s > 300) return 'text-red-400 font-semibold'
     if (s > 60) return 'text-orange-400'
     if (s > 10) return 'text-yellow-400'
     return 'text-[var(--fg)]'
   }
+
+  // Suppress unused-variable warning for tick (it drives re-renders)
+  void tick
 
   return (
     <div className="space-y-3">

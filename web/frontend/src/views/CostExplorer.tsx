@@ -394,9 +394,12 @@ export default function CostExplorer() {
   const { selectedInstance, instances } = useStore()
   const [instance, setInstance] = useState(() => selectedInstance || '')
 
+  // Sync when selectedInstance changes (e.g. user picks a different instance in the sidebar)
   useEffect(() => {
-    if (!instance && (selectedInstance || instances[0])) {
-      setInstance(selectedInstance || instances[0])
+    if (selectedInstance) {
+      setInstance(selectedInstance)
+    } else if (!instance && instances[0]) {
+      setInstance(instances[0])
     }
   }, [selectedInstance, instances]) // eslint-disable-line react-hooks/exhaustive-deps
 

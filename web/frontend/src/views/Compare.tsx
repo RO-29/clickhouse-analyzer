@@ -1353,23 +1353,30 @@ function MetricsView({ baseline, instances, onAnalyze }: { baseline: string; ins
             value: m.values?.[inst] ?? 0,
             color: BAR_COLORS[i % BAR_COLORS.length],
           }))
+          const allZero = chartData.every(d => d.value === 0)
           return (
             <Card key={idx} title={m.name}>
-              <div style={{ height: Math.max(80, orderedInsts.length * 36) }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={chartData} layout="vertical" margin={{ top: 4, right: 12, bottom: 4, left: 4 }}>
-                    <XAxis type="number" tick={{ fill: '#64748b', fontSize: 10 }} tickFormatter={(v) => isBytesUnit ? fmtBytes(Number(v)) : fmtNum(Number(v))} axisLine={false} tickLine={false} />
-                    <YAxis type="category" dataKey="name" tick={{ fill: '#94a3b8', fontSize: 11 }} width={80} axisLine={false} tickLine={false} />
-                    <RTooltip
-                      contentStyle={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 11 }}
-                      formatter={(v: any) => [isBytesUnit ? fmtBytes(Number(v)) : fmtNum(Number(v)), m.name]}
-                    />
-                    <Bar dataKey="value" radius={[0, 3, 3, 0]}>
-                      {chartData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
+              {allZero ? (
+                <div className="flex items-center justify-center text-xs text-[var(--dim)] py-6">
+                  No data for the selected time range
+                </div>
+              ) : (
+                <div style={{ height: Math.max(80, orderedInsts.length * 36) }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={chartData} layout="vertical" margin={{ top: 4, right: 12, bottom: 4, left: 4 }}>
+                      <XAxis type="number" tick={{ fill: '#64748b', fontSize: 10 }} tickFormatter={(v) => isBytesUnit ? fmtBytes(Number(v)) : fmtNum(Number(v))} axisLine={false} tickLine={false} />
+                      <YAxis type="category" dataKey="name" tick={{ fill: '#94a3b8', fontSize: 11 }} width={80} axisLine={false} tickLine={false} />
+                      <RTooltip
+                        contentStyle={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 11 }}
+                        formatter={(v: any) => [isBytesUnit ? fmtBytes(Number(v)) : fmtNum(Number(v)), m.name]}
+                      />
+                      <Bar dataKey="value" radius={[0, 3, 3, 0]}>
+                        {chartData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
             </Card>
           )
         })}

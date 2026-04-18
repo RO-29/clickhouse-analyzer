@@ -82,6 +82,20 @@ async function post<T>(path: string, body: any): Promise<T> {
   return r.json()
 }
 
+async function postWithSignal<T>(path: string, body: any, signal?: AbortSignal): Promise<T> {
+  const r = await fetch(BASE + path, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: signal ?? AbortSignal.timeout(30_000),
+  })
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`
+    try { const j = await r.json(); if (j?.error) msg = j.error } catch {}
+    throw new Error(msg)
+  }
+  return r.json()
+}
+
 export const api = {
   overview: () => get<Instance[]>('/api/overview'),
   instances: () => get<Instance[]>('/api/instances'),
@@ -116,8 +130,8 @@ export const api = {
     get<S3LatencyByTableRow[]>(`/api/instances/${inst}/s3-latency-by-table?from=${from}&to=${to}`),
   suggestions: (category: string) => get<Suggestion>(`/api/suggestions/${category}`),
   terminal: {
-    execute: (instance: string, query: string, limit = 1000) =>
-      post<QueryResult>('/api/query', { instance, query, limit }),
+    execute: (instance: string, query: string, limit = 1000, signal?: AbortSignal) =>
+      postWithSignal<QueryResult>('/api/query', { instance, query, limit }, signal),
     history: () => get<QueryHistoryEntry[]>('/api/query/history'),
   },
   history: {
