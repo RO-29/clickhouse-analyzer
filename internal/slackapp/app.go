@@ -62,8 +62,9 @@ func New(cfg config.SlackConfig, webAddr string, alertMgr *alerter.AlertManager,
 
 	if cfg.SigningSecret == "" {
 		app.logger.Warn("slack signing_secret is not configured; " +
-			"HTTP-based Slack endpoints will not verify request signatures — " +
-			"set slack.signing_secret in your config to enable verification")
+			"VerifyMiddleware (verify.go) is available for HTTP webhook endpoints " +
+			"but will pass all requests through without signature verification — " +
+			"set slack.signing_secret in your config if you add HTTP-based endpoints")
 	}
 
 	return app

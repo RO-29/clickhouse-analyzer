@@ -1,3 +1,14 @@
+// Package slackapp — HTTP signature verification middleware.
+//
+// This file is NOT wired into the current Socket Mode (WebSocket) flow.
+// Socket Mode authenticates via the app-level token over a WebSocket connection,
+// so there are no inbound HTTP requests from Slack to verify right now.
+//
+// VerifyMiddleware is kept here as ready-to-use infrastructure for future
+// HTTP-based Slack endpoints (e.g. a /slack/events or /slack/interactive
+// webhook receiver). Wire it with:
+//
+//	mux.Handle("/slack/events", slackapp.VerifyMiddleware(cfg.SigningSecret, yourHandler))
 package slackapp
 
 import (
@@ -11,6 +22,10 @@ import (
 
 // VerifyMiddleware returns an http.Handler that validates the Slack request
 // signature on every incoming request before delegating to next.
+//
+// NOTE: This middleware is not currently used — the app runs in Socket Mode
+// (WebSocket) which does not receive inbound HTTP requests from Slack.
+// It is available for future HTTP webhook endpoints.
 //
 // Slack signs each HTTP request it sends using HMAC-SHA256 over a string of
 // the form "v0:{timestamp}:{body}" keyed with the app's Signing Secret. This
