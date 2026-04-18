@@ -367,6 +367,10 @@ func main() {
 	}
 
 	// Schedule runner: every 30 s check if any schedule is due and run its collector.
+	// inFlightSchedules tracks which schedule IDs are currently running so that a
+	// slow collector (e.g. a 90-second CH query) does not get re-launched on the
+	// next 30-second tick, preventing goroutine pile-up.
+	var inFlightSchedules sync.Map
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
@@ -378,7 +382,16 @@ func main() {
 				due := scheduleStore.Due()
 				for _, sched := range due {
 					sched := sched // capture
+					// Skip if a previous run for this schedule is still in progress.
+					if _, loaded := inFlightSchedules.LoadOrStore(sched.ID, struct{}{}); loaded {
+						slog.Warn("schedule: previous run still in progress, skipping tick",
+							"schedule", sched.ID,
+							"collector", sched.CollectorName,
+							"instance", sched.Instance)
+						continue
+					}
 					go func() {
+						defer inFlightSchedules.Delete(sched.ID)
 						client := clientMgr.Get(sched.Instance)
 						if client == nil {
 							slog.Warn("schedule: instance not found, skipping", "schedule", sched.ID, "instance", sched.Instance)

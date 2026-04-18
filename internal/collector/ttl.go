@@ -104,7 +104,11 @@ func (c *TTLCollector) Collect(ctx context.Context, client *chclient.Client) (*C
 
 	ttlRows, err2 := client.Query(ctx, ttlTableSQL)
 	if err2 != nil {
-		// ttl_expression column missing on older CH or JOIN fails — skip silently.
+		// ttl_expression column was added in ClickHouse 23.x; on older versions
+		// (or if the JOIN fails for another reason) we log a warning so operators
+		// are aware rather than silently getting no TTL data.
+		c.logger().Warn("ttl: skipping stale-TTL check — query failed (requires CH 23.x+)",
+			slog.String("error", err2.Error()))
 		result.Duration = time.Since(start)
 		return result, nil
 	}
