@@ -26,6 +26,7 @@ import ThresholdEditor from './views/ThresholdEditor'
 import { TableDetail } from './components/TableDetail'
 import { AIAnalysisPanel } from './components/AIAnalysisPanel'
 import { NotificationToasts } from './components/NotificationToasts'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { useAIAnalysis, PANEL_EXPANDED_HEIGHT, PANEL_COLLAPSED_HEIGHT } from './hooks/useAIAnalysis'
 import { cn } from './lib/utils'
 import { api } from './lib/api'
@@ -103,13 +104,26 @@ function Layout() {
     if (view === 'analyzer') setAnalyzerMounted(true)
   }, [view])
 
-  // Auto-refresh
+  // Auto-refresh — only tick when the browser tab is visible
   useEffect(() => {
     if (intervalRef.current) clearInterval(intervalRef.current)
     if (refreshInterval > 0) {
-      intervalRef.current = window.setInterval(() => setTick(t => t + 1), refreshInterval * 1000)
+      intervalRef.current = window.setInterval(() => {
+        if (document.visibilityState === 'visible') setTick(t => t + 1)
+      }, refreshInterval * 1000)
     }
     return () => { if (intervalRef.current) clearInterval(intervalRef.current) }
+  }, [refreshInterval])
+
+  // When the tab becomes visible again, fire an immediate tick so data isn't stale
+  useEffect(() => {
+    const handler = () => {
+      if (document.visibilityState === 'visible' && refreshInterval > 0) {
+        setTick(t => t + 1)
+      }
+    }
+    document.addEventListener('visibilitychange', handler)
+    return () => document.removeEventListener('visibilitychange', handler)
   }, [refreshInterval])
 
   const views: Record<string, React.ReactNode> = {
@@ -147,11 +161,17 @@ function Layout() {
           {/* Chat Analyzer: mount once and keep alive (hidden when inactive) to preserve session */}
           {analyzerMounted && (
             <div className={cn('flex-1 flex flex-col min-h-0 overflow-hidden', view !== 'analyzer' && 'hidden')}>
-              <ChatAnalyzer />
+              <ErrorBoundary>
+                <ChatAnalyzer />
+              </ErrorBoundary>
             </div>
           )}
           {/* All other views */}
-          {view !== 'analyzer' && (views[view] || <Overview />)}
+          {view !== 'analyzer' && (
+            <ErrorBoundary>
+              {views[view] || <Overview />}
+            </ErrorBoundary>
+          )}
           {/* Spacer so content doesn't hide behind the fixed AI panel */}
           {view !== 'analyzer' && view !== 'terminal' && (
             <div style={{ height: aiSpacerHeight }} aria-hidden />

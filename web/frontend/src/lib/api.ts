@@ -60,7 +60,7 @@ function toastApiError(path: string, status: number) {
 }
 
 async function get<T>(path: string): Promise<T> {
-  const r = await fetch(BASE + path)
+  const r = await fetch(BASE + path, { signal: AbortSignal.timeout(30_000) })
   if (!r.ok) {
     toastApiError(path, r.status)
     throw new Error(`HTTP ${r.status}`)
@@ -71,7 +71,8 @@ async function get<T>(path: string): Promise<T> {
 async function post<T>(path: string, body: any): Promise<T> {
   const r = await fetch(BASE + path, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
   })
   if (!r.ok) {
     let msg = `HTTP ${r.status}`
@@ -225,19 +226,19 @@ export const api = {
     list: () => get<MaintenanceWindow[]>('/api/maintenance'),
     create: (instance: string, reason: string, durationMinutes: number, createdBy?: string) =>
       post<MaintenanceWindow>('/api/maintenance', { instance, reason, duration_minutes: durationMinutes, created_by: createdBy ?? 'user' }),
-    delete: (id: string) => fetch(`/api/maintenance/${id}`, { method: 'DELETE' }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`) }),
+    delete: (id: string) => fetch(`/api/maintenance/${id}`, { method: 'DELETE', signal: AbortSignal.timeout(30_000) }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`) }).catch(err => { console.error('delete failed:', err); throw err }),
   },
   snooze: {
     list: () => get<SnoozeEntry[]>('/api/alerts/snoozes'),
     create: (dedupKey: string, instance: string, reason: string, durationMinutes: number) =>
       post<SnoozeEntry>('/api/alerts/snooze', { dedup_key: dedupKey, instance, reason, snoozed_by: 'user', duration_minutes: durationMinutes }),
-    delete: (id: string) => fetch(`/api/alerts/snooze/${id}`, { method: 'DELETE' }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`) }),
+    delete: (id: string) => fetch(`/api/alerts/snooze/${id}`, { method: 'DELETE', signal: AbortSignal.timeout(30_000) }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`) }).catch(err => { console.error('delete failed:', err); throw err }),
   },
   ack: {
     list: () => get<AckEntry[]>('/api/alerts/acks'),
     create: (dedupKey: string, instance: string, reason: string) =>
       post<AckEntry>('/api/alerts/ack', { dedup_key: dedupKey, instance, reason, acked_by: 'user' }),
-    delete: (id: string) => fetch(`/api/alerts/ack/${id}`, { method: 'DELETE' }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`) }),
+    delete: (id: string) => fetch(`/api/alerts/ack/${id}`, { method: 'DELETE', signal: AbortSignal.timeout(30_000) }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`) }).catch(err => { console.error('delete failed:', err); throw err }),
   },
   healthTrend: (inst: string, from: number, to: number) =>
     get<Array<{ ts: string; score: number; criticals: number; warns: number }>>(`/api/instances/${inst}/health-trend?from=${from}&to=${to}`),
@@ -255,13 +256,14 @@ export const api = {
     list: () => get<any[]>('/api/schedules'),
     create: (instance: string, collectorName: string, intervalMins: number) =>
       post<any>('/api/schedules', { instance, collector_name: collectorName, interval_mins: intervalMins }),
-    delete: (id: string) => fetch(`/api/schedules/${id}`, { method: 'DELETE' }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`) }),
+    delete: (id: string) => fetch(`/api/schedules/${id}`, { method: 'DELETE', signal: AbortSignal.timeout(30_000) }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`) }).catch(err => { console.error('delete failed:', err); throw err }),
     setEnabled: (id: string, enabled: boolean) =>
       fetch(`/api/schedules/${id}/enabled`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled }),
-      }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`) }),
+        signal: AbortSignal.timeout(30_000),
+      }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`) }).catch(err => { console.error('delete failed:', err); throw err }),
   },
   partsAge: (inst: string) => get<PartsAgeEntry[]>(`/api/instances/${inst}/parts-age`),
   audit: (opts?: { from?: number; to?: number; instance?: string; action?: string; limit?: number }) => {

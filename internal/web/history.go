@@ -1371,8 +1371,10 @@ func (s *Server) handleQueryPatternsV2(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 
 // sqlSafeStr sanitises a string for embedding in a SQL single-quoted literal.
+// Backslash is replaced first to avoid double-escaping, then single quotes
+// are doubled (standard SQL escaping).
 func sqlSafeStr(s string) string {
-	return strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(s)
+	return strings.NewReplacer(`\`, `\\`, `'`, `''`).Replace(s)
 }
 
 // sqlSafeUInt sanitises a numeric string (allows only digits).
