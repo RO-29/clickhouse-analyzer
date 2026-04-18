@@ -176,7 +176,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
         if (!cancelled) {
           const now = new Date()
           const win = (maint as MaintenanceWindow[]).find(
-            w => (w.instance === instance || w.instance === '*') && new Date(w.ends_at) > now
+            w => (w.instance === instance || w.instance === '*') && w.end_time * 1000 > now.getTime()
           ) ?? null
           setActiveWindow(win)
           setAlertHistory((ah as Alert[]).filter(a => a.instance === instance))
@@ -247,7 +247,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
   }, [instance])
 
   const maintUntil = activeWindow
-    ? new Date(activeWindow.ends_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    ? new Date(activeWindow.end_time * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     : null
 
   /* ── column defs ── */

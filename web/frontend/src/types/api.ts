@@ -479,8 +479,8 @@ export interface MaintenanceWindow {
   id: string
   instance: string      // "*" means all instances
   reason: string
-  started_at: string    // ISO timestamp
-  ends_at: string       // ISO timestamp
+  start_time: number    // unix epoch seconds
+  end_time: number      // unix epoch seconds
   created_by: string
 }
 

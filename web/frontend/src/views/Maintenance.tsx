@@ -10,8 +10,8 @@ import type { MaintenanceWindow, Instance } from '../types/api'
 /* ------------------------------------------------------------------ */
 /*  Time remaining helper                                               */
 /* ------------------------------------------------------------------ */
-function timeRemaining(endsAt: string): string {
-  const diff = new Date(endsAt).getTime() - Date.now()
+function timeRemaining(endTime: number): string {
+  const diff = endTime * 1000 - Date.now()
   if (diff <= 0) return 'Expired'
   const mins = Math.floor(diff / 60000)
   const hours = Math.floor(mins / 60)
@@ -19,14 +19,14 @@ function timeRemaining(endsAt: string): string {
   return `${mins}m remaining`
 }
 
-function fmtTs(iso: string): string {
+function fmtTs(epochSeconds: number): string {
   try {
-    return new Date(iso).toLocaleString(undefined, {
+    return new Date(epochSeconds * 1000).toLocaleString(undefined, {
       month: 'short', day: 'numeric',
       hour: '2-digit', minute: '2-digit',
     })
   } catch {
-    return iso
+    return String(epochSeconds)
   }
 }
 
@@ -102,7 +102,12 @@ export default function Maintenance() {
     setSubmitError(null)
     try {
       await api.maintenance.create(formInstance, formReason.trim(), duration, formCreatedBy || 'user')
+      // Reset form after successful creation
+      setFormInstance('*')
       setFormReason('')
+      setFormDuration(60)
+      setFormCustomMinutes(60)
+      setFormCreatedBy('user')
       await load()
     } catch (e: any) {
       setSubmitError(e.message ?? 'Failed to create maintenance window')
@@ -120,7 +125,9 @@ export default function Maintenance() {
     }
   }, [])
 
-  const activeWindows = windows.filter(w => new Date(w.ends_at).getTime() > Date.now())
+  const activeWindows = windows
+    .filter(w => w.end_time * 1000 > Date.now())
+    .sort((a, b) => b.start_time - a.start_time)
 
   return (
     <div className="space-y-6">
@@ -276,12 +283,12 @@ export default function Maintenance() {
                         {w.instance === '*' ? 'All instances' : w.instance}
                       </span>
                       <span className="text-xs px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                        {timeRemaining(w.ends_at)}
+                        {timeRemaining(w.end_time)}
                       </span>
                     </div>
                     <div className="text-sm text-[var(--text)]">{w.reason}</div>
                     <div className="text-xs text-[var(--dim)]">
-                      By {w.created_by} · started {fmtTs(w.started_at)} · ends {fmtTs(w.ends_at)}
+                      By {w.created_by} · started {fmtTs(w.start_time)} · ends {fmtTs(w.end_time)}
                     </div>
                   </div>
                   <button
