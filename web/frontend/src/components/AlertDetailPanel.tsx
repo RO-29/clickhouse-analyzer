@@ -399,6 +399,8 @@ export function AlertDetailPanel({
   const [refreshTick, setRefreshTick] = useState(0)
   const [snoozeEntries, setSnoozeEntries] = useState<SnoozeEntry[]>([])
   const [ackEntries, setAckEntries] = useState<AckEntry[]>([])
+  const [customSnoozeActive, setCustomSnoozeActive] = useState(false)
+  const [customSnoozeMinutes, setCustomSnoozeMinutes] = useState(60)
 
   const activeSnoozedEntry = useMemo(
     () => snoozeEntries.find(s => s.dedup_key === alert.dedup_key && s.expires_at > Math.floor(Date.now() / 1000)) ?? null,
@@ -793,7 +795,38 @@ export function AlertDetailPanel({
                             <BellOff size={11} /> Snooze {opt.label}
                           </button>
                         ))}
+                        <button
+                          onClick={() => setCustomSnoozeActive(v => !v)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium text-amber-400 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 transition-colors"
+                        >
+                          <BellOff size={11} /> Custom
+                        </button>
                       </div>
+                      {customSnoozeActive && (
+                        <div className="flex items-center gap-2 mt-1">
+                          <input
+                            type="number"
+                            min={1}
+                            max={10080}
+                            value={customSnoozeMinutes}
+                            onChange={e => setCustomSnoozeMinutes(Math.max(1, Math.min(10080, Number(e.target.value))))}
+                            className="w-20 bg-[var(--surface)] border border-amber-500/30 rounded px-2 py-1 text-[11px] text-amber-400 focus:outline-none focus:border-amber-500/60"
+                          />
+                          <span className="text-[11px] text-[var(--dim)]">minutes</span>
+                          <button
+                            onClick={() => { handleSnooze(customSnoozeMinutes); setCustomSnoozeActive(false) }}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium text-amber-400 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 transition-colors"
+                          >
+                            Apply
+                          </button>
+                          <button
+                            onClick={() => setCustomSnoozeActive(false)}
+                            className="text-[11px] text-[var(--dim)] hover:text-[var(--text)] transition-colors"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

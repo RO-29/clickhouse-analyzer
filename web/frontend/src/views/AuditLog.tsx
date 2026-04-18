@@ -21,7 +21,9 @@ const ACTION_OPTIONS = [
   { value: '', label: 'All actions' },
   { value: 'alert_resolve', label: 'Alert resolved' },
   { value: 'alert_snooze', label: 'Alert snoozed' },
+  { value: 'snooze_delete', label: 'Snooze removed' },
   { value: 'alert_ack', label: 'Alert acknowledged' },
+  { value: 'ack_delete', label: 'Ack removed' },
   { value: 'maintenance_create', label: 'Maintenance created' },
   { value: 'maintenance_delete', label: 'Maintenance ended' },
 ]
@@ -29,7 +31,9 @@ const ACTION_OPTIONS = [
 const ACTION_LABELS: Record<string, string> = {
   alert_resolve: 'Alert resolved',
   alert_snooze: 'Alert snoozed',
+  snooze_delete: 'Snooze removed',
   alert_ack: 'Alert acknowledged',
+  ack_delete: 'Ack removed',
   maintenance_create: 'Maintenance created',
   maintenance_delete: 'Maintenance ended',
 }
@@ -42,8 +46,8 @@ type ActionIconName = 'resolve' | 'snooze' | 'ack' | 'maintenance' | 'default'
 
 function actionIconType(action: string): ActionIconName {
   if (action === 'alert_resolve') return 'resolve'
-  if (action === 'alert_snooze') return 'snooze'
-  if (action === 'alert_ack') return 'ack'
+  if (action === 'alert_snooze' || action === 'snooze_delete') return 'snooze'
+  if (action === 'alert_ack' || action === 'ack_delete') return 'ack'
   if (action.startsWith('maintenance_')) return 'maintenance'
   return 'default'
 }

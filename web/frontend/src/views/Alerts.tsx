@@ -82,6 +82,17 @@ function snoozeUntil(dedupKey: string, snoozed: Record<string, number>): number 
   return exp != null && exp * 1000 > Date.now() ? exp : null
 }
 
+function timeSinceAlert(createdAt: number): string {
+  const diffSec = Math.floor(Date.now() / 1000) - createdAt
+  if (diffSec < 60) return `${diffSec}s ago`
+  const diffMin = Math.floor(diffSec / 60)
+  if (diffMin < 60) return `${diffMin}m ago`
+  const diffH = Math.floor(diffMin / 60)
+  if (diffH < 24) return `${diffH}h ago`
+  const diffD = Math.floor(diffH / 24)
+  return `${diffD}d ago`
+}
+
 function isAcked(dedupKey: string, acked: Record<string, any>): boolean {
   return dedupKey in acked
 }
@@ -433,7 +444,7 @@ function AlertRow({ alert, showMeta, staleHours, snoozed, acked, onSelect }: {
         {snoozedUntil && (
           <span className="inline-flex items-center gap-1 text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-1.5 py-0.5 shrink-0">
             <BellOff size={10} />
-            snoozed
+            Snoozed until {new Date(snoozedUntil * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
           </span>
         )}
         {alertIsAcked && (
@@ -453,6 +464,7 @@ function AlertRow({ alert, showMeta, staleHours, snoozed, acked, onSelect }: {
             <span className="ml-1 text-[9px] px-1 py-px rounded bg-amber-500/15 text-amber-400 border border-amber-500/20">stale</span>
           )}
         </span>
+        <span className="text-[var(--dim)] text-[10px] shrink-0 tabular-nums">{timeSinceAlert(alert.created_at)}</span>
         <span className="text-[var(--dim)] text-xs shrink-0">{fmtTime(alert.created_at)}</span>
         {alert.resolved && <Badge className="bg-green-500/10 text-green-400 border-green-500/20">resolved</Badge>}
       </button>
