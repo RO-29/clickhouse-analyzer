@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -102,7 +103,10 @@ func (p *PagerDutyNotifier) send(payload pdPayload) error {
 	if err != nil {
 		return fmt.Errorf("pagerduty: http post: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		resp.Body.Close()
+	}()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("pagerduty: unexpected status %d", resp.StatusCode)
