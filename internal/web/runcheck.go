@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/rohitjain/ch-analyzer/internal/collector"
+	"github.com/rohitjain/ch-analyzer/internal/store"
 )
 
 // runCheckRequest is the POST body for /api/run-check.
