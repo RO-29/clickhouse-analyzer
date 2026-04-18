@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -78,6 +79,11 @@ func (s *Server) handleSnoozeDelete(w http.ResponseWriter, r *http.Request) {
 	if !s.snoozeStore.Delete(id) {
 		writeErr(w, http.StatusNotFound, "snooze not found")
 		return
+	}
+
+	// Audit log — best-effort, don't fail the request on error.
+	if err := s.store.LogAction(r.Context(), "", "snooze_delete", r.RemoteAddr, id); err != nil {
+		slog.Debug("audit log failed for snooze_delete", "err", err)
 	}
 
 	w.WriteHeader(http.StatusNoContent)

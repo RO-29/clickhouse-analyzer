@@ -281,11 +281,19 @@ func (a *App) submitSnooze(payload slack.InteractionCallback) {
 
 	instance := ""
 	if v, ok := vals["block_instance"]["instance"]; ok {
+		if v.SelectedOption.Value == "" {
+			// alert was resolved between button click and submit
+			// respond to Slack with a message that the alert is no longer active
+			a.postEphemeral(channelID, payload.User.ID, "❌  No instance selected (the alert may no longer be active).")
+			return
+		}
 		instance = v.SelectedOption.Value
 	}
 	hours := 1
 	if v, ok := vals["block_duration"]["duration"]; ok {
-		fmt.Sscanf(v.SelectedOption.Value, "%d", &hours)
+		if v.SelectedOption.Value != "" {
+			fmt.Sscanf(v.SelectedOption.Value, "%d", &hours)
+		}
 	}
 
 	if instance == "" {

@@ -76,5 +76,10 @@ func (s *Server) handleAckDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Audit log — best-effort, don't fail the request on error.
+	if err := s.store.LogAction(r.Context(), "", "ack_delete", r.RemoteAddr, id); err != nil {
+		slog.Debug("audit log failed for ack_delete", "err", err)
+	}
+
 	w.WriteHeader(http.StatusNoContent)
 }
