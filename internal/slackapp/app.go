@@ -34,6 +34,9 @@ type App struct {
 	// debounce prevents stampede when many alerts fire at once
 	pendingRefresh chan struct{}
 
+	// actionDebounce prevents button-spam duplicate actions
+	actionDebounce sync.Map // key: "userID:actionID:instance", value: time.Time
+
 	logger *slog.Logger
 }
 

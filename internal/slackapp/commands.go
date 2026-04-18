@@ -14,8 +14,6 @@ import (
 
 // handleSlashCommand routes /ch subcommands.
 func (a *App) handleSlashCommand(ctx context.Context, cmd slack.SlashCommand) {
-	a.logger.Info("slash command received", "command", cmd.Command, "text", cmd.Text, "user", cmd.UserID, "channel", cmd.ChannelID)
-
 	parts := strings.Fields(strings.TrimSpace(cmd.Text))
 	sub := ""
 	if len(parts) > 0 {
@@ -60,7 +58,6 @@ func (a *App) handleSlashCommand(ctx context.Context, cmd slack.SlashCommand) {
 		a.postEphemeral(cmd.ChannelID, cmd.UserID,
 			fmt.Sprintf("Unknown subcommand `%s`. Try `/ch help`.", sub))
 	}
-	a.logger.Info("slash command handled", "command", cmd.Command, "sub", sub, "user", cmd.UserID)
 }
 
 // cmdStatus posts an ephemeral summary of all instances, or detailed status for one.
@@ -112,7 +109,7 @@ func (a *App) cmdStatus(cmd slack.SlashCommand, instance string) {
 	a.postEphemeral(cmd.ChannelID, cmd.UserID, msg)
 }
 
-// cmdStatusSingle posts a detailed status for a single instance.
+// cmdStatusSingle posts a detailed status card for a single instance.
 func (a *App) cmdStatusSingle(cmd slack.SlashCommand, instance string) {
 	alerts := a.alertMgr.GetActiveAlertsForInstance(instance)
 	var crit, warn int
@@ -191,11 +188,49 @@ func (a *App) cmdAlerts(cmd slack.SlashCommand, instance string) {
 	}
 
 	if len(lines) == 0 {
-		a.postEphemeral(cmd.ChannelID, cmd.UserID, "🟢  No active alerts.")
+		msg := "🟢  No active alerts."
+		if a.cfg.DashboardURL != "" {
+			msg += fmt.Sprintf("\n\n<%s|Open Dashboard →>", a.cfg.DashboardURL)
+		}
+		a.postEphemeral(cmd.ChannelID, cmd.UserID, msg)
 		return
 	}
-	a.postEphemeral(cmd.ChannelID, cmd.UserID,
-		"*Active Alerts*\n\n"+strings.Join(lines, "\n"))
+	msg := "*Active Alerts*\n\n" + strings.Join(lines, "\n")
+	if a.cfg.DashboardURL != "" {
+		msg += fmt.Sprintf("\n\n<%s|Open Dashboard →>", a.cfg.DashboardURL)
+	}
+	a.postEphemeral(cmd.ChannelID, cmd.UserID, msg)
+}
+
+// cmdSnoozed lists all currently active maintenance/snooze windows.
+func (a *App) cmdSnoozed(cmd slack.SlashCommand) {
+	if a.maintStore == nil {
+		a.postEphemeral(cmd.ChannelID, cmd.UserID, "✅ No active snoozes.")
+		return
+	}
+	windows := a.maintStore.List()
+	if len(windows) == 0 {
+		a.postEphemeral(cmd.ChannelID, cmd.UserID, "✅ No active snoozes.")
+		return
+	}
+	// Sort by end time for a consistent display order.
+	sort.Slice(windows, func(i, j int) bool {
+		return windows[i].EndTime < windows[j].EndTime
+	})
+	var lines []string
+	for _, w := range windows {
+		until := time.Unix(w.EndTime, 0).UTC().Format("15:04 UTC")
+		inst := w.Instance
+		if inst == "*" {
+			inst = "all instances"
+		}
+		lines = append(lines, fmt.Sprintf("• *%s*  —  _%s_  —  until %s", inst, w.Reason, until))
+	}
+	msg := "*Active Snoozes / Maintenance Windows:*\n" + strings.Join(lines, "\n")
+	if a.cfg.DashboardURL != "" {
+		msg += fmt.Sprintf("\n\n<%s|Open Dashboard →>", a.cfg.DashboardURL)
+	}
+	a.postEphemeral(cmd.ChannelID, cmd.UserID, msg)
 }
 
 // cmdSnooze handles `/ch snooze <instance> <1h|4h|8h>`.
@@ -226,27 +261,6 @@ func (a *App) cmdSnooze(ctx context.Context, cmd slack.SlashCommand, args []stri
 	a.postEphemeral(cmd.ChannelID, cmd.UserID,
 		fmt.Sprintf("🔇  Snoozed `%s` for %dh. Use `/ch maintenance` to cancel.", instance, hours))
 	go a.UpdatePinned()
-}
-
-// cmdSnoozed lists all currently active maintenance/snooze windows.
-func (a *App) cmdSnoozed(cmd slack.SlashCommand) {
-	if a.maintStore == nil {
-		a.postEphemeral(cmd.ChannelID, cmd.UserID, "Maintenance store unavailable.")
-		return
-	}
-	windows := a.maintStore.List()
-	if len(windows) == 0 {
-		a.postEphemeral(cmd.ChannelID, cmd.UserID, "🟢  No active snooze or maintenance windows.")
-		return
-	}
-	var lines []string
-	lines = append(lines, "*Active Snooze / Maintenance Windows*")
-	lines = append(lines, "")
-	for _, w := range windows {
-		until := time.Unix(w.EndTime, 0).UTC().Format("15:04 UTC")
-		lines = append(lines, fmt.Sprintf("🔇  `%s`  —  until %s  ·  _%s_", w.Instance, until, w.Reason))
-	}
-	a.postEphemeral(cmd.ChannelID, cmd.UserID, strings.Join(lines, "\n"))
 }
 
 // cmdMaintenance opens a maintenance modal pre-filled with the given instance.
@@ -290,13 +304,20 @@ func (a *App) cmdHelp(cmd slack.SlashCommand) {
 		"*CH Monitor — Slash Commands*",
 		"",
 		"`/ch status`  —  All instances + health at a glance",
+		"`/ch status <instance>`  —  Detailed status for one instance",
 		"`/ch alerts [instance]`  —  List active alerts (all or one instance)",
 		"`/ch snooze <instance> <1h|4h|8h|24h>`  —  Snooze alerts for an instance",
-		"`/ch snoozed`  —  List active snooze / maintenance windows",
-		"`/ch maintenance <instance>`  —  Open maintenance window dialog",
+		"`/ch snoozed`  —  List all active snoozes / maintenance windows",
+		"`/ch maintenance [instance]`  —  Open maintenance window dialog",
 		"`/ch analyze <instance>`  —  Run AI analysis and post result",
 		"`/ch refresh`  —  Force-refresh the pinned dashboard",
 		"`/ch help`  —  Show this message",
+		"",
+		"*Examples:*",
+		"  `/ch status prod-a`  →  detailed card for prod-a",
+		"  `/ch alerts`  →  all firing alerts across every instance",
+		"  `/ch snooze prod-a 4h`  →  suppress prod-a alerts for 4 hours",
+		"  `/ch snoozed`  →  see what's currently snoozed",
 		"",
 		"_Tip: click the buttons on the pinned dashboard for quick actions._",
 	}, "\n")

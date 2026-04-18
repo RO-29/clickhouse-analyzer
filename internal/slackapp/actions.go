@@ -27,6 +27,15 @@ func (a *App) handleBlockAction(ctx context.Context, payload slack.InteractionCa
 	userName := payload.User.Name
 	channelID := payload.Channel.ID
 
+	// Debounce: ignore rapid re-clicks of the same button by the same user.
+	debounceKey := userID + ":" + action.ActionID + ":" + instance
+	if last, ok := a.actionDebounce.Load(debounceKey); ok {
+		if time.Since(last.(time.Time)) < 3*time.Second {
+			return // ignore rapid re-click
+		}
+	}
+	a.actionDebounce.Store(debounceKey, time.Now())
+
 	if instance != "" {
 		known := false
 		for _, n := range a.chMgr.Names() {
