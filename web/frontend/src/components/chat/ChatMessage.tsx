@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { ClipboardCopy, AlertCircle, Check, ChevronDown, ChevronRight, FlaskConical, RotateCcw } from 'lucide-react'
 import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 import { cn } from '../../lib/utils'
 import type { ChatMessage as ChatMessageType } from '../../types/api'
 import { CollapsibleProgress } from './CollapsibleProgress'
@@ -62,7 +63,10 @@ function renderMarkdown(content: string, isStreaming: boolean): string {
     .replace(/🟠 WARNING(?!<)/g,  '<span class="sev-warning">🟠 WARNING</span>')
     .replace(/🟡 INFO(?!<)/g,     '<span class="sev-info">🟡 INFO</span>')
   if (isStreaming) out += '<span class="streaming-cursor"></span>'
-  return out
+  return DOMPurify.sanitize(out, {
+    FORBID_TAGS: ['script', 'style'],
+    FORBID_ATTR: ['onerror', 'onload', 'onclick'],
+  })
 }
 
 /* ─── Evidence panel ─────────────────────────────────────────────────────── */

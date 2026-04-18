@@ -173,6 +173,7 @@ export function useAIAnalysis(instance: string) {
           mode: options.mode ?? 'quick',
           deep_queries: options.deepQueries,
         }),
+        signal: AbortSignal.timeout(10 * 60 * 1000),
       })
 
       if (!resp.ok || !resp.body) {
@@ -293,6 +294,7 @@ export function useAIAnalysis(instance: string) {
           visible_data: { history, question: trimmed },
           mode: 'quick',
         }),
+        signal: AbortSignal.timeout(10 * 60 * 1000),
       })
 
       if (!resp.ok || !resp.body) {

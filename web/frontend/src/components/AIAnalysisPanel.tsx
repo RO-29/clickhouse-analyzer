@@ -1,6 +1,7 @@
 import { useMemo, useRef, useEffect, useState } from 'react'
 import { ChevronUp, ChevronDown, Sparkles, Zap, Trash2, Plus, Send, X } from 'lucide-react'
 import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 import { cn } from '../lib/utils'
 import { useStore } from '../hooks/useStore'
 import { QueryConfirmDialog } from './QueryConfirmDialog'
@@ -79,7 +80,10 @@ function renderMd(text: string, isStreaming: boolean): string {
     .replace(/🟠 WARNING(?!<)/g, '<span class="sev-warning">🟠 WARNING</span>')
     .replace(/🟡 INFO(?!<)/g, '<span class="sev-info">🟡 INFO</span>')
   if (isStreaming) out += '<span class="streaming-cursor"></span>'
-  return out
+  return DOMPurify.sanitize(out, {
+    FORBID_TAGS: ['script', 'style'],
+    FORBID_ATTR: ['onerror', 'onload', 'onclick'],
+  })
 }
 
 /* -------------------------------------------------------------------------- */
