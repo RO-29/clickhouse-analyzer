@@ -113,7 +113,7 @@ func (s *Server) handleTableScan(w http.ResponseWriter, r *http.Request) {
 
 	// Parse optional filters
 	includeSystem := r.URL.Query().Get("include_system") == "true"
-	filterDB := strings.ReplaceAll(r.URL.Query().Get("db"), "'", "''") // basic SQL safety
+	filterDB := strings.NewReplacer("\\", "\\\\", "'", "''").Replace(r.URL.Query().Get("db")) // escape backslash then single-quote
 
 	// Build database exclusion and per-db filter fragments.
 	const sysDBs = `'system', 'information_schema', 'INFORMATION_SCHEMA', '_temporary_and_external_tables'`
