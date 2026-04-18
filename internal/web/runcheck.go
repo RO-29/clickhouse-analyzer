@@ -185,6 +185,65 @@ func (s *Server) handleRunCheck(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// triggerAlertRequest is the POST body for /api/alerts/trigger.
+type triggerAlertRequest struct {
+	Instance  string `json:"instance"`
+	Severity  string `json:"severity"`
+	Category  string `json:"category"`
+	Title     string `json:"title"`
+	Message   string `json:"message"`
+	DedupKey  string `json:"dedup_key"`
+}
+
+// handleTriggerAlert handles POST /api/alerts/trigger.
+// Writes a single alert directly into the alerts table — equivalent to what the
+// background poll would do when it fires the same condition.
+func (s *Server) handleTriggerAlert(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeErr(w, http.StatusServiceUnavailable, "store not available")
+		return
+	}
+	limitBody(w, r)
+	var req triggerAlertRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Instance == "" || req.Severity == "" || req.Category == "" || req.Title == "" {
+		writeErr(w, http.StatusBadRequest, "instance, severity, category and title are required")
+		return
+	}
+	if s.manager.Get(req.Instance) == nil {
+		writeErr(w, http.StatusBadRequest, "unknown instance: "+req.Instance)
+		return
+	}
+	dedupKey := req.DedupKey
+	if dedupKey == "" {
+		dedupKey = req.Instance + ":" + req.Category + ":" + req.Title
+	}
+
+	now := time.Now()
+	alert := store.Alert{
+		Instance:    req.Instance,
+		Severity:    req.Severity,
+		Category:    req.Category,
+		Title:       req.Title,
+		Message:     req.Message,
+		DedupKey:    dedupKey,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+		FirstSeenAt: now,
+		FireCount:   1,
+	}
+	id, err := s.store.InsertAlert(alert)
+	if err != nil {
+		slog.Error("trigger alert: insert failed", "err", err)
+		writeErr(w, http.StatusInternalServerError, "failed to insert alert: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"id": id, "dedup_key": dedupKey})
+}
+
 // handleForcePoll handles POST /api/force-poll.
 // Signals the main polling loop to run an immediate collection cycle.
 func (s *Server) handleForcePoll(w http.ResponseWriter, r *http.Request) {
