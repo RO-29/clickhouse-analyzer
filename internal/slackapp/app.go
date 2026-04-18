@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/rohitjain/ch-analyzer/internal/alerter"
 	"github.com/rohitjain/ch-analyzer/internal/chclient"
@@ -72,6 +73,8 @@ func New(cfg config.SlackConfig, webAddr string, alertMgr *alerter.AlertManager,
 
 // Run starts the Socket Mode WebSocket connection and event loop.
 // It registers itself as the alertMgr state-change callback, then blocks until ctx is done.
+// If the connection drops (network hiccup, Slack restart, etc.) it reconnects with
+// exponential backoff up to 5 minutes between attempts.
 func (a *App) Run(ctx context.Context) {
 	a.alertMgr.SetOnStateChange(a.scheduleRefresh)
 	go a.refreshLoop(ctx)
@@ -96,11 +99,37 @@ func (a *App) Run(ctx context.Context) {
 	// Post initial pinned dashboard asynchronously.
 	go a.UpdatePinned()
 
-	// RunContext blocks here until ctx is cancelled. It manages the WebSocket
-	// connection, reconnecting automatically on disconnect.
-	a.logger.Info("socket mode connecting to Slack WebSocket")
-	if err := a.socket.RunContext(ctx); err != nil && ctx.Err() == nil {
-		a.logger.Error("socket mode RunContext failed", "error", err)
+	// Reconnect loop with exponential backoff.
+	backoff := 5 * time.Second
+	const maxBackoff = 5 * time.Minute
+	attempt := 0
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		if attempt > 0 {
+			a.logger.Info("slack socket mode reconnecting", "attempt", attempt, "backoff", backoff)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			if backoff*2 > maxBackoff {
+				backoff = maxBackoff
+			} else {
+				backoff *= 2
+			}
+		}
+		attempt++
+		a.logger.Info("slack socket mode connecting")
+		if err := a.socket.RunContext(ctx); err != nil {
+			if ctx.Err() != nil {
+				return // clean shutdown
+			}
+			a.logger.Error("slack socket mode disconnected", "error", err, "attempt", attempt)
+		} else {
+			backoff = 5 * time.Second // reset on clean exit
+		}
 	}
 }
 
@@ -209,9 +238,13 @@ func (a *App) updateMessage(channelID, ts string, opts ...slack.MsgOption) {
 }
 
 // openModal opens a modal using the trigger ID from a slash command or button click.
-func (a *App) openModal(triggerID string, view slack.ModalViewRequest) {
+// If channelID and userID are provided and the open fails, an ephemeral error is sent to the user.
+func (a *App) openModal(triggerID string, view slack.ModalViewRequest, channelID, userID string) {
 	if _, err := a.client.OpenView(triggerID, view); err != nil {
 		a.logger.Warn("failed to open modal", "error", err)
+		if channelID != "" && userID != "" {
+			a.postEphemeral(channelID, userID, "❌ Could not open the form. Please try again or visit the dashboard.")
+		}
 	}
 }
 

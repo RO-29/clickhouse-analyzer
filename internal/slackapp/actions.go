@@ -27,6 +27,20 @@ func (a *App) handleBlockAction(ctx context.Context, payload slack.InteractionCa
 	userName := payload.User.Name
 	channelID := payload.Channel.ID
 
+	if instance != "" {
+		known := false
+		for _, n := range a.chMgr.Names() {
+			if n == instance {
+				known = true
+				break
+			}
+		}
+		if !known {
+			a.postEphemeral(channelID, payload.User.ID, fmt.Sprintf("❌ Instance `%s` is no longer configured.", instance))
+			return
+		}
+	}
+
 	switch action.ActionID {
 	case "ch_snooze_1h":
 		a.handleSnoozeAction(channelID, userID, userName, instance, 1)
@@ -37,10 +51,12 @@ func (a *App) handleBlockAction(ctx context.Context, payload slack.InteractionCa
 	case "ch_analyze":
 		a.handleAnalyzeAction(ctx, channelID, instance)
 	case "ch_maintenance_open":
-		a.openModal(payload.TriggerID, a.buildMaintenanceModal(instance, a.instanceNames()))
+		a.openModal(payload.TriggerID, a.buildMaintenanceModal(instance, a.instanceNames()), channelID, userID)
 	case "ch_refresh":
 		a.UpdatePinned()
 		a.postEphemeral(channelID, userID, "✅  Dashboard refreshed.")
+	default:
+		a.logger.Warn("unrecognized slack action", "action_id", action.ActionID, "value", action.Value)
 	}
 }
 
@@ -64,7 +80,11 @@ func (a *App) handleAnalyzeAction(ctx context.Context, channelID, instance strin
 		slack.MsgOptionText(fmt.Sprintf("🔄  Analyzing `%s`…", instance), false),
 	)
 	if err != nil {
-		a.logger.Warn("failed to post analysis placeholder", "error", err)
+		if strings.Contains(err.Error(), "missing_scope") {
+			a.logger.Error("slack bot token missing 'chat:write' scope — re-install app with chat:write scope to enable channel messages", "error", err)
+		} else {
+			a.logger.Warn("failed to post analysis placeholder", "error", err)
+		}
 		return
 	}
 	go a.runAnalysis(ctx, channelID, ts, instance)
@@ -374,7 +394,11 @@ func (a *App) runAnalysis(ctx context.Context, channelID, msgTS, instance string
 	}
 	// Truncate to Slack's 3000-char block limit.
 	if len(text) > 2900 {
-		text = text[:2900] + "\n\n_[truncated — view full result in the dashboard]_"
+		suffix := "\n\n_[truncated]_"
+		if a.cfg.DashboardURL != "" {
+			suffix = fmt.Sprintf("\n\n_[truncated — <%s|view full result>]_", a.cfg.DashboardURL)
+		}
+		text = text[:2900] + suffix
 	}
 
 	a.updateAnalysisMessage(channelID, msgTS, instance, text)
