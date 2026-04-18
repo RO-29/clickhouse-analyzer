@@ -689,7 +689,10 @@ func (am *AlertManager) heartbeatLoop(ctx context.Context) {
 						if !hasEscalated || time.Since(last) > am.escalation.RepeatEvery {
 							firingMinutes := int(time.Since(first).Minutes())
 							if am.slack != nil {
-								_ = am.slack.PostEscalationNotice(inst, firingMinutes)
+								am.mu.Lock()
+								threadTS := am.instanceTS[inst]
+								am.mu.Unlock()
+								_ = am.slack.PostEscalationNotice(inst, firingMinutes, threadTS)
 							}
 							am.mu.Lock()
 							am.lastEscalated[inst] = time.Now()
@@ -892,6 +895,31 @@ func (am *AlertManager) SetOnStateChange(fn func()) {
 	am.mu.Lock()
 	am.onStateChange = fn
 	am.mu.Unlock()
+}
+
+// GetActiveAlerts returns copies of all currently-firing alerts across all
+// instances, sorted critical-first then warn-first then alphabetically by
+// instance and title.
+func (am *AlertManager) GetActiveAlerts() []*ActiveAlert {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	result := make([]*ActiveAlert, 0, len(am.activeAlerts))
+	for _, active := range am.activeAlerts {
+		cp := *active
+		result = append(result, &cp)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		oi := severityOrder(result[i].Alert.Severity)
+		oj := severityOrder(result[j].Alert.Severity)
+		if oi != oj {
+			return oi < oj
+		}
+		if result[i].Alert.Instance != result[j].Alert.Instance {
+			return result[i].Alert.Instance < result[j].Alert.Instance
+		}
+		return result[i].Alert.Title < result[j].Alert.Title
+	})
+	return result
 }
 
 // GetActiveAlertsForInstance returns copies of all currently-firing non-info

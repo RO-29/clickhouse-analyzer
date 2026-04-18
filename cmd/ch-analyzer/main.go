@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -172,7 +173,7 @@ func main() {
 	// Initialize alert manager
 	var slackNotifier *alerter.SlackNotifier
 	if cfg.Slack.BotToken != "" && cfg.Slack.ChannelID != "" {
-		slackNotifier = alerter.NewSlackNotifier(cfg.Slack.BotToken, cfg.Slack.ChannelID)
+		slackNotifier = alerter.NewSlackNotifier(cfg.Slack.BotToken, cfg.Slack.ChannelID, cfg.Slack.DashboardURL)
 		slog.Info("slack notifier initialized", "channel", cfg.Slack.ChannelID)
 	} else {
 		slog.Warn("slack not configured, alerts will only be stored locally")
@@ -361,12 +362,12 @@ func main() {
 
 	// Start digest scheduler
 	if cfg.Slack.Digest.Enabled && slackNotifier != nil {
-		go runDigestScheduler(ctx, cfg, az, slackNotifier, clientMgr)
+		go runDigestScheduler(ctx, cfg, az, slackNotifier, clientMgr, alertMgr)
 	}
 
 	// Start Slack Socket Mode app (slash commands + interactive buttons + pinned dashboard).
 	if cfg.Slack.BotToken != "" && cfg.Slack.AppToken != "" {
-		app := slackapp.New(cfg.Slack, cfg.Web.ListenAddr, alertMgr, maintenanceStore, clientMgr)
+		app := slackapp.New(cfg.Slack, cfg.Web.ListenAddr, alertMgr, maintenanceStore, ackStore, clientMgr)
 		go func() {
 			slog.Info("slack socket mode app starting")
 			app.Run(ctx)
@@ -720,6 +721,7 @@ func runDigestScheduler(
 	az *analyzer.Analyzer,
 	slack *alerter.SlackNotifier,
 	clientMgr *chclient.Manager,
+	alertMgr *alerter.AlertManager,
 ) {
 	// Check every minute if it's time for a digest
 	ticker := time.NewTicker(1 * time.Minute)
@@ -740,7 +742,7 @@ func runDigestScheduler(
 			// Daily digest
 			if timeStr == cfg.Slack.Digest.DailyTime && dateStr != lastDailyDate {
 				lastDailyDate = dateStr
-				sendDigest(ctx, "daily", az, slack, clientMgr, cfg)
+				sendDigest(ctx, "daily", az, slack, clientMgr, cfg, alertMgr)
 			}
 
 			// Weekly digest
@@ -748,7 +750,7 @@ func runDigestScheduler(
 				equalsIgnoreCase(dayName, cfg.Slack.Digest.WeeklyDay) &&
 				dateStr != lastWeeklyDate {
 				lastWeeklyDate = dateStr
-				sendDigest(ctx, "weekly", az, slack, clientMgr, cfg)
+				sendDigest(ctx, "weekly", az, slack, clientMgr, cfg, alertMgr)
 			}
 		}
 	}
@@ -761,6 +763,7 @@ func sendDigest(
 	slack *alerter.SlackNotifier,
 	clientMgr *chclient.Manager,
 	cfg *config.Config,
+	alertMgr *alerter.AlertManager,
 ) {
 	healthScores := make(map[string]int)
 	clientMgr.ForEach(func(name string, _ *chclient.Client) error {
@@ -769,12 +772,40 @@ func sendDigest(
 		return nil
 	})
 
-	dashboardURL := fmt.Sprintf("http://localhost%s", cfg.Web.ListenAddr)
+	// Collect active alerts sorted by severity (critical first).
+	activeAlerts := alertMgr.GetActiveAlerts()
+	sort.Slice(activeAlerts, func(i, j int) bool {
+		ri := digestSeverityRank(activeAlerts[i].Alert.Severity)
+		rj := digestSeverityRank(activeAlerts[j].Alert.Severity)
+		return ri > rj
+	})
+
+	var topIssues []string
+	for i, a := range activeAlerts {
+		if i >= 5 {
+			break
+		}
+		topIssues = append(topIssues, fmt.Sprintf("[%s] %s — %s",
+			strings.ToUpper(string(a.Alert.Severity)), a.Alert.Instance, a.Alert.Title))
+	}
+
+	stats := map[string]string{
+		"Active Alerts": fmt.Sprintf("%d", len(activeAlerts)),
+		"Critical":      fmt.Sprintf("%d", digestCountBySeverity(activeAlerts, "critical")),
+		"Warning":       fmt.Sprintf("%d", digestCountBySeverity(activeAlerts, "warn")),
+		"Instances":     fmt.Sprintf("%d", len(healthScores)),
+	}
+
+	dashboardURL := cfg.Slack.DashboardURL
+	if dashboardURL == "" {
+		dashboardURL = fmt.Sprintf("http://localhost%s", cfg.Web.ListenAddr)
+	}
+
 	digest := alerter.DigestMessage{
 		Period:       period,
 		HealthScores: healthScores,
-		TopIssues:    []string{},
-		Stats:        map[string]string{},
+		TopIssues:    topIssues,
+		Stats:        stats,
 		DashboardURL: dashboardURL,
 	}
 
@@ -783,6 +814,29 @@ func sendDigest(
 	} else {
 		slog.Info("digest sent", "period", period)
 	}
+}
+
+// digestSeverityRank returns a numeric rank for sorting (higher = more severe).
+func digestSeverityRank(s collector.Severity) int {
+	switch s {
+	case collector.SeverityCritical:
+		return 2
+	case collector.SeverityWarn:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// digestCountBySeverity counts alerts matching the given severity string.
+func digestCountBySeverity(alerts []*alerter.ActiveAlert, severity string) int {
+	n := 0
+	for _, a := range alerts {
+		if string(a.Alert.Severity) == severity {
+			n++
+		}
+	}
+	return n
 }
 
 // alertStoreAdapter bridges the store.Store (which uses store.Alert) with the
