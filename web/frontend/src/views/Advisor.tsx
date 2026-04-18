@@ -365,9 +365,8 @@ export default function Advisor() {
           </span>
         )}
         <button
-          onClick={() => setView('discover')}
-          title="Open Feature Guide"
-          className="text-[var(--dim)] hover:text-[var(--text)] transition-colors p-0.5 rounded ml-auto"
+          title="Feature Guide"
+          className="text-[var(--dim)] transition-colors p-0.5 rounded ml-auto cursor-default"
         >
           <HelpCircle size={14} />
         </button>

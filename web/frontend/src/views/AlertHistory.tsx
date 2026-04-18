@@ -349,7 +349,7 @@ export default function AlertHistory({ refreshKey }: { refreshKey?: number }) {
       <div className="flex items-center justify-between flex-wrap gap-2">
         <h2 className="text-lg font-semibold flex items-center gap-2">
           <Bell className="w-5 h-5" /> Alert History
-          <button onClick={() => setView('discover')} title="About alert severity levels" className="text-[var(--dim)] hover:text-[var(--text)] transition-colors">
+          <button title="About alert severity levels" className="text-[var(--dim)] transition-colors cursor-default">
             <HelpCircle size={13} />
           </button>
         </h2>

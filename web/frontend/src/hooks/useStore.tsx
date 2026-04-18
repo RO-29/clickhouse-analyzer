@@ -1,8 +1,9 @@
 import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from 'react'
 import { presetToRange } from '../lib/utils'
 import type { ChatSession } from '../types/api'
+import { resolveView } from './viewRouting'
 
-export type View = 'dashboard' | 'overview' | 'detail' | 'alerts' | 'history' | 'explore' | 'compare' | 'advisor' | 'terminal' | 'logs' | 'chlogs' | 'analyzer' | 'scanner' | 'cost' | 'maintenance' | 'runcheck' | 'discover' | 'audit' | 'thresholds'
+export type { View } from './viewRouting'
 
 export interface Store {
   // State
@@ -82,9 +83,7 @@ function patchURL(patches: Record<string, string | null>) {
 export function StoreProvider({ children }: { children: ReactNode }) {
   const [view, setViewState] = useState<View>(() => {
     const params = new URLSearchParams(window.location.search)
-    const v = params.get('view') as View | null
-    const valid: View[] = ['dashboard','overview','detail','alerts','explore','compare','advisor','terminal','logs','chlogs','analyzer','scanner','cost','maintenance','audit','thresholds']
-    return v && valid.includes(v) ? v : 'overview'
+    return resolveView(params.get('view'))
   })
   const [selectedInstance, setSelectedInstanceRaw] = useState(() => {
     const params = new URLSearchParams(window.location.search)
@@ -343,9 +342,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const handlePopState = () => {
       const p = new URLSearchParams(window.location.search)
-      const v = p.get('view') as View | null
-      const valid: View[] = ['dashboard','overview','detail','alerts','history','explore','compare','advisor','terminal','logs','chlogs','analyzer','scanner','cost','maintenance','runcheck','discover','audit','thresholds']
-      if (v && valid.includes(v)) setViewState(v)
+      const v = resolveView(p.get('view'))
+      setViewState(v)
       setSelectedInstanceRaw(p.get('instance') ?? '')
       const f = Number(p.get('from'))
       const t = Number(p.get('to'))

@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import {
   LayoutDashboard, Bell, BellDot, Search, GitCompareArrows, Lightbulb, TerminalSquare, FileText, Database,
-  Sun, Moon, ChevronsLeft, ChevronsRight, Sparkles, RefreshCw, ScanSearch, DollarSign, Shield, PlayCircle, Compass,
+  Sun, Moon, ChevronsLeft, ChevronsRight, Sparkles, RefreshCw, ScanSearch, DollarSign, Shield, PlayCircle,
   Rows3, Command, Copy, ClipboardList, SlidersHorizontal, ChevronLeft,
 } from 'lucide-react'
 import { useStore, type View } from '../hooks/useStore'
@@ -16,7 +16,6 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
   {
     label: 'Monitoring',
     items: [
-      { view: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
       { view: 'overview', label: 'Overview', icon: LayoutDashboard },
       { view: 'alerts', label: 'Alerts', icon: Bell },
       { view: 'history', label: 'Alert History', icon: BellDot },
@@ -53,12 +52,6 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
       { view: 'cost', label: 'Cost Explorer', icon: DollarSign },
       { view: 'logs', label: 'App Logs', icon: FileText },
       { view: 'chlogs', label: 'CH Logs', icon: Database },
-    ],
-  },
-  {
-    label: 'Help',
-    items: [
-      { view: 'discover', label: 'Feature Guide', icon: Compass },
     ],
   },
 ]
@@ -216,16 +209,7 @@ export function Sidebar({ mobileOpen = false, onMobileClose, onOpenPalette }: Si
                         )}
                       </span>
                       {!collapsed && (
-                        item.view === 'discover' ? (
-                          <span className="flex items-center gap-2">
-                            <span>{item.label}</span>
-                            <span className="text-[9px] px-1 py-0.5 rounded bg-[var(--accent)]/15 text-[var(--accent)] font-semibold uppercase tracking-wide">
-                              Guide
-                            </span>
-                          </span>
-                        ) : (
-                          <span>{item.label}</span>
-                        )
+                        <span>{item.label}</span>
                       )}
                     </a>
                   )
@@ -239,10 +223,7 @@ export function Sidebar({ mobileOpen = false, onMobileClose, onOpenPalette }: Si
             <div className="mx-2 mb-2 px-3 py-2 rounded-lg border border-[var(--accent)]/20 bg-[var(--accent)]/5 text-xs text-[var(--text-muted)]">
               <div className="font-medium text-[var(--accent)] mb-0.5">No instances configured</div>
               <div className="text-[var(--dim)] leading-relaxed">
-                Add ClickHouse instances to your config file and restart.{' '}
-                <button onClick={() => setView('discover')} className="text-[var(--accent)] hover:underline">
-                  View setup guide →
-                </button>
+                Add ClickHouse instances to your config file and restart.
               </div>
             </div>
           )}

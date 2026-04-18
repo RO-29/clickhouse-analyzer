@@ -148,7 +148,7 @@ func (s *Server) handleRunCheck(w http.ResponseWriter, r *http.Request) {
 			result.DurationMs = time.Since(start).Milliseconds()
 
 			if err != nil {
-				slog.Warn("runcheck: collector failed", "collector", req.Collectors[idx], "err", err)
+				slog.Warn("runcheck: collector failed", "collector", wi.collectorName, "err", err)
 				result.Error = "check failed"
 				results[idx] = result
 				return

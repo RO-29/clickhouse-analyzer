@@ -5,7 +5,6 @@ import { cn } from '../lib/utils'
 import { api } from '../lib/api'
 
 const VIEW_TITLES: Record<View, string> = {
-  dashboard: 'Dashboard',
   overview: 'Overview',
   detail: 'Instance Detail',
   alerts: 'Alerts',
@@ -21,7 +20,6 @@ const VIEW_TITLES: Record<View, string> = {
   chlogs: 'ClickHouse Logs',
   maintenance: 'Maintenance Windows',
   runcheck: 'Run Checks',
-  discover: 'Feature Guide',
   audit: 'Audit Log',
   thresholds: 'Alert Thresholds',
 }

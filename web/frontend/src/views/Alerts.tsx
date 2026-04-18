@@ -1100,7 +1100,7 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
         <h2 className="text-lg font-semibold flex items-center gap-2">
           <Bell className="w-5 h-5" /> Alerts
         </h2>
-        <button onClick={() => setView('discover')} title="About alert severity levels" className="text-[var(--dim)] hover:text-[var(--text)] transition-colors">
+        <button title="About alert severity levels" className="text-[var(--dim)] transition-colors cursor-default">
           <HelpCircle size={13} />
         </button>
         <div className="ml-auto flex items-center gap-2">

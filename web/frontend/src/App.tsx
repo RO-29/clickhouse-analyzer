@@ -4,7 +4,6 @@ import { StoreProvider, useStore } from './hooks/useStore'
 import { Sidebar } from './components/Sidebar'
 import { TopBar } from './components/TopBar'
 import { CommandPalette } from './components/CommandPalette'
-import Dashboard from './views/Dashboard'
 import Overview from './views/Overview'
 import Detail from './views/Detail'
 import Alerts from './views/Alerts'
@@ -20,7 +19,6 @@ import CostExplorer from './views/CostExplorer'
 import Maintenance from './views/Maintenance'
 import AlertHistory from './views/AlertHistory'
 import RunCheck from './views/RunCheck'
-import Discover from './views/Discover'
 import AuditLog from './views/AuditLog'
 import ThresholdEditor from './views/ThresholdEditor'
 import { TableDetail } from './components/TableDetail'
@@ -151,8 +149,6 @@ function Layout() {
   }, [refreshInterval])
 
   const views: Record<string, React.ReactNode> = {
-    dashboard: <Dashboard />,
-    discover: <Discover />,
     overview: <Overview refreshKey={tick} />,
     detail: <Detail refreshKey={tick} />,
     alerts: <Alerts refreshKey={tick} />,

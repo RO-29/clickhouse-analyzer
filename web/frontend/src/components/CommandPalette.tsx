@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo, type ReactNode } from 'react'
 import {
   Search, LayoutDashboard, Bell, BellDot, GitCompareArrows, Lightbulb, TerminalSquare,
-  FileText, Database, Sparkles, ScanSearch, DollarSign, Shield, PlayCircle, Compass,
+  FileText, Database, Sparkles, ScanSearch, DollarSign, Shield, PlayCircle,
   ChevronRight, Zap, Moon, Sun, Rows3,
 } from 'lucide-react'
 import { useStore, type View } from '../hooks/useStore'
@@ -32,7 +32,6 @@ const VIEW_ITEMS: Array<{ view: View; label: string; icon: ReactNode; category?:
   { view: 'cost',        label: 'Cost Explorer',      icon: <DollarSign size={14} /> },
   { view: 'logs',        label: 'App Logs',           icon: <FileText size={14} /> },
   { view: 'chlogs',      label: 'ClickHouse Logs',    icon: <Database size={14} /> },
-  { view: 'discover',    label: 'Feature Guide',      icon: <Compass size={14} /> },
 ]
 
 export function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void }) {

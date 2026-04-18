@@ -210,7 +210,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
     setHistoryLoading(true)
     Promise.all([
       api.history.queryPatterns(instance, customFrom, customTo, 20).catch(() => []),
-      api.history.failures(instance, customFrom, customTo).catch(() => []),
+      api.history.failures(instance, customFrom, customTo).then(r => r.timeline).catch(() => []),
       api.history.merges(instance, customFrom, customTo).catch(() => []),
     ]).then(([qp, qf, mg]) => {
       if (!cancelled) {
@@ -326,7 +326,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
           </button>
           <span className="text-[var(--dim)] opacity-40 text-sm">/</span>
           <h2 className="text-sm font-semibold truncate" title={instance}>{instance}</h2>
-          <button onClick={() => setView('discover')} title="What is the health score?" className="text-[var(--dim)] hover:text-[var(--text)] transition-colors shrink-0">
+          <button title="What is the health score?" className="text-[var(--dim)] transition-colors shrink-0 cursor-default">
             <HelpCircle size={13} />
           </button>
         </div>
