@@ -92,15 +92,28 @@ func (c *SystemCollector) collectAsyncMetrics(ctx context.Context, client *chcli
 	// Altinity/cloud builds where OSMemoryTotal is absent.
 	memTotal := values["OSMemoryTotal"]
 	memAvail := values["OSMemoryAvailable"]
-	if memTotal == 0 && values["CGroupMemoryTotal"] > 0 {
-		memTotal = values["CGroupMemoryTotal"]
-		memAvail = values["CGroupMemoryTotal"] - values["CGroupMemoryUsed"]
-	}
 
 	// RSS: try MemoryResident first (Altinity), fall back to OSProcessRSSMemory (OSS)
 	rss := values["MemoryResident"]
 	if rss == 0 {
 		rss = values["OSProcessRSSMemory"]
+	}
+
+	if memTotal == 0 && values["CGroupMemoryTotal"] > 0 {
+		memTotal = values["CGroupMemoryTotal"]
+		// CGroupMemoryUsed includes page cache and is nearly equal to CGroupMemoryTotal
+		// on Linux — using it directly as "used" gives a false ~100% reading.
+		// Instead, derive available from CGroup limit minus ClickHouse RSS (actual
+		// working set). If RSS is unavailable fall back to the raw CGroup difference.
+		if rss > 0 {
+			used := rss
+			if used > memTotal {
+				used = memTotal
+			}
+			memAvail = memTotal - used
+		} else {
+			memAvail = values["CGroupMemoryTotal"] - values["CGroupMemoryUsed"]
+		}
 	}
 
 	if memTotal > 0 {
