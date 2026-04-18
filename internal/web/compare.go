@@ -1010,6 +1010,7 @@ func (s *Server) handleCompareQueryPatterns(w http.ResponseWriter, r *http.Reque
 	names := s.manager.Names()
 	results := make([]instanceResult, len(names))
 
+	reqCtx := r.Context()
 	var wg sync.WaitGroup
 	for i, name := range names {
 		wg.Add(1)
@@ -1023,7 +1024,7 @@ func (s *Server) handleCompareQueryPatterns(w http.ResponseWriter, r *http.Reque
 				return
 			}
 
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			ctx, cancel := context.WithTimeout(reqCtx, 15*time.Second)
 			defer cancel()
 
 			sql := fmt.Sprintf(`SELECT
