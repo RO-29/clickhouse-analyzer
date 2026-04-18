@@ -18,7 +18,7 @@ type TTLCollector struct {
 	Logger *slog.Logger
 
 	warnedMu sync.Mutex
-	warned   map[string]bool // instances already warned about missing ttl_expression column
+	warned   map[string]bool // instances already warned about stale-TTL check failure
 }
 
 func (c *TTLCollector) Name() string { return "ttl" }
@@ -98,7 +98,7 @@ func (c *TTLCollector) Collect(ctx context.Context, client *chclient.Client) (*C
 			max(dateDiff('day', p.modification_time, now())) AS oldest_part_days
 		FROM system.tables t
 		JOIN system.parts p ON t.database = p.database AND t.name = p.table
-		WHERE t.ttl_expression != ''
+		WHERE t.create_table_query LIKE '%TTL%'
 		  AND p.active = 1
 		  AND t.database NOT IN ('system','information_schema','INFORMATION_SCHEMA')
 		GROUP BY t.database, t.name
@@ -108,10 +108,8 @@ func (c *TTLCollector) Collect(ctx context.Context, client *chclient.Client) (*C
 
 	ttlRows, err2 := client.Query(ctx, ttlTableSQL)
 	if err2 != nil {
-		// ttl_expression column was added in ClickHouse 23.x; on older versions
-		// (or if the JOIN fails for another reason) we log a warning once per
-		// instance per process lifetime so operators are aware without spamming
-		// logs on every poll cycle.
+		// Log a warning once per instance per process lifetime so operators are
+		// aware without spamming logs on every poll cycle.
 		c.warnedMu.Lock()
 		if c.warned == nil {
 			c.warned = make(map[string]bool)
@@ -122,7 +120,7 @@ func (c *TTLCollector) Collect(ctx context.Context, client *chclient.Client) (*C
 		}
 		c.warnedMu.Unlock()
 		if !alreadyWarned {
-			c.logger().Warn("ttl: skipping stale-TTL check — query failed (requires CH 23.x+)",
+			c.logger().Warn("ttl: stale-TTL check failed",
 				slog.String("instance", client.Name()),
 				slog.String("error", err2.Error()))
 		}
