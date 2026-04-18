@@ -64,6 +64,8 @@ func (a *App) handleBlockAction(ctx context.Context, payload slack.InteractionCa
 	case "ch_refresh":
 		a.UpdatePinned()
 		a.postEphemeral(channelID, userID, "✅  Dashboard refreshed.")
+	case "ch_ack":
+		a.handleAckAction(ctx, payload, action)
 	default:
 		a.logger.Warn("unrecognized slack action", "action_id", action.ActionID, "value", action.Value)
 	}
@@ -81,6 +83,42 @@ func (a *App) handleSnoozeAction(channelID, userID, userName, instance string, h
 			time.Now().Add(time.Duration(hours)*time.Hour).UTC().Format("15:04 UTC"),
 		))
 	go a.UpdatePinned()
+}
+
+func (a *App) handleAckAction(ctx context.Context, payload slack.InteractionCallback, action *slack.BlockAction) {
+	instance := action.Value
+	channelID := payload.Channel.ID
+	userID := payload.User.ID
+	userName := payload.User.Name
+	if userName == "" {
+		userName = userID
+	}
+
+	if a.ackStore == nil {
+		a.postEphemeral(channelID, userID, "❌  Acknowledge store unavailable.")
+		return
+	}
+
+	// Acknowledge all currently active alerts for this instance.
+	alerts := a.alertMgr.GetActiveAlertsForInstance(instance)
+	if len(alerts) == 0 {
+		a.postEphemeral(channelID, userID,
+			fmt.Sprintf("ℹ️  No active alerts for `%s` — nothing to acknowledge.", instance))
+		return
+	}
+
+	for _, al := range alerts {
+		a.ackStore.Add(al.Alert.DedupKey, instance, "acknowledged via Slack", userName)
+	}
+
+	a.postEphemeral(channelID, userID,
+		fmt.Sprintf("✅  *%s* acknowledged by @%s. You're on it!", instance, userName))
+
+	a.logger.Info("alerts acknowledged via Slack",
+		"instance", instance,
+		"user", userName,
+		"count", len(alerts),
+	)
 }
 
 func (a *App) handleAnalyzeAction(ctx context.Context, channelID, instance string) {

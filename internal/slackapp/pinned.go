@@ -132,6 +132,19 @@ func (a *App) buildInstanceRows(instance string) []slack.Block {
 		),
 	}
 
+	// If in maintenance, show remaining time as a muted context line.
+	if inMaint {
+		win := a.maintStore.GetActiveWindow(instance)
+		if win != nil {
+			remaining := time.Until(time.Unix(win.EndTime, 0))
+			rows = append(rows, slack.NewContextBlock("",
+				slack.NewTextBlockObject(slack.MarkdownType,
+					"🔇  "+formatSnoozeRemaining(remaining),
+					false, false),
+			))
+		}
+	}
+
 	// Action buttons row — max 5 per actions block.
 	var btns []slack.BlockElement
 
@@ -216,4 +229,19 @@ func defaultButton(actionID, value, label string) *slack.ButtonBlockElement {
 	return slack.NewButtonBlockElement(actionID, value,
 		slack.NewTextBlockObject(slack.PlainTextType, label, false, false),
 	)
+}
+
+// formatSnoozeRemaining formats a remaining duration as "Snoozed · Xh Ym remaining"
+// or "Snoozed · Ym remaining" when under an hour.
+func formatSnoozeRemaining(d time.Duration) string {
+	if d <= 0 {
+		return "Snoozed · expiring now"
+	}
+	d = d.Round(time.Minute)
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	if h >= 1 {
+		return fmt.Sprintf("Snoozed · %dh %dm remaining", h, m)
+	}
+	return fmt.Sprintf("Snoozed · %dm remaining", m)
 }

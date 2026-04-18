@@ -24,16 +24,18 @@ type DigestMessage struct {
 
 // SlackNotifier sends alert messages to a Slack channel using the Block Kit API.
 type SlackNotifier struct {
-	client    *slack.Client
-	channelID string
-	logger    *slog.Logger
+	client       *slack.Client
+	channelID    string
+	dashboardURL string
+	logger       *slog.Logger
 }
 
 // NewSlackNotifier creates a SlackNotifier that posts to the given channel.
-func NewSlackNotifier(botToken, channelID string) *SlackNotifier {
+func NewSlackNotifier(botToken, channelID, dashboardURL string) *SlackNotifier {
 	return &SlackNotifier{
-		client:    slack.New(botToken),
-		channelID: channelID,
+		client:       slack.New(botToken),
+		channelID:    channelID,
+		dashboardURL: dashboardURL,
 		logger: slog.Default().With(
 			slog.String("component", "slack-notifier"),
 		),
@@ -189,6 +191,15 @@ func (s *SlackNotifier) UpdateOrPostInstanceMessage(instance string, slackTS str
 		)
 	}
 
+	// ── Acknowledge button ───────────────────────────────────────────────────
+	ackBtn := slack.NewButtonBlockElement(
+		"ch_ack",
+		instance,
+		slack.NewTextBlockObject(slack.PlainTextType, "✅ Acknowledge", false, false),
+	)
+	ackBtn.Style = slack.StylePrimary
+	blocks = append(blocks, slack.NewActionBlock("actions_ack_"+instance, ackBtn))
+
 	// ── Footer ───────────────────────────────────────────────────────────────
 	blocks = append(blocks, slack.NewContextBlock("",
 		slack.NewTextBlockObject(slack.MarkdownType,
@@ -243,32 +254,59 @@ func (s *SlackNotifier) PostInstanceAllClear(instance string, slackTS string) (s
 // Escalation notice
 // ---------------------------------------------------------------------------
 
-func (s *SlackNotifier) PostEscalationNotice(instance string, firingMinutes int) error {
+// PostEscalationNotice posts an escalation notice for the given instance.
+// When threadTS is non-empty the notice is posted as a thread reply to the
+// existing instance alert message, keeping the channel clean.
+func (s *SlackNotifier) PostEscalationNotice(instance string, firingMinutes int, threadTS string) error {
 	blocks := []slack.Block{
 		slack.NewSectionBlock(
 			slack.NewTextBlockObject(slack.MarkdownType,
-				fmt.Sprintf("🚨  *Escalation* — `%s` has been firing for *%d minutes* with no response.\n"+
-					"Please acknowledge or snooze in the ch-analyzer dashboard.",
+				fmt.Sprintf("🚨  *Escalation* — `%s` has been firing for *%d minutes* with no response.",
 					escapeMarkdown(instance), firingMinutes),
 				false, false),
 			nil, nil,
 		),
+	}
+
+	// Action buttons: Snooze 1h, Snooze 4h, and optionally View Dashboard.
+	snooze1h := slack.NewButtonBlockElement("ch_snooze_1h", instance,
+		slack.NewTextBlockObject(slack.PlainTextType, "Snooze 1h", false, false))
+	snooze4h := slack.NewButtonBlockElement("ch_snooze_4h", instance,
+		slack.NewTextBlockObject(slack.PlainTextType, "Snooze 4h", false, false))
+
+	var actionElems []slack.BlockElement
+	actionElems = append(actionElems, snooze1h, snooze4h)
+
+	if s.dashboardURL != "" {
+		dashURL := fmt.Sprintf("%s?instance=%s", s.dashboardURL, instance)
+		viewBtn := slack.NewButtonBlockElement("ch_view_dashboard", instance,
+			slack.NewTextBlockObject(slack.PlainTextType, "View Dashboard", false, false))
+		viewBtn.URL = dashURL
+		actionElems = append(actionElems, viewBtn)
+	}
+
+	blocks = append(blocks,
+		slack.NewActionBlock("", actionElems...),
 		slack.NewContextBlock("",
 			slack.NewTextBlockObject(slack.MarkdownType,
 				fmt.Sprintf("⏱  Escalated at %s  ·  ch-analyzer", time.Now().UTC().Format("15:04 UTC")),
 				false, false),
 		),
-	}
+	)
 
 	attachment := slack.Attachment{
 		Color:  colorRed,
 		Blocks: slack.Blocks{BlockSet: blocks},
 	}
 
-	return s.postMessage(
+	opts := []slack.MsgOption{
 		slack.MsgOptionAttachments(attachment),
 		slack.MsgOptionText(fmt.Sprintf("[ESCALATION] %s — firing %dm", instance, firingMinutes), false),
-	)
+	}
+	if threadTS != "" {
+		opts = append(opts, slack.MsgOptionTS(threadTS))
+	}
+	return s.postMessage(opts...)
 }
 
 // ---------------------------------------------------------------------------
