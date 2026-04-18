@@ -273,15 +273,15 @@ func main() {
 			}
 			for _, a := range active {
 				storeAlerts = append(storeAlerts, collector.Alert{
-					Instance:    a.Instance,
-					Severity:    collector.Severity(a.Severity),
-					Category:    a.Category,
-					Title:       a.Title,
-					Message:     a.Message,
-					DedupKey:    a.DedupKey,
-					Timestamp:   a.CreatedAt,
-					FirstSeenAt: a.FirstSeenAt,
-					FireCount:   a.FireCount,
+					Instance:  a.Instance,
+					Severity:  collector.Severity(a.Severity),
+					Category:  a.Category,
+					Title:     a.Title,
+					Message:   a.Message,
+					DedupKey:  a.DedupKey,
+					Timestamp: a.CreatedAt,
+					// first_seen_at / fire_count are optional migration columns;
+					// Rehydrate handles zero values with sensible defaults (now / 1).
 				})
 			}
 		}

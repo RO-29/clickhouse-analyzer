@@ -452,9 +452,11 @@ func (s *Store) GetActiveAlerts(instance string) ([]Alert, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// Select only the core columns that are guaranteed to exist on all installs.
+	// first_seen_at and fire_count are optional (added by migration); they are
+	// fetched separately by GetAlertsForRehydration which is only called at startup.
 	sql := fmt.Sprintf(`SELECT id, instance, severity, category, title, message,
-			resolved, resolved_at, created_at, dedup_key, updated_at,
-			first_seen_at, fire_count
+			resolved, resolved_at, created_at, dedup_key, updated_at
 		FROM %s.alerts FINAL
 		WHERE instance = '%s' AND resolved = 0
 		ORDER BY created_at DESC`,
