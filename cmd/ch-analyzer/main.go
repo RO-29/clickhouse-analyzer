@@ -258,34 +258,11 @@ func main() {
 	alertMgr := alerter.NewAlertManager(slackNotifier, storeAdapter, alertMgrOpts...)
 	alertMgr.Start(ctx)
 
-	// Rehydrate alerter with active alerts persisted in ClickHouse. Without
-	// this, a server restart orphans any alerts that were firing before the
-	// restart: the clean-check loop never counts them as absent, so they stay
-	// "active" forever even after conditions clear.
-	{
-		var storeAlerts []collector.Alert
-		for _, name := range clientMgr.Names() {
-			active, err := metricStore.GetActiveAlerts(name)
-			if err != nil {
-				slog.Warn("rehydrate: failed to load active alerts", "instance", name, "err", err)
-				continue
-			}
-			for _, a := range active {
-				storeAlerts = append(storeAlerts, collector.Alert{
-					Instance:  a.Instance,
-					Severity:  collector.Severity(a.Severity),
-					Category:  a.Category,
-					Title:     a.Title,
-					Message:   a.Message,
-					DedupKey:  a.DedupKey,
-					Timestamp: a.CreatedAt,
-					// first_seen_at / fire_count are optional migration columns;
-					// Rehydrate handles zero values with sensible defaults (now / 1).
-				})
-			}
-		}
-		alertMgr.Rehydrate(storeAlerts)
-	}
+	// No rehydrate needed: Reconcile reads DB state every poll cycle, so
+	// alerts that were firing before a restart naturally resume their
+	// lifecycle on the first poll. The in-memory clean-check counter starts
+	// fresh, which at worst adds one cycle's delay before a stale alert is
+	// auto-resolved — an acceptable trade for the simpler state model.
 
 	// Initialize collectors
 	collectors := buildCollectors(cfg)
@@ -329,6 +306,7 @@ func main() {
 		webServer.SetAckStore(ackStore)
 		webServer.SetScheduleStore(scheduleStore)
 		webServer.SetForcePollCh(forcePollCh)
+		webServer.SetAlertMgr(alertMgr)
 		webServer.SetVersion(version)
 		// Threshold overrides — live-editable via the dashboard.
 		thresholdsOverridePath := "/var/lib/ch-analyzer/thresholds.json"
@@ -428,9 +406,11 @@ func main() {
 
 	// Note: no pruner needed — ClickHouse TTL handles retention automatically.
 
-	// Circuit breaker state — lives in main goroutine, no lock needed.
-	instanceFailures := make(map[string]int)       // consecutive all-collector failure count
-	instanceBackoff := make(map[string]time.Time)  // when backoff expires
+	// Circuit breaker state. Accessed concurrently from per-instance goroutines
+	// inside runReconcile, so guarded by cbMu.
+	var cbMu sync.Mutex
+	instanceFailures := make(map[string]int)      // consecutive all-collector failure count
+	instanceBackoff := make(map[string]time.Time) // when backoff expires
 
 	// Main polling loop
 	slog.Info("starting main polling loop", "interval", cfg.Polling.Interval.String())
@@ -438,8 +418,8 @@ func main() {
 	defer ticker.Stop()
 
 	poll := func() {
-		runCollectionCB(ctx, clientMgr, collectors, az, alertMgr, metricStore, promExporter,
-			instanceFailures, instanceBackoff)
+		runReconcile(ctx, clientMgr, collectors, az, alertMgr, metricStore, promExporter,
+			&cbMu, instanceFailures, instanceBackoff)
 	}
 
 	// Run immediately on startup
@@ -535,7 +515,25 @@ func buildCollectors(cfg *config.Config) []collector.Collector {
 	return result
 }
 
-func runCollectionCB(
+// instanceSnapshot is the per-instance output of a poll cycle before reconcile.
+type instanceSnapshot struct {
+	name          string
+	alerts        []collector.Alert // collector + analyzer alerts (no reconcile yet)
+	rawMetrics    []collector.Metric
+	healthScore   int
+	hadCollection bool // false if circuit-broken or total collector failure
+}
+
+// runReconcile executes one poll cycle across all instances:
+//  1. In parallel, collect metrics/alerts per instance + run analyzer.
+//  2. Union all alerts into a single set, add connectivity alerts for failing
+//     instances, then call alertMgr.Reconcile once.
+//  3. Per-instance: store metrics, update Prometheus gauges from the
+//     reconciled DB state, record health snapshot.
+//
+// Reconcile is the single writer to the alerts table. Everything else in this
+// function is metrics + health plumbing.
+func runReconcile(
 	ctx context.Context,
 	clientMgr *chclient.Manager,
 	collectors []collector.Collector,
@@ -543,28 +541,46 @@ func runCollectionCB(
 	alertMgr *alerter.AlertManager,
 	metricStore *store.Store,
 	promExporter *prometheus.Exporter,
+	cbMu *sync.Mutex,
 	instanceFailures map[string]int,
 	instanceBackoff map[string]time.Time,
 ) {
 	start := time.Now()
 
-	// Collect which instances are in backoff before dispatching.
-	// The maps are owned by main() and read/written only from this function
-	// which runs synchronously in the main goroutine — no lock needed.
+	var (
+		snapsMu sync.Mutex
+		snaps   []instanceSnapshot
+	)
+	addSnap := func(s instanceSnapshot) {
+		snapsMu.Lock()
+		snaps = append(snaps, s)
+		snapsMu.Unlock()
+	}
+
 	clientMgr.ForEachParallel(ctx, func(_ context.Context, instanceName string, client *chclient.Client) error {
-		// Circuit breaker: skip instances in backoff.
-		if backoffUntil, ok := instanceBackoff[instanceName]; ok && time.Now().Before(backoffUntil) {
+		// Circuit breaker: skip collection if in backoff, but keep the
+		// connectivity alert alive in the currentAlerts set so reconcile does
+		// not auto-resolve it.
+		cbMu.Lock()
+		backoffUntil, inBackoff := instanceBackoff[instanceName]
+		cbMu.Unlock()
+		if inBackoff && time.Now().Before(backoffUntil) {
 			slog.Debug("instance in backoff, skipping", "instance", instanceName)
+			addSnap(instanceSnapshot{
+				name:   instanceName,
+				alerts: []collector.Alert{connectivityAlert(instanceName)},
+			})
 			return nil
 		}
 
 		instanceStart := time.Now()
 
-		// Run all collectors for this instance.
-		var allResults []*collector.CollectResult
-		var mu sync.Mutex
-		var errorCount int
-		var errorMu sync.Mutex
+		var (
+			resultsMu   sync.Mutex
+			allResults  []*collector.CollectResult
+			errorMu     sync.Mutex
+			errorCount  int
+		)
 
 		var wg sync.WaitGroup
 		for _, c := range collectors {
@@ -583,48 +599,50 @@ func runCollectionCB(
 					errorMu.Unlock()
 					return
 				}
-				mu.Lock()
+				resultsMu.Lock()
 				allResults = append(allResults, result)
-				mu.Unlock()
+				resultsMu.Unlock()
 			}(c)
 		}
 		wg.Wait()
 
-		// Circuit breaker: if ALL collectors failed, increment failure count.
 		collectionFailed := len(allResults) == 0 && errorCount == len(collectors)
 		if collectionFailed {
+			cbMu.Lock()
 			instanceFailures[instanceName]++
-			if instanceFailures[instanceName] >= 5 {
+			tripped := instanceFailures[instanceName] >= 5
+			if tripped {
 				instanceBackoff[instanceName] = time.Now().Add(5 * time.Minute)
-				slog.Warn("instance entering backoff after 5 failures", "instance", instanceName)
-				alertMgr.Process([]collector.Alert{{
-					Instance:  instanceName,
-					Severity:  collector.SeverityCritical,
-					Category:  "connectivity",
-					Title:     "Instance unreachable",
-					Message:   fmt.Sprintf("ClickHouse instance %s has failed to respond for 5 consecutive polls. Entering 5-minute backoff.", instanceName),
-					DedupKey:  instanceName + ":connectivity:unreachable",
-					Timestamp: time.Now(),
-				}})
 			}
+			cbMu.Unlock()
+			snap := instanceSnapshot{name: instanceName}
+			if tripped {
+				slog.Warn("instance entering backoff after 5 failures", "instance", instanceName)
+				snap.alerts = []collector.Alert{connectivityAlert(instanceName)}
+			}
+			addSnap(snap)
 			return nil
 		}
 		// Reset failure counter on any successful collection.
+		cbMu.Lock()
 		instanceFailures[instanceName] = 0
 		delete(instanceBackoff, instanceName)
+		cbMu.Unlock()
 
-		// Analyze results.
 		analysisResult, err := az.Analyze(instanceName, allResults)
 		if err != nil {
 			slog.Error("analysis failed", "instance", instanceName, "error", err)
+			addSnap(instanceSnapshot{name: instanceName, hadCollection: true})
 			return nil
 		}
 
-		// Store metrics.
-		var allMetrics []store.Metric
+		// Metrics: persist per-instance (the write is already async-safe).
+		var storeMetrics []store.Metric
+		var rawMetrics []collector.Metric
 		for _, r := range allResults {
+			rawMetrics = append(rawMetrics, r.Metrics...)
 			for _, m := range r.Metrics {
-				allMetrics = append(allMetrics, store.Metric{
+				storeMetrics = append(storeMetrics, store.Metric{
 					Instance:  instanceName,
 					Name:      m.Name,
 					Labels:    m.Labels,
@@ -633,8 +651,9 @@ func runCollectionCB(
 				})
 			}
 		}
+		rawMetrics = append(rawMetrics, analysisResult.Metrics...)
 		for _, m := range analysisResult.Metrics {
-			allMetrics = append(allMetrics, store.Metric{
+			storeMetrics = append(storeMetrics, store.Metric{
 				Instance:  instanceName,
 				Name:      m.Name,
 				Labels:    m.Labels,
@@ -642,76 +661,101 @@ func runCollectionCB(
 				Timestamp: m.Timestamp,
 			})
 		}
-
-		if len(allMetrics) > 0 {
-			if err := metricStore.InsertMetrics(allMetrics); err != nil {
+		if len(storeMetrics) > 0 {
+			if err := metricStore.InsertMetrics(storeMetrics); err != nil {
 				slog.Error("failed to store metrics", "instance", instanceName, "error", err)
 			}
 		}
 
-		// Process alerts.
-		var allAlerts []collector.Alert
+		// Alerts: collector + analyzer + cross-instance; passed to reconcile
+		// after all instances have reported.
+		var alerts []collector.Alert
 		for _, r := range allResults {
-			allAlerts = append(allAlerts, r.Alerts...)
+			alerts = append(alerts, r.Alerts...)
 		}
-		allAlerts = append(allAlerts, analysisResult.Alerts...)
-		allAlerts = append(allAlerts, analysisResult.CrossAlerts...)
+		alerts = append(alerts, analysisResult.Alerts...)
+		alerts = append(alerts, analysisResult.CrossAlerts...)
 
-		alertMgr.Process(allAlerts)
+		addSnap(instanceSnapshot{
+			name:          instanceName,
+			alerts:        alerts,
+			rawMetrics:    rawMetrics,
+			healthScore:   analysisResult.HealthScore.Score,
+			hadCollection: true,
+		})
 
-		// Update prometheus — done after alert processing so active_alerts
-		// reflects the current in-memory alert state.
-		alertCounts := alertMgr.ActiveAlertCountsForInstance(instanceName)
+		slog.Debug("collection complete",
+			"instance", instanceName,
+			"metrics", len(storeMetrics),
+			"alerts", len(alerts),
+			"duration", time.Since(instanceStart),
+		)
+		return nil
+	})
+
+	// Union all instance alerts into a single reconcile input.
+	var currentAlerts []collector.Alert
+	for _, s := range snaps {
+		currentAlerts = append(currentAlerts, s.alerts...)
+	}
+
+	if err := alertMgr.Reconcile(ctx, currentAlerts); err != nil {
+		slog.Error("reconcile failed", "error", err)
+	}
+
+	// Per-instance post-reconcile updates: Prometheus gauges + health snapshot.
+	// ActiveAlertCountsForInstance now reads from the DB (post-reconcile state),
+	// so it reflects exactly what the UI sees.
+	now := time.Now()
+	for _, s := range snaps {
+		alertCounts := alertMgr.ActiveAlertCountsForInstance(s.name)
+
 		if promExporter != nil {
-			var collectorMetrics []collector.Metric
-			for _, r := range allResults {
-				collectorMetrics = append(collectorMetrics, r.Metrics...)
-			}
-			collectorMetrics = append(collectorMetrics, analysisResult.Metrics...)
-
-			// Emit active_alerts{severity=...} for each severity level.
-			now := time.Now()
+			metrics := append([]collector.Metric(nil), s.rawMetrics...)
 			for sev, count := range alertCounts {
-				collectorMetrics = append(collectorMetrics, collector.Metric{
-					Instance:  instanceName,
+				metrics = append(metrics, collector.Metric{
+					Instance:  s.name,
 					Name:      "active_alerts",
 					Value:     float64(count),
 					Labels:    map[string]string{"severity": sev},
 					Timestamp: now,
 				})
 			}
-
-			promExporter.Update(collectorMetrics)
+			promExporter.Update(metrics)
 		}
 
-		// Record health snapshot for trend tracking.
-		// Use the analyzer's deduplicated health score (not raw alert counts).
-		{
+		if s.hadCollection {
 			criticals := alertCounts["critical"]
 			warns := alertCounts["warn"]
 			infos := alertCounts["info"]
-			score := float32(analysisResult.HealthScore.Score)
 			snapCtx, snapCancel := context.WithTimeout(ctx, 5*time.Second)
-			if err := metricStore.RecordHealthSnapshot(snapCtx, instanceName, score, criticals, warns, infos); err != nil {
-				slog.Debug("failed to record health snapshot", "instance", instanceName, "err", err)
+			if err := metricStore.RecordHealthSnapshot(snapCtx, s.name, float32(s.healthScore), criticals, warns, infos); err != nil {
+				slog.Debug("failed to record health snapshot", "instance", s.name, "err", err)
 			}
 			snapCancel()
 		}
-
-		slog.Debug("collection complete",
-			"instance", instanceName,
-			"metrics", len(allMetrics),
-			"alerts", len(allAlerts),
-			"duration", time.Since(instanceStart),
-		)
-
-		return nil
-	})
+	}
 
 	slog.Info("poll cycle complete",
 		"duration", time.Since(start),
 		"instances", clientMgr.Len(),
+		"alerts", len(currentAlerts),
 	)
+}
+
+// connectivityAlert builds the standard unreachable-instance alert. Used in
+// two places: when an instance is already in backoff (kept firing), and when
+// it first trips the 5-consecutive-failure threshold.
+func connectivityAlert(instance string) collector.Alert {
+	return collector.Alert{
+		Instance:  instance,
+		Severity:  collector.SeverityCritical,
+		Category:  "connectivity",
+		Title:     "Instance unreachable",
+		Message:   fmt.Sprintf("ClickHouse instance %s has failed to respond for 5 consecutive polls. Skipping collection until it recovers.", instance),
+		DedupKey:  instance + ":connectivity:unreachable",
+		Timestamp: time.Now(),
+	}
 }
 
 func runDigestScheduler(
@@ -853,8 +897,8 @@ func (a *alertStoreAdapter) InsertAlert(alert collector.Alert) (int64, error) {
 		Message:     alert.Message,
 		CreatedAt:   alert.Timestamp,
 		DedupKey:    alert.DedupKey,
-		FirstSeenAt: alert.Timestamp,
-		FireCount:   1,
+		FirstSeenAt: alert.FirstSeenAt, // empty → store carries forward from prior rows
+		FireCount:   alert.FireCount,   // 0 → store carries forward + increments
 	})
 }
 
@@ -862,16 +906,43 @@ func (a *alertStoreAdapter) ResolveAlert(dedupKey string) error {
 	return a.store.ResolveAlert(dedupKey)
 }
 
-func (a *alertStoreAdapter) IsAlertActive(dedupKey string) (bool, error) {
-	return a.store.IsAlertActive(dedupKey)
-}
-
 func (a *alertStoreAdapter) TouchAlerts(dedupKeys []string) error {
 	return a.store.BulkTouchAlerts(dedupKeys)
 }
 
-func (a *alertStoreAdapter) UpdateFireCount(dedupKey string, count int, firstSeenAt time.Time) error {
-	return a.store.UpdateFireCount(dedupKey, count, firstSeenAt)
+func (a *alertStoreAdapter) GetAllActiveAlerts() []collector.Alert {
+	return storeAlertsToCollector(a.store.GetAllActiveAlerts())
+}
+
+func (a *alertStoreAdapter) GetActiveAlertsForInstance(instance string) []collector.Alert {
+	alerts, err := a.store.GetActiveAlerts(instance)
+	if err != nil {
+		slog.Warn("GetActiveAlertsForInstance: query failed",
+			"instance", instance, "err", err)
+		return nil
+	}
+	return storeAlertsToCollector(alerts)
+}
+
+// storeAlertsToCollector translates persisted rows into the collector.Alert
+// shape the alerter reasons about. FirstSeenAt / FireCount are preserved so
+// downstream projections show correct lifetime stats.
+func storeAlertsToCollector(alerts []store.Alert) []collector.Alert {
+	out := make([]collector.Alert, 0, len(alerts))
+	for _, a := range alerts {
+		out = append(out, collector.Alert{
+			Instance:    a.Instance,
+			Severity:    collector.Severity(a.Severity),
+			Category:    a.Category,
+			Title:       a.Title,
+			Message:     a.Message,
+			DedupKey:    a.DedupKey,
+			Timestamp:   a.CreatedAt,
+			FirstSeenAt: a.FirstSeenAt,
+			FireCount:   a.FireCount,
+		})
+	}
+	return out
 }
 
 func equalsIgnoreCase(a, b string) bool {

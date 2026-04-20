@@ -14,8 +14,10 @@ type InhibitionMatcher struct {
 	Rules []InhibitionRule
 }
 
-// IsInhibited returns true if the given alert should be suppressed
-// given the currently active alerts.
+// IsInhibited returns true if the given alert should be suppressed given the
+// currently active alerts on the same instance. Inhibition is scoped to a
+// single instance: a memory:critical on host-A does not inhibit queries:warn
+// on host-B, because the two hosts are independent systems.
 func (m *InhibitionMatcher) IsInhibited(alert ActiveAlert, activeAlerts map[string]*ActiveAlert) bool {
 	for _, rule := range m.Rules {
 		// Check if the candidate alert matches the target side of the rule.
@@ -27,8 +29,11 @@ func (m *InhibitionMatcher) IsInhibited(alert ActiveAlert, activeAlerts map[stri
 			continue
 		}
 
-		// Check if any active alert matches the source side of the rule.
+		// Check if any active alert on the SAME instance matches the source side.
 		for _, active := range activeAlerts {
+			if active.Alert.Instance != alert.Alert.Instance {
+				continue
+			}
 			if rule.SourceCategory != "" && active.Alert.Category != rule.SourceCategory {
 				continue
 			}

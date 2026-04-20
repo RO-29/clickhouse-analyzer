@@ -11,101 +11,89 @@ import (
 	"github.com/rohitjain/ch-analyzer/internal/collector"
 )
 
-// StoreInterface abstracts the persistence layer so the alerter can record and
-// query alert state without depending on a concrete store implementation.
+// StoreInterface abstracts the persistence layer. The alerter reads *and* writes
+// active alert state through this interface; the DB is the single source of
+// truth for "what is currently firing".
 type StoreInterface interface {
-	// InsertAlert persists a new alert and returns its auto-generated ID.
+	// InsertAlert persists a new firing event (resolved=0). Implementations
+	// should carry forward first_seen_at / fire_count across re-firings of the
+	// same dedup_key.
 	InsertAlert(alert collector.Alert) (int64, error)
 	// ResolveAlert marks the alert identified by dedupKey as resolved.
 	ResolveAlert(dedupKey string) error
-	// IsAlertActive reports whether an alert with the given dedupKey is
-	// currently in a firing (unresolved) state.
-	IsAlertActive(dedupKey string) (bool, error)
-	// TouchAlerts bumps updated_at = now() for the given dedup keys so
-	// staleness detection stays accurate across restarts.
+	// TouchAlerts bumps updated_at = now() for the given dedup keys. Used to
+	// keep staleness detection accurate; rate-limited by the alerter.
 	TouchAlerts(dedupKeys []string) error
-	// UpdateFireCount persists the current fire_count (and first_seen_at) for
-	// an alert so that a subsequent restart can restore them via Rehydrate.
-	UpdateFireCount(dedupKey string, count int, firstSeenAt time.Time) error
+	// GetAllActiveAlerts returns every unresolved alert across every instance.
+	// Used once per reconcile cycle to compute diffs against current collector
+	// output.
+	GetAllActiveAlerts() []collector.Alert
+	// GetActiveAlertsForInstance returns unresolved alerts for a single
+	// instance. Used by public getters that drive Slack and UI.
+	GetActiveAlertsForInstance(instance string) []collector.Alert
 }
 
-// ActiveAlert tracks the lifecycle of a currently-firing alert.
+// ActiveAlert is a lightweight projection of an alert's lifecycle state,
+// returned by the public getters that Slack and the dashboard consume.
 type ActiveAlert struct {
 	Alert     collector.Alert
 	FirstSeen time.Time
 	LastSeen  time.Time
 	Count     int
 	Notified  bool
-	// cleanChecks counts consecutive polling cycles where this alert was NOT
-	// present. After resolveCleanChecks clean checks the alert is considered resolved.
-	cleanChecks int
 }
 
-// AlertManager provides deduplication, severity-based routing, and automatic
-// resolution tracking for alerts produced by collectors.
+// AlertManager owns the reconcile loop that keeps the DB alerts table in sync
+// with what collectors observe each poll cycle.
 //
-// Slack model: ONE message per instance, updated in-place. All active alerts
-// for an instance (critical + warn) appear in a single grouped message.
-// When all alerts clear the same message flips to "All clear". If alerts
-// re-fire the same Slack message is reused — zero extra posts.
+// Design principle: the DB is the source of truth. In-memory state holds only
+// derived caches (clean-check counters, Slack TS map, rate-limit clocks). That
+// means UI resolves, bulk resolves, and failed inserts all self-heal on the
+// next reconcile — there is no second map to keep in sync.
 type AlertManager struct {
-	slack        *SlackNotifier
-	store        StoreInterface
-	dedupWindow  time.Duration
-	activeAlerts map[string]*ActiveAlert // dedupKey -> alert
-	instanceTS   map[string]string       // instance -> Slack message TS (one per instance)
-	dirtyInst    map[string]bool         // instances needing an immediate Slack refresh
-	mu           sync.Mutex
+	slack *SlackNotifier
+	store StoreInterface
 
-	// lastInstanceUpdate rate-limits Slack API calls per instance.
+	// cleanChecks counts consecutive reconcile cycles where a dedup_key was
+	// absent from collectors but still present in the DB. When it reaches
+	// resolveCleanChecks, the alert is marked resolved.
+	cleanChecks map[string]int
+
+	// instanceTS maps instance → Slack message TS so in-place updates don't
+	// create a new message each poll. Persisted across restarts by SlackApp.
+	instanceTS         map[string]string
 	lastInstanceUpdate map[string]time.Time
 
-	// infoBatch accumulates info-level alerts for digest-only delivery.
+	// instanceFirstFired / lastEscalated drive the escalation notice.
+	instanceFirstFired map[string]time.Time
+	lastEscalated      map[string]time.Time
+
+	// infoBatch accumulates info-severity alerts for the daily digest.
 	infoBatch []collector.Alert
 	infoMu    sync.Mutex
 
-	// heartbeatInterval controls how often active-instance messages are refreshed
-	// even when no state changes (shows "still firing, updated at X").
-	heartbeatInterval time.Duration
+	mu sync.Mutex
 
-	// resolveCleanChecks is the number of consecutive clean cycles before an
-	// alert is marked resolved. Default: 4 (~4 min with 1-min polling).
+	dedupWindow        time.Duration
+	heartbeatInterval  time.Duration
 	resolveCleanChecks int
 
-	// Inhibition suppresses noisy symptom alerts when a root-cause is firing.
-	inhibition *InhibitionMatcher
-
-	// maintenance suppresses all alerts for instances in a maintenance window.
+	// Filters applied to newly-firing alerts before notify.
+	inhibition  *InhibitionMatcher
 	maintenance *MaintenanceStore
+	snooze      *SnoozeStore
+	ack         *AckStore
 
-	// snooze suppresses notifications for specific alerts by dedupKey.
-	snooze *SnoozeStore
-
-	// ack tracks acknowledged alerts; cleared when an alert resolves.
-	ack *AckStore
-
-	// pagerduty sends critical alert events to PagerDuty (optional).
+	// External notifiers.
 	pagerduty *PagerDutyNotifier
+	webhook   *WebhookNotifier
 
-	// webhook sends structured JSON payloads to a generic endpoint (optional).
-	webhook *WebhookNotifier
-
-	// instanceFirstFired records when the first Slack alert was sent per instance.
-	instanceFirstFired map[string]time.Time
-
-	// lastEscalated records the last time an escalation notice was sent per instance.
-	lastEscalated map[string]time.Time
-
-	// lastTouched is the last time BulkTouchAlerts ran. TouchAlerts inserts a new
-	// version row every call; calling it every poll floods the ReplacingMergeTree
-	// with unmerged parts, making FINAL queries slow. Rate-limit to 5 min.
+	// lastTouched rate-limits BulkTouch. Each touch inserts a new version row
+	// into the ReplacingMergeTree; doing it every poll floods parts.
 	lastTouched time.Time
 
-	// escalation controls when escalation notices are sent.
 	escalation EscalationConfig
 
-	// onStateChange is called (in a goroutine) after each successful Slack update.
-	// Used by SlackApp to refresh the pinned dashboard message.
 	onStateChange func()
 
 	cancel context.CancelFunc
@@ -117,12 +105,13 @@ type AlertManager struct {
 type Option func(*AlertManager)
 
 // WithDedupWindow overrides the default 15-minute deduplication window.
+// (Kept for API compatibility; reconcile uses store state directly, so this
+// only affects downstream notifier timing.)
 func WithDedupWindow(d time.Duration) Option {
 	return func(am *AlertManager) { am.dedupWindow = d }
 }
 
-// WithBatchInterval overrides the default 5-minute heartbeat interval.
-// (Formerly the warn-batch flush interval — repurposed as heartbeat.)
+// WithBatchInterval overrides the heartbeat interval.
 func WithBatchInterval(d time.Duration) Option {
 	return func(am *AlertManager) { am.heartbeatInterval = d }
 }
@@ -133,29 +122,27 @@ func WithResolveCleanChecks(n int) Option {
 	return func(am *AlertManager) { am.resolveCleanChecks = n }
 }
 
-// WithInhibition installs an InhibitionMatcher that suppresses noisy
-// symptom alerts when a root-cause alert is already firing.
+// WithInhibition installs an InhibitionMatcher that suppresses noisy symptom
+// alerts when a same-instance root-cause alert is already firing.
 func WithInhibition(rules []InhibitionRule) Option {
 	return func(am *AlertManager) {
 		am.inhibition = &InhibitionMatcher{Rules: rules}
 	}
 }
 
-// WithMaintenance installs a MaintenanceStore. Alerts for instances that are
-// in maintenance are silently dropped (not persisted or sent to Slack).
+// WithMaintenance installs a MaintenanceStore. Alerts for instances in a
+// maintenance window are dropped entirely — no DB row, no Slack.
 func WithMaintenance(store *MaintenanceStore) Option {
 	return func(am *AlertManager) { am.maintenance = store }
 }
 
-// WithSnooze installs a SnoozeStore. Alerts whose dedupKey is snoozed are
-// still tracked in activeAlerts (for state/resolution) but skip Slack/PD/webhook
-// notification for the duration of the snooze.
+// WithSnooze installs a SnoozeStore. Snoozed alerts still persist to DB (so
+// the UI sees them) but skip Slack/PD/webhook notification.
 func WithSnooze(store *SnoozeStore) Option {
 	return func(am *AlertManager) { am.snooze = store }
 }
 
-// WithAck installs an AckStore. When an alert resolves all acknowledgments for
-// its dedupKey are cleared so the next firing starts fresh.
+// WithAck installs an AckStore. Cleared automatically when alerts resolve.
 func WithAck(store *AckStore) Option {
 	return func(am *AlertManager) { am.ack = store }
 }
@@ -176,7 +163,7 @@ func WithEscalation(cfg EscalationConfig) Option {
 }
 
 // NewAlertManager creates a ready-to-use AlertManager. Call Start to begin
-// background goroutines and Stop to shut them down.
+// the heartbeat goroutine and Stop to shut it down.
 func NewAlertManager(slackNotifier *SlackNotifier, store StoreInterface, opts ...Option) *AlertManager {
 	am := &AlertManager{
 		slack:              slackNotifier,
@@ -185,9 +172,8 @@ func NewAlertManager(slackNotifier *SlackNotifier, store StoreInterface, opts ..
 		heartbeatInterval:  5 * time.Minute,
 		resolveCleanChecks: 4,
 		escalation:         DefaultEscalationConfig(),
-		activeAlerts:       make(map[string]*ActiveAlert),
+		cleanChecks:        make(map[string]int),
 		instanceTS:         make(map[string]string),
-		dirtyInst:          make(map[string]bool),
 		lastInstanceUpdate: make(map[string]time.Time),
 		instanceFirstFired: make(map[string]time.Time),
 		lastEscalated:      make(map[string]time.Time),
@@ -201,62 +187,18 @@ func NewAlertManager(slackNotifier *SlackNotifier, store StoreInterface, opts ..
 	return am
 }
 
-// Start launches background goroutines for heartbeat refreshes and resolution
-// checking. It is safe to call Process before Start.
+// Start launches the heartbeat goroutine. Safe to call Reconcile without Start
+// (tests do this).
 func (am *AlertManager) Start(ctx context.Context) {
 	ctx, am.cancel = context.WithCancel(ctx)
 
 	am.wg.Add(1)
 	go am.heartbeatLoop(ctx)
 
-	am.wg.Add(1)
-	go am.resolutionLoop(ctx)
-
 	am.logger.Info("alert manager started",
-		slog.Duration("dedup_window", am.dedupWindow),
 		slog.Duration("heartbeat_interval", am.heartbeatInterval),
 		slog.Int("resolve_clean_checks", am.resolveCleanChecks),
 	)
-}
-
-// Rehydrate loads previously-active alerts from the store back into the
-// in-memory tracking map after a restart.
-// It restores FirstSeen and Count from the stored values so that "firing since"
-// time and escalation timers continue from the original fire time rather than
-// from restart time.
-func (am *AlertManager) Rehydrate(alerts []collector.Alert) {
-	am.mu.Lock()
-	defer am.mu.Unlock()
-	now := time.Now()
-	n := 0
-	for _, a := range alerts {
-		key := a.DedupKey
-		if key == "" {
-			key = fmt.Sprintf("%s:%s:%s", a.Instance, a.Category, a.Title)
-		}
-		if _, exists := am.activeAlerts[key]; !exists {
-			// Restore FirstSeen from store if available; fall back to now.
-			firstSeen := now
-			if !a.FirstSeenAt.IsZero() {
-				firstSeen = a.FirstSeenAt
-			}
-			// Restore Count from store if available; fall back to 1.
-			count := 1
-			if a.FireCount > 0 {
-				count = a.FireCount
-			}
-			am.activeAlerts[key] = &ActiveAlert{
-				Alert:     a,
-				FirstSeen: firstSeen,
-				LastSeen:  now,
-				Count:     count,
-			}
-			n++
-		}
-	}
-	if n > 0 {
-		am.logger.Info("rehydrated active alerts from store", slog.Int("count", n))
-	}
 }
 
 // Stop gracefully shuts down background goroutines.
@@ -268,216 +210,327 @@ func (am *AlertManager) Stop() {
 	am.logger.Info("alert manager stopped")
 }
 
-// ---------------------------------------------------------------------------
-// Process — main entry point called each polling cycle
-// ---------------------------------------------------------------------------
-
-// Process evaluates a set of alerts produced by the current poll cycle. It
-// applies deduplication, routes info alerts to the digest batch, and tracks
-// which instances need a Slack message refresh.
-func (am *AlertManager) Process(alerts []collector.Alert) {
-	now := time.Now()
-	seen := make(map[string]bool, len(alerts))
-
+// ClearCleanChecks removes any pending clean-check count for the given
+// dedup_key. Called from the UI resolve handlers so a user-initiated resolve
+// doesn't race with in-flight clean-check accounting.
+func (am *AlertManager) ClearCleanChecks(dedupKey string) {
 	am.mu.Lock()
-
-	for i := range alerts {
-		alert := alerts[i]
-		key := alert.DedupKey
-		if key == "" {
-			key = fmt.Sprintf("%s:%s:%s", alert.Instance, alert.Category, alert.Title)
-		}
-		seen[key] = true
-
-		// Maintenance check: if the instance is in maintenance, skip entirely
-		// (no tracking, no persistence, no Slack).
-		if am.maintenance != nil && am.maintenance.IsInMaintenance(alert.Instance) {
-			am.logger.Debug("alert suppressed (maintenance)",
-				slog.String("instance", alert.Instance),
-				slog.String("dedup_key", key),
-			)
-			continue
-		}
-
-		active, exists := am.activeAlerts[key]
-		if exists {
-			// Already tracking — update counters, no Slack update on mere count bumps.
-			active.LastSeen = now
-			active.Count++
-			active.cleanChecks = 0
-			active.Alert = alert
-			am.logger.Debug("alert deduplicated",
-				slog.String("dedup_key", key),
-				slog.Int("count", active.Count),
-			)
-			continue
-		}
-
-		// New alert — register it.
-		active = &ActiveAlert{
-			Alert:     alert,
-			FirstSeen: now,
-			LastSeen:  now,
-			Count:     1,
-		}
-		am.activeAlerts[key] = active
-
-		// Info alerts only go to the digest batch, not Slack.
-		if alert.Severity == collector.SeverityInfo {
-			am.mu.Unlock()
-			am.enqueueInfo(alert)
-			am.mu.Lock()
-			continue
-		}
-
-		// Inhibition check: track the alert in activeAlerts for resolution
-		// detection, but don't mark the instance dirty (no Slack notification).
-		if am.inhibition != nil && am.inhibition.IsInhibited(*active, am.activeAlerts) {
-			am.logger.Debug("alert inhibited",
-				slog.String("dedup_key", key),
-				slog.String("instance", alert.Instance),
-			)
-			continue
-		}
-
-		// Snooze check: track the alert but skip Slack/PD/webhook notification.
-		if am.snooze != nil && am.snooze.IsSnoozed(key) {
-			am.logger.Debug("alert snoozed",
-				slog.String("dedup_key", key),
-				slog.String("instance", alert.Instance),
-			)
-			continue
-		}
-
-		// Mark instance dirty so Slack gets an immediate update.
-		am.dirtyInst[alert.Instance] = true
-	}
-
-	// Increment clean checks for unseen alerts.
-	for key, active := range am.activeAlerts {
-		if !seen[key] {
-			active.cleanChecks++
-		}
-	}
-
-	// Drain dirty instances before releasing the lock.
-	dirty := am.drainDirtyInstances()
+	delete(am.cleanChecks, dedupKey)
 	am.mu.Unlock()
-
-	// Persist new alerts to store (outside lock).
-	for i := range alerts {
-		alert := alerts[i]
-		key := alert.DedupKey
-		if key == "" {
-			key = fmt.Sprintf("%s:%s:%s", alert.Instance, alert.Category, alert.Title)
-		}
-		am.mu.Lock()
-		active, ok := am.activeAlerts[key]
-		isNew := ok && active.Count == 1
-		am.mu.Unlock()
-
-		if isNew && am.store != nil {
-			storeCtx, storeCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			type insertResult struct {
-				id  int64
-				err error
-			}
-			ch := make(chan insertResult, 1)
-			go func() {
-				id, err := am.store.InsertAlert(alert)
-				ch <- insertResult{id, err}
-			}()
-			select {
-			case res := <-ch:
-				storeCancel()
-				if res.err != nil {
-					am.logger.Error("failed to persist alert",
-						slog.String("dedup_key", key), slog.String("error", res.err.Error()))
-				} else {
-					am.logger.Debug("alert persisted", slog.Int64("id", res.id), slog.String("dedup_key", key))
-				}
-			case <-storeCtx.Done():
-				storeCancel()
-				am.logger.Error("timeout persisting alert", slog.String("dedup_key", key))
-			}
-		}
-	}
-
-	// Touch all seen alerts in the store to keep updated_at fresh.
-	// Rate-limited to every 5 minutes: each TouchAlerts call inserts a new
-	// version row into the ReplacingMergeTree. Running it every poll floods
-	// the table with unmerged parts, causing FINAL queries to time out.
-	if am.store != nil && len(seen) > 0 && time.Since(am.lastTouched) >= 5*time.Minute {
-		keys := make([]string, 0, len(seen))
-		for k := range seen {
-			keys = append(keys, k)
-		}
-		am.lastTouched = time.Now()
-		touchCtx, touchCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		touchCh := make(chan error, 1)
-		go func() { touchCh <- am.store.TouchAlerts(keys) }()
-		select {
-		case err := <-touchCh:
-			touchCancel()
-			if err != nil {
-				am.logger.Debug("touch alerts failed", slog.String("err", err.Error()))
-			}
-		case <-touchCtx.Done():
-			touchCancel()
-			am.logger.Debug("touch alerts timed out")
-		}
-	}
-
-	// Flush dirty instance Slack messages.
-	for _, inst := range dirty {
-		am.updateInstanceMessage(inst)
-	}
 }
 
 // ---------------------------------------------------------------------------
-// Instance Slack message
+// Reconcile — the main entry point called each poll cycle
 // ---------------------------------------------------------------------------
 
-// updateInstanceMessage builds a grouped Slack message for all active alerts
-// on the given instance, then posts or updates it in-place.
+// Reconcile makes the DB alerts table match ground truth.
+//
+// Given the full set of alerts that collectors observed this cycle, Reconcile:
+//  1. Reads current DB state (unresolved alerts across all instances).
+//  2. Computes the diff: what's firing now but not in DB (insert), what's still
+//     firing (touch updated_at), what was in DB but no longer observed
+//     (increment clean-check counter; resolve after N cycles).
+//  3. Applies filters — maintenance (drop), inhibition (persist but no notify),
+//     snooze (persist but no notify), info severity (persist + digest only).
+//  4. Writes to store. Failed inserts are logged but don't mutate memory — the
+//     next reconcile naturally retries because the alert is still firing and
+//     still missing from the DB.
+//  5. Fires Slack updates for dirty instances, webhooks for fire/resolve, and
+//     PagerDuty triggers/resolves.
+//
+// Reconcile is idempotent: calling it twice with the same currentAlerts does
+// nothing on the second call beyond maybe one rate-limited touch.
+func (am *AlertManager) Reconcile(ctx context.Context, currentAlerts []collector.Alert) error {
+	if am.store == nil {
+		return fmt.Errorf("reconcile: store not configured")
+	}
+
+	now := time.Now()
+
+	// ── Build the "current" set, canonicalizing dedup keys ──────────────────
+	currentByKey := make(map[string]collector.Alert, len(currentAlerts))
+	for i := range currentAlerts {
+		a := currentAlerts[i]
+		if a.DedupKey == "" {
+			a.DedupKey = fmt.Sprintf("%s:%s:%s", a.Instance, a.Category, a.Title)
+		}
+		// Last occurrence wins on duplicates within one batch.
+		currentByKey[a.DedupKey] = a
+	}
+
+	// ── Snapshot DB active state ────────────────────────────────────────────
+	dbActive := am.store.GetAllActiveAlerts()
+	dbByKey := make(map[string]collector.Alert, len(dbActive))
+	for _, a := range dbActive {
+		dbByKey[a.DedupKey] = a
+	}
+
+	// ── Compute diff ────────────────────────────────────────────────────────
+	var (
+		toInsert []collector.Alert // firing now, no open DB row
+		toTouch  []string          // firing now, open DB row
+		missing  []collector.Alert // open DB row, not firing now
+	)
+	for key, a := range currentByKey {
+		if _, ok := dbByKey[key]; ok {
+			toTouch = append(toTouch, key)
+		} else {
+			toInsert = append(toInsert, a)
+		}
+	}
+	for key, a := range dbByKey {
+		if _, ok := currentByKey[key]; !ok {
+			missing = append(missing, a)
+		}
+	}
+
+	// ── Apply filters to toInsert; decide what to persist and what to notify ──
+	// Inhibition sees everything currently firing (existing DB rows + new
+	// inserts) so a new queries:warn can be inhibited by an existing
+	// memory:critical on the same instance.
+	inhibActive := make(map[string]*ActiveAlert, len(dbByKey)+len(toInsert))
+	for key, a := range dbByKey {
+		cp := a
+		inhibActive[key] = &ActiveAlert{Alert: cp}
+	}
+	for i := range toInsert {
+		cp := toInsert[i]
+		inhibActive[cp.DedupKey] = &ActiveAlert{Alert: cp}
+	}
+
+	var (
+		toPersist []collector.Alert
+		toNotify  []collector.Alert
+		infoBatch []collector.Alert
+	)
+	dirtyInstances := make(map[string]bool)
+
+	for _, a := range toInsert {
+		// Maintenance: drop entirely.
+		if am.maintenance != nil && am.maintenance.IsInMaintenance(a.Instance) {
+			am.logger.Debug("alert suppressed (maintenance)",
+				slog.String("instance", a.Instance),
+				slog.String("dedup_key", a.DedupKey))
+			continue
+		}
+
+		// Info severity: always persist (UI needs to see it) + digest queue.
+		if a.Severity == collector.SeverityInfo {
+			toPersist = append(toPersist, a)
+			infoBatch = append(infoBatch, a)
+			continue
+		}
+
+		// Inhibition: persist (UI visibility) but don't notify Slack/PD/webhook.
+		if am.inhibition != nil {
+			if am.inhibition.IsInhibited(ActiveAlert{Alert: a}, inhibActive) {
+				am.logger.Debug("alert inhibited",
+					slog.String("dedup_key", a.DedupKey),
+					slog.String("instance", a.Instance))
+				toPersist = append(toPersist, a)
+				continue
+			}
+		}
+
+		// Snooze: persist but don't notify.
+		if am.snooze != nil && am.snooze.IsSnoozed(a.DedupKey) {
+			am.logger.Debug("alert snoozed",
+				slog.String("dedup_key", a.DedupKey),
+				slog.String("instance", a.Instance))
+			toPersist = append(toPersist, a)
+			continue
+		}
+
+		toPersist = append(toPersist, a)
+		toNotify = append(toNotify, a)
+		dirtyInstances[a.Instance] = true
+	}
+
+	// ── Clean-check accounting + resolve candidates ─────────────────────────
+	var toResolve []collector.Alert
+	am.mu.Lock()
+	for _, a := range missing {
+		am.cleanChecks[a.DedupKey]++
+		if am.cleanChecks[a.DedupKey] >= am.resolveCleanChecks {
+			toResolve = append(toResolve, a)
+			delete(am.cleanChecks, a.DedupKey)
+			dirtyInstances[a.Instance] = true
+		}
+	}
+	// Any alert observed this cycle resets its counter.
+	for key := range currentByKey {
+		delete(am.cleanChecks, key)
+	}
+	am.mu.Unlock()
+
+	// ── Writes: insert new firings ──────────────────────────────────────────
+	for _, a := range toPersist {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if _, err := am.store.InsertAlert(a); err != nil {
+			am.logger.Error("failed to persist alert",
+				slog.String("dedup_key", a.DedupKey),
+				slog.String("instance", a.Instance),
+				slog.String("err", err.Error()))
+			// Intentional: do not mutate any in-memory state. Next reconcile
+			// will observe the alert still firing and still missing from the
+			// DB, and retry the insert.
+		}
+	}
+
+	// ── Writes: touch still-firing alerts (rate-limited) ────────────────────
+	am.mu.Lock()
+	shouldTouch := len(toTouch) > 0 && time.Since(am.lastTouched) >= 5*time.Minute
+	if shouldTouch {
+		am.lastTouched = now
+	}
+	am.mu.Unlock()
+	if shouldTouch {
+		if err := am.store.TouchAlerts(toTouch); err != nil {
+			am.logger.Debug("touch alerts failed", slog.String("err", err.Error()))
+		}
+	}
+
+	// ── Writes: resolve ─────────────────────────────────────────────────────
+	for _, a := range toResolve {
+		if err := am.store.ResolveAlert(a.DedupKey); err != nil {
+			am.logger.Error("failed to persist resolution",
+				slog.String("dedup_key", a.DedupKey),
+				slog.String("err", err.Error()))
+			continue
+		}
+		if am.ack != nil {
+			am.ack.ClearForDedupKey(a.DedupKey)
+		}
+		if am.pagerduty != nil {
+			if perr := am.pagerduty.ResolveAlert(a.DedupKey); perr != nil {
+				am.logger.Warn("pagerduty resolve failed",
+					slog.String("dedup_key", a.DedupKey),
+					slog.String("err", perr.Error()))
+			}
+		}
+		if am.webhook != nil {
+			wp := WebhookPayload{
+				Event:     "alert_resolved",
+				Instance:  a.Instance,
+				Severity:  string(a.Severity),
+				Category:  a.Category,
+				Title:     a.Title,
+				Message:   a.Message,
+				DedupKey:  a.DedupKey,
+				FiredAt:   a.FirstSeenAt,
+				FireCount: a.FireCount,
+			}
+			if werr := am.webhook.Send(wp); werr != nil {
+				am.logger.Warn("webhook send (resolve) failed",
+					slog.String("dedup_key", a.DedupKey),
+					slog.String("err", werr.Error()))
+			}
+		}
+		am.logger.Info("alert resolved",
+			slog.String("dedup_key", a.DedupKey),
+			slog.String("instance", a.Instance))
+	}
+
+	// ── Info batch ──────────────────────────────────────────────────────────
+	if len(infoBatch) > 0 {
+		am.infoMu.Lock()
+		am.infoBatch = append(am.infoBatch, infoBatch...)
+		am.infoMu.Unlock()
+	}
+
+	// ── Notify: PagerDuty triggers (critical fires only) ────────────────────
+	if am.pagerduty != nil {
+		for _, a := range toNotify {
+			if a.Severity != collector.SeverityCritical {
+				continue
+			}
+			if perr := am.pagerduty.TriggerAlert(a, a.DedupKey); perr != nil {
+				am.logger.Warn("pagerduty trigger failed",
+					slog.String("dedup_key", a.DedupKey),
+					slog.String("err", perr.Error()))
+			}
+		}
+	}
+
+	// ── Notify: webhook (per-fire) ──────────────────────────────────────────
+	if am.webhook != nil {
+		for _, a := range toNotify {
+			firstSeen := a.FirstSeenAt
+			if firstSeen.IsZero() {
+				firstSeen = now
+			}
+			fireCount := a.FireCount
+			if fireCount <= 0 {
+				fireCount = 1
+			}
+			wp := WebhookPayload{
+				Event:     "alert_firing",
+				Instance:  a.Instance,
+				Severity:  string(a.Severity),
+				Category:  a.Category,
+				Title:     a.Title,
+				Message:   a.Message,
+				DedupKey:  a.DedupKey,
+				FiredAt:   firstSeen,
+				FireCount: fireCount,
+			}
+			if werr := am.webhook.Send(wp); werr != nil {
+				am.logger.Warn("webhook send failed",
+					slog.String("dedup_key", a.DedupKey),
+					slog.String("err", werr.Error()))
+			}
+		}
+	}
+
+	// ── Notify: Slack per-instance message ──────────────────────────────────
+	for inst := range dirtyInstances {
+		am.updateInstanceMessage(inst)
+	}
+
+	// ── onStateChange hook (pinned dashboard refresh, etc.) ─────────────────
+	if len(toPersist) > 0 || len(toResolve) > 0 {
+		am.mu.Lock()
+		cb := am.onStateChange
+		am.mu.Unlock()
+		if cb != nil {
+			am.wg.Add(1)
+			go func() {
+				defer am.wg.Done()
+				cb()
+			}()
+		}
+	}
+
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Slack — per-instance grouped message
+// ---------------------------------------------------------------------------
+
+// updateInstanceMessage composes the current Slack message for an instance and
+// posts or updates it in-place. Reads state fresh from the store every call.
 func (am *AlertManager) updateInstanceMessage(instance string) {
 	if am.slack == nil {
 		return
 	}
 
-	// Rate-limit: don't call Slack API more than once per minute per instance.
 	am.mu.Lock()
 	if last, ok := am.lastInstanceUpdate[instance]; ok && time.Since(last) < time.Minute {
 		am.mu.Unlock()
 		return
 	}
-	am.mu.Unlock()
-
-	// Collect a snapshot of active alerts for this instance.
-	am.mu.Lock()
-	var instanceAlerts []*ActiveAlert
-	for _, active := range am.activeAlerts {
-		if active.Alert.Instance == instance && active.Alert.Severity != collector.SeverityInfo {
-			cp := *active
-			instanceAlerts = append(instanceAlerts, &cp)
-		}
-	}
 	ts := am.instanceTS[instance]
 	am.mu.Unlock()
 
-	// Sort: critical first, then warn, then alphabetically by title.
-	sort.Slice(instanceAlerts, func(i, j int) bool {
-		oi := severityOrder(instanceAlerts[i].Alert.Severity)
-		oj := severityOrder(instanceAlerts[j].Alert.Severity)
-		if oi != oj {
-			return oi < oj
-		}
-		return instanceAlerts[i].Alert.Title < instanceAlerts[j].Alert.Title
-	})
+	instanceAlerts := am.GetActiveAlertsForInstance(instance)
 
-	var newTS string
-	var err error
-
+	var (
+		newTS string
+		err   error
+	)
 	if len(instanceAlerts) == 0 {
 		newTS, err = am.slack.PostInstanceAllClear(instance, ts)
 		if err != nil {
@@ -505,156 +558,22 @@ func (am *AlertManager) updateInstanceMessage(instance string) {
 		am.instanceTS[instance] = newTS
 	}
 	am.lastInstanceUpdate[instance] = time.Now()
-	// Mark all alerts for this instance as notified.
-	for _, active := range am.activeAlerts {
-		if active.Alert.Instance == instance {
-			active.Notified = true
-		}
-	}
 
 	if len(instanceAlerts) == 0 {
-		// All-clear: reset escalation tracking.
 		delete(am.instanceFirstFired, instance)
 		delete(am.lastEscalated, instance)
 	} else {
-		// First time we're posting for this instance — record the time.
 		if _, ok := am.instanceFirstFired[instance]; !ok {
 			am.instanceFirstFired[instance] = time.Now()
 		}
 	}
-	// Take snapshot of top alert for webhook/pagerduty calls (outside lock).
-	var topAlert *ActiveAlert
-	if len(instanceAlerts) > 0 {
-		cp := *instanceAlerts[0]
-		topAlert = &cp
-	}
 	am.mu.Unlock()
-
-	// Webhook notification for the top alert (or all-clear).
-	if am.webhook != nil {
-		var wp WebhookPayload
-		if topAlert != nil {
-			wp = WebhookPayload{
-				Event:     "alert_firing",
-				Instance:  instance,
-				Severity:  string(topAlert.Alert.Severity),
-				Category:  topAlert.Alert.Category,
-				Title:     topAlert.Alert.Title,
-				Message:   topAlert.Alert.Message,
-				DedupKey:  topAlert.Alert.DedupKey,
-				FiredAt:   topAlert.FirstSeen,
-				FireCount: topAlert.Count,
-			}
-		} else {
-			wp = WebhookPayload{
-				Event:    "all_clear",
-				Instance: instance,
-			}
-		}
-		if err := am.webhook.Send(wp); err != nil {
-			am.logger.Warn("webhook send failed",
-				slog.String("instance", instance), slog.String("error", err.Error()))
-		}
-	}
-
-	// PagerDuty: trigger for each critical alert.
-	if am.pagerduty != nil && len(instanceAlerts) > 0 {
-		for _, a := range instanceAlerts {
-			if a.Alert.Severity == collector.SeverityCritical {
-				dk := a.Alert.DedupKey
-				if dk == "" {
-					dk = fmt.Sprintf("%s:%s:%s", a.Alert.Instance, a.Alert.Category, a.Alert.Title)
-				}
-				if err := am.pagerduty.TriggerAlert(a.Alert, dk); err != nil {
-					am.logger.Warn("pagerduty trigger failed",
-						slog.String("dedup_key", dk), slog.String("error", err.Error()))
-				}
-			}
-		}
-	}
-
-	// Notify SlackApp to refresh the pinned dashboard (non-blocking).
-	am.mu.Lock()
-	cb := am.onStateChange
-	am.mu.Unlock()
-	if cb != nil {
-		am.wg.Add(1)
-		go func() {
-			defer am.wg.Done()
-			cb()
-		}()
-	}
-}
-
-// persistFireCounts writes the current Count and FirstSeen for every active
-// alert back to the store. Called from the heartbeat loop so that a subsequent
-// restart can restore these values via Rehydrate.
-func (am *AlertManager) persistFireCounts() {
-	if am.store == nil {
-		return
-	}
-	am.mu.Lock()
-	type entry struct {
-		key       string
-		count     int
-		firstSeen time.Time
-	}
-	entries := make([]entry, 0, len(am.activeAlerts))
-	for key, active := range am.activeAlerts {
-		entries = append(entries, entry{key: key, count: active.Count, firstSeen: active.FirstSeen})
-	}
-	am.mu.Unlock()
-
-	for _, e := range entries {
-		e := e
-		fcCtx, fcCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		fcCh := make(chan error, 1)
-		go func() { fcCh <- am.store.UpdateFireCount(e.key, e.count, e.firstSeen) }()
-		select {
-		case err := <-fcCh:
-			fcCancel()
-			if err != nil {
-				am.logger.Debug("failed to persist fire count",
-					slog.String("dedup_key", e.key), slog.String("err", err.Error()))
-			}
-		case <-fcCtx.Done():
-			fcCancel()
-			am.logger.Debug("timeout persisting fire count", slog.String("dedup_key", e.key))
-		}
-	}
-}
-
-// drainDirtyInstances returns and clears the current dirty set.
-// Caller must hold am.mu.
-func (am *AlertManager) drainDirtyInstances() []string {
-	if len(am.dirtyInst) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(am.dirtyInst))
-	for inst := range am.dirtyInst {
-		out = append(out, inst)
-	}
-	am.dirtyInst = make(map[string]bool)
-	return out
-}
-
-func severityOrder(s collector.Severity) int {
-	switch s {
-	case collector.SeverityCritical:
-		return 0
-	case collector.SeverityWarn:
-		return 1
-	default:
-		return 2
-	}
 }
 
 // ---------------------------------------------------------------------------
-// Background loops
+// Heartbeat — keeps Slack "Updated:" timestamps fresh when nothing changes
 // ---------------------------------------------------------------------------
 
-// heartbeatLoop refreshes active-instance Slack messages every heartbeatInterval
-// so the "Updated:" timestamp stays current even without state changes.
 func (am *AlertManager) heartbeatLoop(ctx context.Context) {
 	defer am.wg.Done()
 
@@ -666,176 +585,66 @@ func (am *AlertManager) heartbeatLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			am.mu.Lock()
-			instances := make(map[string]bool)
-			for _, active := range am.activeAlerts {
-				if active.Alert.Severity != collector.SeverityInfo {
-					instances[active.Alert.Instance] = true
-				}
-			}
-			// Clear last-update timestamps so rate-limit doesn't block heartbeat.
-			for inst := range instances {
-				delete(am.lastInstanceUpdate, inst)
-			}
-			am.mu.Unlock()
-
-			// Persist fire counts for all active alerts so restarts can restore them.
-			am.persistFireCounts()
-
-			for inst := range instances {
-				am.updateInstanceMessage(inst)
-
-				// Escalation check: if the instance has been firing for longer than
-				// escalation.NoticeAfter without a response, post an escalation notice
-				// at most once per escalation.RepeatEvery.
-				if am.escalation.Enabled {
-					am.mu.Lock()
-					first, hasFired := am.instanceFirstFired[inst]
-					last, hasEscalated := am.lastEscalated[inst]
-					am.mu.Unlock()
-
-					if hasFired && time.Since(first) > am.escalation.NoticeAfter {
-						if !hasEscalated || time.Since(last) > am.escalation.RepeatEvery {
-							firingMinutes := int(time.Since(first).Minutes())
-							if am.slack != nil {
-								am.mu.Lock()
-								threadTS := am.instanceTS[inst]
-								am.mu.Unlock()
-								_ = am.slack.PostEscalationNotice(inst, firingMinutes, threadTS)
-							}
-							am.mu.Lock()
-							am.lastEscalated[inst] = time.Now()
-							am.mu.Unlock()
-						}
-					}
-				}
-			}
+			am.heartbeatTick()
 		}
 	}
 }
 
-// resolutionLoop checks for alerts that have been absent for the required
-// number of consecutive clean polls and resolves them.
-func (am *AlertManager) resolutionLoop(ctx context.Context) {
-	defer am.wg.Done()
-
-	ticker := time.NewTicker(am.heartbeatInterval / 2)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			am.checkResolutions()
+func (am *AlertManager) heartbeatTick() {
+	if am.store == nil {
+		return
+	}
+	dbActive := am.store.GetAllActiveAlerts()
+	instances := make(map[string]bool)
+	for _, a := range dbActive {
+		if a.Severity != collector.SeverityInfo {
+			instances[a.Instance] = true
 		}
 	}
-}
 
-func (am *AlertManager) checkResolutions() {
-	now := time.Now()
-
+	// Clear rate-limit so heartbeat always lands.
 	am.mu.Lock()
-	var resolved []*ActiveAlert
-	var resolvedKeys []string
-
-	for key, active := range am.activeAlerts {
-		if active.cleanChecks >= am.resolveCleanChecks {
-			resolved = append(resolved, active)
-			resolvedKeys = append(resolvedKeys, key)
-		}
-	}
-
-	for _, key := range resolvedKeys {
-		delete(am.activeAlerts, key)
-	}
-
-	// Collect which instances had resolutions and clear their rate-limit so
-	// the all-clear / updated message can go out immediately.
-	resolvedInstances := make(map[string]bool)
-	for _, active := range resolved {
-		resolvedInstances[active.Alert.Instance] = true
-	}
-	for inst := range resolvedInstances {
+	for inst := range instances {
 		delete(am.lastInstanceUpdate, inst)
 	}
 	am.mu.Unlock()
 
-	// Persist resolutions outside the lock.
-	for i, active := range resolved {
-		key := resolvedKeys[i]
-		duration := now.Sub(active.FirstSeen)
-
-		if am.store != nil {
-			resolveCtx, resolveCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			resolveCh := make(chan error, 1)
-			go func() { resolveCh <- am.store.ResolveAlert(key) }()
-			select {
-			case err := <-resolveCh:
-				resolveCancel()
-				if err != nil {
-					am.logger.Error("failed to persist alert resolution",
-						slog.String("dedup_key", key), slog.String("error", err.Error()))
-				}
-			case <-resolveCtx.Done():
-				resolveCancel()
-				am.logger.Error("timeout resolving alert", slog.String("dedup_key", key))
-			}
-		}
-
-		// Clear any acknowledgment for this alert so the next firing starts fresh.
-		if am.ack != nil {
-			am.ack.ClearForDedupKey(key)
-		}
-
-		// PagerDuty: resolve the incident.
-		if am.pagerduty != nil {
-			if err := am.pagerduty.ResolveAlert(key); err != nil {
-				am.logger.Warn("pagerduty resolve failed",
-					slog.String("dedup_key", key), slog.String("error", err.Error()))
-			}
-		}
-
-		// Webhook: notify resolution.
-		if am.webhook != nil {
-			wp := WebhookPayload{
-				Event:     "alert_resolved",
-				Instance:  active.Alert.Instance,
-				Severity:  string(active.Alert.Severity),
-				Category:  active.Alert.Category,
-				Title:     active.Alert.Title,
-				Message:   active.Alert.Message,
-				DedupKey:  key,
-				FiredAt:   active.FirstSeen,
-				FireCount: active.Count,
-			}
-			if err := am.webhook.Send(wp); err != nil {
-				am.logger.Warn("webhook send (resolve) failed",
-					slog.String("dedup_key", key), slog.String("error", err.Error()))
-			}
-		}
-
-		am.logger.Info("alert resolved",
-			slog.String("dedup_key", key),
-			slog.Duration("duration", duration),
-		)
-	}
-
-	// Update Slack for each affected instance (shows updated list or all-clear).
-	for inst := range resolvedInstances {
+	for inst := range instances {
 		am.updateInstanceMessage(inst)
+
+		// Escalation: if the instance has been firing for longer than
+		// escalation.NoticeAfter without a response, post an escalation
+		// notice at most once per escalation.RepeatEvery.
+		if !am.escalation.Enabled {
+			continue
+		}
+		am.mu.Lock()
+		first, hasFired := am.instanceFirstFired[inst]
+		last, hasEscalated := am.lastEscalated[inst]
+		am.mu.Unlock()
+
+		if !hasFired || time.Since(first) <= am.escalation.NoticeAfter {
+			continue
+		}
+		if hasEscalated && time.Since(last) <= am.escalation.RepeatEvery {
+			continue
+		}
+		firingMinutes := int(time.Since(first).Minutes())
+		if am.slack != nil {
+			am.mu.Lock()
+			threadTS := am.instanceTS[inst]
+			am.mu.Unlock()
+			_ = am.slack.PostEscalationNotice(inst, firingMinutes, threadTS)
+		}
+		am.mu.Lock()
+		am.lastEscalated[inst] = time.Now()
+		am.mu.Unlock()
 	}
 }
 
 // ---------------------------------------------------------------------------
 // Info digest
 // ---------------------------------------------------------------------------
-
-func (am *AlertManager) enqueueInfo(alert collector.Alert) {
-	am.infoMu.Lock()
-	am.infoBatch = append(am.infoBatch, alert)
-	am.infoMu.Unlock()
-}
 
 // DrainInfoAlerts returns and clears all accumulated info-level alerts.
 func (am *AlertManager) DrainInfoAlerts() []collector.Alert {
@@ -847,100 +656,73 @@ func (am *AlertManager) DrainInfoAlerts() []collector.Alert {
 }
 
 // ---------------------------------------------------------------------------
-// Introspection
+// Public getters — DB-backed
 // ---------------------------------------------------------------------------
 
-// ActiveAlertCount returns the number of currently-firing alerts.
+// ActiveAlertCount returns the number of currently-firing alerts across all
+// instances and severities.
 func (am *AlertManager) ActiveAlertCount() int {
-	am.mu.Lock()
-	defer am.mu.Unlock()
-	return len(am.activeAlerts)
+	if am.store == nil {
+		return 0
+	}
+	return len(am.store.GetAllActiveAlerts())
 }
 
-// ActiveAlertCountsForInstance returns a map of severity → count for all
-// currently-firing alerts on the given instance. Always returns keys for
-// "critical", "warn", and "info" (with zero values when none are firing)
-// so Prometheus gauges reset to 0 when alerts clear.
+// ActiveAlertCountsForInstance returns severity → count for the given instance.
+// Always returns keys for "critical", "warn", and "info" (zero-filled) so
+// Prometheus gauges reset to 0 when alerts clear.
 func (am *AlertManager) ActiveAlertCountsForInstance(instance string) map[string]int {
-	am.mu.Lock()
-	defer am.mu.Unlock()
 	counts := map[string]int{"critical": 0, "warn": 0, "info": 0}
-	for _, active := range am.activeAlerts {
-		if active.Alert.Instance == instance {
-			sev := string(active.Alert.Severity)
+	if am.store == nil {
+		return counts
+	}
+	for _, a := range am.store.GetActiveAlertsForInstance(instance) {
+		sev := string(a.Severity)
+		if _, ok := counts[sev]; ok {
 			counts[sev]++
 		}
 	}
 	return counts
 }
 
-// ActiveAlertKeys returns the dedup keys of all currently-firing alerts.
+// ActiveAlertKeys returns dedup keys of all currently-firing alerts.
 func (am *AlertManager) ActiveAlertKeys() []string {
-	am.mu.Lock()
-	defer am.mu.Unlock()
-	keys := make([]string, 0, len(am.activeAlerts))
-	for k := range am.activeAlerts {
-		keys = append(keys, k)
+	if am.store == nil {
+		return nil
+	}
+	dbActive := am.store.GetAllActiveAlerts()
+	keys := make([]string, 0, len(dbActive))
+	for _, a := range dbActive {
+		keys = append(keys, a.DedupKey)
 	}
 	return keys
 }
 
-// GetActiveAlert returns a copy of the ActiveAlert for the given dedupKey, or
-// nil if no such alert is currently firing.
+// GetActiveAlert returns an ActiveAlert projection for the given dedup_key, or
+// nil if no unresolved alert exists with that key.
 func (am *AlertManager) GetActiveAlert(dedupKey string) *ActiveAlert {
-	am.mu.Lock()
-	defer am.mu.Unlock()
-	a, ok := am.activeAlerts[dedupKey]
-	if !ok {
+	if am.store == nil {
 		return nil
 	}
-	cp := *a
-	return &cp
-}
-
-// SetOnStateChange registers a callback invoked after each Slack update.
-// Used by SlackApp to refresh the pinned dashboard. Safe to call at any time.
-func (am *AlertManager) SetOnStateChange(fn func()) {
-	am.mu.Lock()
-	am.onStateChange = fn
-	am.mu.Unlock()
-}
-
-// GetInstanceTSMap returns a copy of the instance→SlackTS map for state persistence.
-// Called by SlackApp to snapshot the map before writing to disk.
-func (am *AlertManager) GetInstanceTSMap() map[string]string {
-	am.mu.Lock()
-	defer am.mu.Unlock()
-	out := make(map[string]string, len(am.instanceTS))
-	for k, v := range am.instanceTS {
-		out[k] = v
-	}
-	return out
-}
-
-// LoadInstanceTSMap restores instance→SlackTS entries from a persisted snapshot.
-// Only fills in entries that are currently empty (new entries win over old snapshot).
-// Called at startup so escalation notices can thread-reply to existing messages.
-func (am *AlertManager) LoadInstanceTSMap(m map[string]string) {
-	am.mu.Lock()
-	defer am.mu.Unlock()
-	for k, v := range m {
-		if am.instanceTS[k] == "" && v != "" {
-			am.instanceTS[k] = v
+	for _, a := range am.store.GetAllActiveAlerts() {
+		if a.DedupKey == dedupKey {
+			return projectActiveAlert(a)
 		}
 	}
+	return nil
 }
 
-// GetActiveAlerts returns copies of all currently-firing alerts across all
-// instances, sorted critical-first then warn-first then alphabetically by
-// instance and title.
+// GetActiveAlerts returns projections of all currently-firing alerts across all
+// instances, sorted critical → warn → info, then alphabetically by instance
+// and title.
 func (am *AlertManager) GetActiveAlerts() []*ActiveAlert {
-	am.mu.Lock()
-	defer am.mu.Unlock()
-	result := make([]*ActiveAlert, 0, len(am.activeAlerts))
-	for _, active := range am.activeAlerts {
-		cp := *active
-		result = append(result, &cp)
+	if am.store == nil {
+		return nil
+	}
+	dbActive := am.store.GetAllActiveAlerts()
+	result := make([]*ActiveAlert, 0, len(dbActive))
+	for _, a := range dbActive {
+		result = append(result, projectActiveAlert(a))
 	}
 	sort.Slice(result, func(i, j int) bool {
 		oi := severityOrder(result[i].Alert.Severity)
@@ -956,17 +738,18 @@ func (am *AlertManager) GetActiveAlerts() []*ActiveAlert {
 	return result
 }
 
-// GetActiveAlertsForInstance returns copies of all currently-firing non-info
-// alerts for the given instance, sorted critical-first.
+// GetActiveAlertsForInstance returns non-info active alerts for the given
+// instance, sorted critical-first.
 func (am *AlertManager) GetActiveAlertsForInstance(instance string) []*ActiveAlert {
-	am.mu.Lock()
-	defer am.mu.Unlock()
+	if am.store == nil {
+		return nil
+	}
 	var result []*ActiveAlert
-	for _, active := range am.activeAlerts {
-		if active.Alert.Instance == instance && active.Alert.Severity != collector.SeverityInfo {
-			cp := *active
-			result = append(result, &cp)
+	for _, a := range am.store.GetActiveAlertsForInstance(instance) {
+		if a.Severity == collector.SeverityInfo {
+			continue
 		}
+		result = append(result, projectActiveAlert(a))
 	}
 	sort.Slice(result, func(i, j int) bool {
 		oi := severityOrder(result[i].Alert.Severity)
@@ -977,4 +760,74 @@ func (am *AlertManager) GetActiveAlertsForInstance(instance string) []*ActiveAle
 		return result[i].Alert.Title < result[j].Alert.Title
 	})
 	return result
+}
+
+// projectActiveAlert converts a store-shaped collector.Alert into an
+// ActiveAlert with sane FirstSeen / LastSeen / Count fallbacks.
+func projectActiveAlert(a collector.Alert) *ActiveAlert {
+	firstSeen := a.FirstSeenAt
+	if firstSeen.IsZero() {
+		firstSeen = a.Timestamp
+	}
+	count := a.FireCount
+	if count <= 0 {
+		count = 1
+	}
+	return &ActiveAlert{
+		Alert:     a,
+		FirstSeen: firstSeen,
+		LastSeen:  a.Timestamp,
+		Count:     count,
+		Notified:  true,
+	}
+}
+
+// ---------------------------------------------------------------------------
+// State-change hook and Slack TS persistence (used by SlackApp)
+// ---------------------------------------------------------------------------
+
+// SetOnStateChange registers a callback invoked after each reconcile that
+// mutated state. Used by SlackApp to refresh the pinned dashboard.
+func (am *AlertManager) SetOnStateChange(fn func()) {
+	am.mu.Lock()
+	am.onStateChange = fn
+	am.mu.Unlock()
+}
+
+// GetInstanceTSMap returns a copy of the instance → SlackTS map for persistence.
+func (am *AlertManager) GetInstanceTSMap() map[string]string {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	out := make(map[string]string, len(am.instanceTS))
+	for k, v := range am.instanceTS {
+		out[k] = v
+	}
+	return out
+}
+
+// LoadInstanceTSMap restores instance → SlackTS entries from a persisted
+// snapshot. Only fills in entries currently empty.
+func (am *AlertManager) LoadInstanceTSMap(m map[string]string) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	for k, v := range m {
+		if am.instanceTS[k] == "" && v != "" {
+			am.instanceTS[k] = v
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Sort helper
+// ---------------------------------------------------------------------------
+
+func severityOrder(s collector.Severity) int {
+	switch s {
+	case collector.SeverityCritical:
+		return 0
+	case collector.SeverityWarn:
+		return 1
+	default:
+		return 2
+	}
 }

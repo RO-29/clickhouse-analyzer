@@ -1,7 +1,9 @@
 package alerter
 
 import (
+	"context"
 	"sort"
+	"sync"
 	"testing"
 	"time"
 
@@ -73,9 +75,10 @@ func TestSeverityOrderSortStability(t *testing.T) {
 // InhibitionMatcher.IsInhibited
 // ---------------------------------------------------------------------------
 
-func makeAlert(category, severity string) ActiveAlert {
+func makeAlert(instance, category, severity string) ActiveAlert {
 	return ActiveAlert{
 		Alert: collector.Alert{
+			Instance: instance,
 			Category: category,
 			Severity: collector.Severity(severity),
 		},
@@ -86,10 +89,10 @@ func makeAlert(category, severity string) ActiveAlert {
 }
 
 func TestIsInhibited(t *testing.T) {
-	// Set up a memory:critical alert as the active source alert.
-	activeMemCrit := makeAlert("memory", "critical")
+	// Source alert on host-a; candidates are also on host-a.
+	activeMemCrit := makeAlert("host-a", "memory", "critical")
 	activeAlerts := map[string]*ActiveAlert{
-		"memory:critical": &activeMemCrit,
+		"host-a:memory:critical": &activeMemCrit,
 	}
 
 	tests := []struct {
@@ -99,11 +102,11 @@ func TestIsInhibited(t *testing.T) {
 		want      bool
 	}{
 		{
-			name: "exact match: memory:critical inhibits queries:warn",
+			name: "exact match: memory:critical inhibits queries:warn on same instance",
 			rules: []InhibitionRule{
 				{SourceCategory: "memory", SourceSeverity: "critical", TargetCategory: "queries", TargetSeverity: "warn"},
 			},
-			candidate: makeAlert("queries", "warn"),
+			candidate: makeAlert("host-a", "queries", "warn"),
 			want:      true,
 		},
 		{
@@ -111,7 +114,7 @@ func TestIsInhibited(t *testing.T) {
 			rules: []InhibitionRule{
 				{SourceCategory: "memory", SourceSeverity: "critical", TargetCategory: "queries", TargetSeverity: "warn"},
 			},
-			candidate: makeAlert("storage", "warn"),
+			candidate: makeAlert("host-a", "storage", "warn"),
 			want:      false,
 		},
 		{
@@ -119,25 +122,23 @@ func TestIsInhibited(t *testing.T) {
 			rules: []InhibitionRule{
 				{SourceCategory: "memory", SourceSeverity: "critical", TargetCategory: "queries", TargetSeverity: "warn"},
 			},
-			candidate: makeAlert("queries", "critical"),
+			candidate: makeAlert("host-a", "queries", "critical"),
 			want:      false,
 		},
 		{
 			name: "source severity wildcard: inhibits any source severity",
 			rules: []InhibitionRule{
-				// SourceSeverity empty = wildcard
 				{SourceCategory: "memory", TargetCategory: "queries", TargetSeverity: "warn"},
 			},
-			candidate: makeAlert("queries", "warn"),
+			candidate: makeAlert("host-a", "queries", "warn"),
 			want:      true,
 		},
 		{
 			name: "target severity wildcard: inhibits any target severity",
 			rules: []InhibitionRule{
-				// TargetSeverity empty = wildcard
 				{SourceCategory: "memory", SourceSeverity: "critical", TargetCategory: "queries"},
 			},
-			candidate: makeAlert("queries", "info"),
+			candidate: makeAlert("host-a", "queries", "info"),
 			want:      true,
 		},
 		{
@@ -145,13 +146,13 @@ func TestIsInhibited(t *testing.T) {
 			rules: []InhibitionRule{
 				{SourceCategory: "memory"},
 			},
-			candidate: makeAlert("cpu", "warn"),
+			candidate: makeAlert("host-a", "cpu", "warn"),
 			want:      true,
 		},
 		{
-			name: "no rules: never inhibited",
-			rules: []InhibitionRule{},
-			candidate: makeAlert("queries", "warn"),
+			name:      "no rules: never inhibited",
+			rules:     []InhibitionRule{},
+			candidate: makeAlert("host-a", "queries", "warn"),
 			want:      false,
 		},
 		{
@@ -159,7 +160,15 @@ func TestIsInhibited(t *testing.T) {
 			rules: []InhibitionRule{
 				{SourceCategory: "disk", SourceSeverity: "critical", TargetCategory: "queries", TargetSeverity: "warn"},
 			},
-			candidate: makeAlert("queries", "warn"),
+			candidate: makeAlert("host-a", "queries", "warn"),
+			want:      false,
+		},
+		{
+			name: "cross-instance: memory:critical on host-a does NOT inhibit queries:warn on host-b",
+			rules: []InhibitionRule{
+				{SourceCategory: "memory", SourceSeverity: "critical", TargetCategory: "queries", TargetSeverity: "warn"},
+			},
+			candidate: makeAlert("host-b", "queries", "warn"),
 			want:      false,
 		},
 	}
@@ -181,16 +190,14 @@ func TestIsInhibitedNoActiveAlerts(t *testing.T) {
 	rules := DefaultInhibitionRules()
 	m := &InhibitionMatcher{Rules: rules}
 
-	candidate := makeAlert("queries", "warn")
-	// Empty activeAlerts — no source alerts are firing.
+	candidate := makeAlert("host", "queries", "warn")
 	got := m.IsInhibited(candidate, map[string]*ActiveAlert{})
 	if got {
 		t.Error("expected not inhibited when no active source alerts exist")
 	}
 }
 
-// TestDefaultInhibitionRulesCount verifies we have the expected number of
-// built-in rules so additions don't go unnoticed in tests.
+// TestDefaultInhibitionRulesCount verifies the default set is populated.
 func TestDefaultInhibitionRulesCount(t *testing.T) {
 	rules := DefaultInhibitionRules()
 	if len(rules) == 0 {
@@ -198,11 +205,11 @@ func TestDefaultInhibitionRulesCount(t *testing.T) {
 	}
 }
 
-// TestDefaultInhibitionRulesLogic spot-checks the four documented default rules.
+// TestDefaultInhibitionRulesLogic spot-checks the documented default rules.
 func TestDefaultInhibitionRulesLogic(t *testing.T) {
-	memCritAlert := makeAlert("memory", "critical")
-	replCritAlert := makeAlert("replication", "critical")
-	storageCritAlert := makeAlert("storage", "critical")
+	memCrit := makeAlert("h1", "memory", "critical")
+	replCrit := makeAlert("h1", "replication", "critical")
+	storageCrit := makeAlert("h1", "storage", "critical")
 
 	rules := DefaultInhibitionRules()
 	m := &InhibitionMatcher{Rules: rules}
@@ -214,45 +221,51 @@ func TestDefaultInhibitionRulesLogic(t *testing.T) {
 		want      bool
 	}{
 		{
-			name:      "memory:critical inhibits queries:warn",
-			active:    map[string]*ActiveAlert{"k1": &memCritAlert},
-			candidate: makeAlert("queries", "warn"),
+			name:      "memory:critical inhibits queries:warn on same instance",
+			active:    map[string]*ActiveAlert{"k1": &memCrit},
+			candidate: makeAlert("h1", "queries", "warn"),
 			want:      true,
 		},
 		{
-			name:      "memory:critical inhibits queries:info",
-			active:    map[string]*ActiveAlert{"k1": &memCritAlert},
-			candidate: makeAlert("queries", "info"),
+			name:      "memory:critical inhibits queries:info on same instance",
+			active:    map[string]*ActiveAlert{"k1": &memCrit},
+			candidate: makeAlert("h1", "queries", "info"),
 			want:      true,
 		},
 		{
-			name:      "memory:critical inhibits cpu:warn",
-			active:    map[string]*ActiveAlert{"k1": &memCritAlert},
-			candidate: makeAlert("cpu", "warn"),
+			name:      "memory:critical inhibits cpu:warn on same instance",
+			active:    map[string]*ActiveAlert{"k1": &memCrit},
+			candidate: makeAlert("h1", "cpu", "warn"),
 			want:      true,
 		},
 		{
-			name:      "replication:critical inhibits tables:warn",
-			active:    map[string]*ActiveAlert{"k1": &replCritAlert},
-			candidate: makeAlert("tables", "warn"),
+			name:      "replication:critical inhibits tables:warn on same instance",
+			active:    map[string]*ActiveAlert{"k1": &replCrit},
+			candidate: makeAlert("h1", "tables", "warn"),
 			want:      true,
 		},
 		{
-			name:      "storage:critical inhibits inserts:warn",
-			active:    map[string]*ActiveAlert{"k1": &storageCritAlert},
-			candidate: makeAlert("inserts", "warn"),
+			name:      "storage:critical inhibits inserts:warn on same instance",
+			active:    map[string]*ActiveAlert{"k1": &storageCrit},
+			candidate: makeAlert("h1", "inserts", "warn"),
 			want:      true,
 		},
 		{
-			name:      "memory:critical does NOT inhibit cpu:critical",
-			active:    map[string]*ActiveAlert{"k1": &memCritAlert},
-			candidate: makeAlert("cpu", "critical"),
+			name:      "memory:critical does NOT inhibit cpu:critical on same instance",
+			active:    map[string]*ActiveAlert{"k1": &memCrit},
+			candidate: makeAlert("h1", "cpu", "critical"),
 			want:      false,
 		},
 		{
 			name:      "memory:warn does NOT inhibit queries:warn (source must be critical)",
-			active:    map[string]*ActiveAlert{"k1": {Alert: collector.Alert{Category: "memory", Severity: "warn"}}},
-			candidate: makeAlert("queries", "warn"),
+			active:    map[string]*ActiveAlert{"k1": {Alert: collector.Alert{Instance: "h1", Category: "memory", Severity: "warn"}}},
+			candidate: makeAlert("h1", "queries", "warn"),
+			want:      false,
+		},
+		{
+			name:      "memory:critical on h1 does NOT inhibit queries:warn on h2 (different instance)",
+			active:    map[string]*ActiveAlert{"k1": &memCrit},
+			candidate: makeAlert("h2", "queries", "warn"),
 			want:      false,
 		},
 	}
@@ -268,50 +281,370 @@ func TestDefaultInhibitionRulesLogic(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// AlertManager — deduplication (no CH, no Slack)
+// fakeStore — a concurrency-safe in-memory StoreInterface for reconcile tests
 // ---------------------------------------------------------------------------
 
-// newTestAlertManager returns an AlertManager with nil store and nil Slack,
-// suitable for pure in-memory logic tests.
-func newTestAlertManager(opts ...Option) *AlertManager {
-	return NewAlertManager(nil, nil, opts...)
+type fakeStore struct {
+	mu         sync.Mutex
+	rows       []collector.Alert // append-only log of inserts
+	resolved   map[string]bool
+	firstSeen  map[string]time.Time // carry-forward across firings
+	fireCount  map[string]int       // carry-forward across firings
+	insertErr  error                // if non-nil, InsertAlert returns this
+	insertOnce error                // if set, returned on the next InsertAlert then cleared
 }
 
-func TestAlertManagerDedup(t *testing.T) {
-	am := newTestAlertManager()
+func newFakeStore() *fakeStore {
+	return &fakeStore{
+		resolved:  make(map[string]bool),
+		firstSeen: make(map[string]time.Time),
+		fireCount: make(map[string]int),
+	}
+}
+
+func (f *fakeStore) InsertAlert(a collector.Alert) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.insertOnce != nil {
+		err := f.insertOnce
+		f.insertOnce = nil
+		return 0, err
+	}
+	if f.insertErr != nil {
+		return 0, f.insertErr
+	}
+	// Apply carry-forward semantics (mirroring store.InsertAlert).
+	fs, ok := f.firstSeen[a.DedupKey]
+	if !ok {
+		fs = a.Timestamp
+	}
+	fc := f.fireCount[a.DedupKey] + 1
+	f.firstSeen[a.DedupKey] = fs
+	f.fireCount[a.DedupKey] = fc
+	a.FirstSeenAt = fs
+	a.FireCount = fc
+	f.rows = append(f.rows, a)
+	f.resolved[a.DedupKey] = false
+	return int64(len(f.rows)), nil
+}
+
+func (f *fakeStore) ResolveAlert(dedupKey string) error {
+	f.mu.Lock()
+	f.resolved[dedupKey] = true
+	f.mu.Unlock()
+	return nil
+}
+
+func (f *fakeStore) TouchAlerts(_ []string) error { return nil }
+
+func (f *fakeStore) GetAllActiveAlerts() []collector.Alert {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	// Latest row per dedup_key; include only if not resolved.
+	latest := make(map[string]collector.Alert)
+	for _, r := range f.rows {
+		latest[r.DedupKey] = r
+	}
+	var out []collector.Alert
+	for k, r := range latest {
+		if f.resolved[k] {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+func (f *fakeStore) GetActiveAlertsForInstance(instance string) []collector.Alert {
+	var out []collector.Alert
+	for _, a := range f.GetAllActiveAlerts() {
+		if a.Instance == instance {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// seedResolvedRow appends a resolved row so priorFireStats-style carry-forward
+// has something to observe. Useful for "re-fire preserves lifetime stats" tests.
+func (f *fakeStore) seedResolvedRow(a collector.Alert) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.firstSeen[a.DedupKey] = a.FirstSeenAt
+	f.fireCount[a.DedupKey] = a.FireCount
+	f.rows = append(f.rows, a)
+	f.resolved[a.DedupKey] = true
+}
+
+// ---------------------------------------------------------------------------
+// Reconcile — the core new behavior
+// ---------------------------------------------------------------------------
+
+func newTestAlertManager(store StoreInterface, opts ...Option) *AlertManager {
+	return NewAlertManager(nil, store, opts...)
+}
+
+func TestReconcile_NewAlertIsInserted(t *testing.T) {
+	fs := newFakeStore()
+	am := newTestAlertManager(fs)
 
 	alert := collector.Alert{
-		Instance: "test-host",
+		Instance: "host-1",
 		Severity: collector.SeverityCritical,
 		Category: "memory",
-		Title:    "High memory",
-		DedupKey: "test-host:memory:High memory",
+		Title:    "OOM",
+		DedupKey: "host-1:memory:OOM",
 	}
 
-	// First process: alert should be tracked.
-	am.Process([]collector.Alert{alert})
-	if am.ActiveAlertCount() != 1 {
-		t.Fatalf("after first process: got %d active alerts, want 1", am.ActiveAlertCount())
+	if err := am.Reconcile(context.Background(), []collector.Alert{alert}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
 	}
 
-	// Second process with same alert: count should increment, not create a new entry.
-	am.Process([]collector.Alert{alert})
-	if am.ActiveAlertCount() != 1 {
-		t.Fatalf("after second process: got %d active alerts, want 1 (dedup)", am.ActiveAlertCount())
+	active := fs.GetAllActiveAlerts()
+	if len(active) != 1 {
+		t.Fatalf("expected 1 active alert after first reconcile, got %d", len(active))
 	}
-
-	aa := am.GetActiveAlert(alert.DedupKey)
-	if aa == nil {
-		t.Fatal("expected active alert to exist")
+	if active[0].DedupKey != alert.DedupKey {
+		t.Errorf("dedup_key = %q, want %q", active[0].DedupKey, alert.DedupKey)
 	}
-	if aa.Count != 2 {
-		t.Errorf("alert count = %d, want 2 (deduped increment)", aa.Count)
+	if active[0].FireCount != 1 {
+		t.Errorf("fire_count = %d, want 1 on first fire", active[0].FireCount)
 	}
 }
 
-func TestAlertManagerAutoKey(t *testing.T) {
-	// When DedupKey is empty the manager should auto-generate one.
-	am := newTestAlertManager()
+func TestReconcile_Idempotent(t *testing.T) {
+	fs := newFakeStore()
+	am := newTestAlertManager(fs)
+
+	alert := collector.Alert{
+		Instance: "host-1",
+		Severity: collector.SeverityCritical,
+		Category: "memory",
+		Title:    "OOM",
+		DedupKey: "host-1:memory:OOM",
+	}
+
+	for i := 0; i < 3; i++ {
+		if err := am.Reconcile(context.Background(), []collector.Alert{alert}); err != nil {
+			t.Fatalf("Reconcile (cycle %d): %v", i, err)
+		}
+	}
+
+	if n := len(fs.rows); n != 1 {
+		t.Errorf("expected exactly 1 insert after 3 reconciles with same alert, got %d (touch-only on dedup)", n)
+	}
+}
+
+// The zombie-alert bug from the old design: a failed InsertAlert silently
+// stranded the alert in memory with no DB row and no retry path. In the new
+// design the condition is still firing next cycle and still missing from the
+// DB, so reconcile retries the insert.
+func TestReconcile_FailedInsertRetriesNextCycle(t *testing.T) {
+	fs := newFakeStore()
+	am := newTestAlertManager(fs)
+
+	alert := collector.Alert{
+		Instance: "host-1",
+		Severity: collector.SeverityCritical,
+		Category: "memory",
+		Title:    "OOM",
+		DedupKey: "host-1:memory:OOM",
+	}
+
+	// First reconcile: store rejects the insert.
+	fs.insertOnce = errBoom
+	if err := am.Reconcile(context.Background(), []collector.Alert{alert}); err != nil {
+		t.Fatalf("Reconcile (cycle 1): %v", err)
+	}
+	if len(fs.GetAllActiveAlerts()) != 0 {
+		t.Fatalf("expected 0 active alerts after failed insert, got %d", len(fs.GetAllActiveAlerts()))
+	}
+
+	// Second reconcile (condition still firing): insert succeeds this time.
+	if err := am.Reconcile(context.Background(), []collector.Alert{alert}); err != nil {
+		t.Fatalf("Reconcile (cycle 2): %v", err)
+	}
+	active := fs.GetAllActiveAlerts()
+	if len(active) != 1 {
+		t.Fatalf("expected 1 active alert after retry, got %d", len(active))
+	}
+}
+
+// The UI-resolve disconnect from the old design: user resolves alert → DB
+// says resolved=1, memory still has it, next poll dedups → DB stays resolved
+// even though condition still fires. In the new design, reconcile diffs DB
+// state vs. collector output — a resolved DB row looks "not active", so the
+// still-firing alert gets re-inserted as a fresh row.
+func TestReconcile_UIResolveReFiresIfStillFiring(t *testing.T) {
+	fs := newFakeStore()
+	am := newTestAlertManager(fs)
+
+	alert := collector.Alert{
+		Instance: "host-1",
+		Severity: collector.SeverityCritical,
+		Category: "queries",
+		Title:    "Slow query",
+		DedupKey: "host-1:queries:Slow",
+	}
+
+	// Seed: condition fired an hour ago, user resolved it via UI.
+	earlier := time.Now().Add(-time.Hour)
+	fs.seedResolvedRow(collector.Alert{
+		Instance:    alert.Instance,
+		Severity:    alert.Severity,
+		Category:    alert.Category,
+		Title:       alert.Title,
+		DedupKey:    alert.DedupKey,
+		Timestamp:   earlier,
+		FirstSeenAt: earlier,
+		FireCount:   3,
+	})
+
+	// Condition is still firing now — reconcile sees it missing from DB.
+	if err := am.Reconcile(context.Background(), []collector.Alert{alert}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	active := fs.GetAllActiveAlerts()
+	if len(active) != 1 {
+		t.Fatalf("expected 1 active alert after re-fire, got %d", len(active))
+	}
+	got := active[0]
+	if got.FireCount != 4 {
+		t.Errorf("fire_count = %d, want 4 (carry-forward: 3 prior + 1 new)", got.FireCount)
+	}
+	if !got.FirstSeenAt.Equal(earlier) {
+		t.Errorf("first_seen_at = %v, want original %v (preserved across re-firings)", got.FirstSeenAt, earlier)
+	}
+}
+
+// Maintenance drops alerts entirely. When the window ends, the next reconcile
+// observes them in currentAlerts and re-inserts naturally.
+func TestReconcile_MaintenanceDropsAndRecovers(t *testing.T) {
+	fs := newFakeStore()
+	maint := NewMaintenanceStore()
+	maint.Add("host-1", "scheduled work", "test", time.Hour)
+
+	am := newTestAlertManager(fs, WithMaintenance(maint))
+
+	alert := collector.Alert{
+		Instance: "host-1",
+		Severity: collector.SeverityCritical,
+		Category: "memory",
+		Title:    "OOM",
+		DedupKey: "host-1:memory:OOM",
+	}
+
+	// Reconcile under maintenance: alert is dropped.
+	if err := am.Reconcile(context.Background(), []collector.Alert{alert}); err != nil {
+		t.Fatalf("Reconcile under maintenance: %v", err)
+	}
+	if n := len(fs.GetAllActiveAlerts()); n != 0 {
+		t.Fatalf("maintenance: expected 0 active alerts in DB, got %d", n)
+	}
+
+	// End maintenance; reconcile again — alert fires now.
+	for _, w := range maint.List() {
+		maint.Delete(w.ID)
+	}
+	if err := am.Reconcile(context.Background(), []collector.Alert{alert}); err != nil {
+		t.Fatalf("Reconcile after maintenance: %v", err)
+	}
+	if n := len(fs.GetAllActiveAlerts()); n != 1 {
+		t.Fatalf("after maintenance: expected 1 active alert, got %d", n)
+	}
+}
+
+func TestReconcile_AutoResolveAfterCleanChecks(t *testing.T) {
+	fs := newFakeStore()
+	// resolveCleanChecks=1: one cycle of absence resolves the alert.
+	am := newTestAlertManager(fs, WithResolveCleanChecks(1))
+
+	alert := collector.Alert{
+		Instance: "host-1",
+		Severity: collector.SeverityWarn,
+		Category: "storage",
+		Title:    "Low disk",
+		DedupKey: "host-1:storage:Low",
+	}
+
+	// Fire it.
+	if err := am.Reconcile(context.Background(), []collector.Alert{alert}); err != nil {
+		t.Fatalf("Reconcile fire: %v", err)
+	}
+	if n := len(fs.GetAllActiveAlerts()); n != 1 {
+		t.Fatalf("expected 1 active after fire, got %d", n)
+	}
+
+	// Condition clears.
+	if err := am.Reconcile(context.Background(), nil); err != nil {
+		t.Fatalf("Reconcile clear: %v", err)
+	}
+	if !fs.resolved[alert.DedupKey] {
+		t.Fatalf("expected alert to be resolved after 1 clean check, but DB says unresolved")
+	}
+	if n := len(fs.GetAllActiveAlerts()); n != 0 {
+		t.Errorf("expected 0 active alerts after auto-resolve, got %d", n)
+	}
+}
+
+func TestReconcile_InhibitedAlertStillPersists(t *testing.T) {
+	fs := newFakeStore()
+	rules := []InhibitionRule{
+		{SourceCategory: "memory", SourceSeverity: "critical", TargetCategory: "queries", TargetSeverity: "warn"},
+	}
+	am := newTestAlertManager(fs, WithInhibition(rules))
+
+	memAlert := collector.Alert{
+		Instance: "host-1", Severity: collector.SeverityCritical, Category: "memory",
+		Title: "OOM", DedupKey: "host-1:memory:OOM",
+	}
+	queryAlert := collector.Alert{
+		Instance: "host-1", Severity: collector.SeverityWarn, Category: "queries",
+		Title: "Slow", DedupKey: "host-1:queries:Slow",
+	}
+
+	if err := am.Reconcile(context.Background(), []collector.Alert{memAlert, queryAlert}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	// Both alerts persist — UI should see the inhibited one. Inhibition only
+	// affects Slack/PD/webhook notification.
+	if n := len(fs.GetAllActiveAlerts()); n != 2 {
+		t.Errorf("expected 2 active alerts (both persisted), got %d", n)
+	}
+}
+
+func TestReconcile_InfoAlertsGoToDigest(t *testing.T) {
+	fs := newFakeStore()
+	am := newTestAlertManager(fs)
+
+	info := collector.Alert{
+		Instance: "host-1", Severity: collector.SeverityInfo, Category: "queries",
+		Title: "Info event", DedupKey: "host-1:queries:Info",
+	}
+
+	if err := am.Reconcile(context.Background(), []collector.Alert{info}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	// Info alerts are persisted so UI shows them…
+	if n := len(fs.GetAllActiveAlerts()); n != 1 {
+		t.Errorf("info alert should persist to DB, got %d rows", n)
+	}
+	// …and enqueued for the digest.
+	drained := am.DrainInfoAlerts()
+	if len(drained) != 1 {
+		t.Errorf("info digest: got %d, want 1", len(drained))
+	}
+	if len(am.DrainInfoAlerts()) != 0 {
+		t.Error("second drain should be empty")
+	}
+}
+
+func TestReconcile_AutoGeneratesDedupKey(t *testing.T) {
+	fs := newFakeStore()
+	am := newTestAlertManager(fs)
 
 	alert := collector.Alert{
 		Instance: "host-1",
@@ -321,199 +654,54 @@ func TestAlertManagerAutoKey(t *testing.T) {
 		// DedupKey intentionally empty
 	}
 
-	am.Process([]collector.Alert{alert})
-	if am.ActiveAlertCount() != 1 {
-		t.Fatalf("expected 1 active alert, got %d", am.ActiveAlertCount())
+	if err := am.Reconcile(context.Background(), []collector.Alert{alert}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
 	}
 
-	// The auto-generated key is "instance:category:title".
-	expectedKey := "host-1:queries:Slow query"
-	aa := am.GetActiveAlert(expectedKey)
-	if aa == nil {
-		t.Errorf("expected active alert with auto-generated key %q, not found", expectedKey)
+	active := fs.GetAllActiveAlerts()
+	if len(active) != 1 {
+		t.Fatalf("expected 1 active alert, got %d", len(active))
 	}
-}
-
-func TestAlertManagerCleanChecksResolution(t *testing.T) {
-	// resolveCleanChecks=1: after one cycle without the alert it should resolve.
-	am := newTestAlertManager(WithResolveCleanChecks(1))
-
-	alert := collector.Alert{
-		Instance: "host-2",
-		Severity: collector.SeverityWarn,
-		Category: "storage",
-		Title:    "Low disk",
-		DedupKey: "host-2:storage:Low disk",
-	}
-
-	am.Process([]collector.Alert{alert})
-	if am.ActiveAlertCount() != 1 {
-		t.Fatalf("expected 1 active alert after fire, got %d", am.ActiveAlertCount())
-	}
-
-	// Process an empty set — no alerts seen, cleanChecks increments to 1.
-	am.Process([]collector.Alert{})
-
-	// Manually trigger resolution (would normally happen in resolutionLoop).
-	am.checkResolutions()
-
-	if am.ActiveAlertCount() != 0 {
-		t.Errorf("expected 0 active alerts after resolution, got %d", am.ActiveAlertCount())
+	want := "host-1:queries:Slow query"
+	if active[0].DedupKey != want {
+		t.Errorf("auto-generated dedup_key = %q, want %q", active[0].DedupKey, want)
 	}
 }
 
-func TestAlertManagerInfoAlertsBatched(t *testing.T) {
-	am := newTestAlertManager()
-
-	infoAlert := collector.Alert{
-		Instance: "host-3",
-		Severity: collector.SeverityInfo,
-		Category: "queries",
-		Title:    "Info event",
-		DedupKey: "host-3:queries:Info event",
-	}
-
-	am.Process([]collector.Alert{infoAlert})
-
-	// Info alerts are batched, not counted as "active" alerts for Slack.
-	// However they ARE added to activeAlerts for resolution tracking.
-	// The drain batch should have them.
-	drained := am.DrainInfoAlerts()
-	if len(drained) != 1 {
-		t.Errorf("DrainInfoAlerts() returned %d alerts, want 1", len(drained))
-	}
-	if drained[0].Title != infoAlert.Title {
-		t.Errorf("drained alert title = %q, want %q", drained[0].Title, infoAlert.Title)
-	}
-
-	// Draining again should return empty.
-	drained2 := am.DrainInfoAlerts()
-	if len(drained2) != 0 {
-		t.Errorf("second DrainInfoAlerts() returned %d alerts, want 0", len(drained2))
-	}
-}
-
-func TestAlertManagerInhibitionSuppressesSlack(t *testing.T) {
-	rules := []InhibitionRule{
-		{SourceCategory: "memory", SourceSeverity: "critical", TargetCategory: "queries", TargetSeverity: "warn"},
-	}
-	am := newTestAlertManager(WithInhibition(rules))
-
-	// Fire the source alert first.
-	memAlert := collector.Alert{
-		Instance: "host-4",
-		Severity: collector.SeverityCritical,
-		Category: "memory",
-		Title:    "OOM",
-		DedupKey: "host-4:memory:OOM",
-	}
-	// Fire the target alert at the same time.
-	queryAlert := collector.Alert{
-		Instance: "host-4",
-		Severity: collector.SeverityWarn,
-		Category: "queries",
-		Title:    "Slow queries",
-		DedupKey: "host-4:queries:Slow queries",
-	}
-
-	am.Process([]collector.Alert{memAlert, queryAlert})
-
-	// Both alerts are tracked in activeAlerts (for resolution purposes).
-	if am.ActiveAlertCount() != 2 {
-		t.Errorf("expected 2 active alerts (both tracked), got %d", am.ActiveAlertCount())
-	}
-
-	// The inhibited query alert should be tracked but NOT in dirtyInst (no Slack).
-	// We can verify the queries alert IS in activeAlerts.
-	aa := am.GetActiveAlert(queryAlert.DedupKey)
-	if aa == nil {
-		t.Error("expected inhibited alert to still be tracked in activeAlerts")
-	}
-}
-
-func TestAlertManagerRehydrate(t *testing.T) {
-	am := newTestAlertManager()
-
-	firstSeen := time.Now().Add(-10 * time.Minute)
-	storedAlert := collector.Alert{
-		Instance:    "host-5",
-		Severity:    collector.SeverityCritical,
-		Category:    "memory",
-		Title:       "Persisted alert",
-		DedupKey:    "host-5:memory:Persisted alert",
-		FirstSeenAt: firstSeen,
-		FireCount:   7,
-	}
-
-	am.Rehydrate([]collector.Alert{storedAlert})
-
-	aa := am.GetActiveAlert(storedAlert.DedupKey)
-	if aa == nil {
-		t.Fatal("expected rehydrated alert to exist in activeAlerts")
-	}
-	if aa.Count != 7 {
-		t.Errorf("rehydrated Count = %d, want 7", aa.Count)
-	}
-	if !aa.FirstSeen.Equal(firstSeen) {
-		t.Errorf("rehydrated FirstSeen = %v, want %v", aa.FirstSeen, firstSeen)
-	}
-}
-
-func TestAlertManagerRehydrateNoDuplicate(t *testing.T) {
-	am := newTestAlertManager()
-
-	alert := collector.Alert{
-		Instance: "host-6",
-		Severity: collector.SeverityWarn,
-		Category: "storage",
-		Title:    "Existing alert",
-		DedupKey: "host-6:storage:Existing alert",
-	}
-
-	// Pre-populate via Process.
-	am.Process([]collector.Alert{alert})
-
-	// Rehydrate with the same key — should not create a second entry.
-	am.Rehydrate([]collector.Alert{alert})
-
-	if am.ActiveAlertCount() != 1 {
-		t.Errorf("expected 1 active alert after rehydrate of existing key, got %d", am.ActiveAlertCount())
-	}
-}
+// ---------------------------------------------------------------------------
+// Public getters
+// ---------------------------------------------------------------------------
 
 func TestGetActiveAlertsSorted(t *testing.T) {
-	am := newTestAlertManager()
+	fs := newFakeStore()
+	am := newTestAlertManager(fs)
 
-	alerts := []collector.Alert{
+	_ = am.Reconcile(context.Background(), []collector.Alert{
 		{Instance: "z-host", Severity: collector.SeverityInfo, Title: "info", DedupKey: "k1"},
 		{Instance: "a-host", Severity: collector.SeverityWarn, Title: "warn", DedupKey: "k2"},
 		{Instance: "a-host", Severity: collector.SeverityCritical, Title: "crit", DedupKey: "k3"},
-	}
-	am.Process(alerts)
+	})
 
 	result := am.GetActiveAlerts()
 	if len(result) != 3 {
 		t.Fatalf("expected 3 active alerts, got %d", len(result))
 	}
-
-	// First should be critical.
 	if result[0].Alert.Severity != collector.SeverityCritical {
 		t.Errorf("result[0] severity = %q, want critical", result[0].Alert.Severity)
 	}
-	// Second should be warn.
 	if result[1].Alert.Severity != collector.SeverityWarn {
 		t.Errorf("result[1] severity = %q, want warn", result[1].Alert.Severity)
 	}
-	// Third should be info.
 	if result[2].Alert.Severity != collector.SeverityInfo {
 		t.Errorf("result[2] severity = %q, want info", result[2].Alert.Severity)
 	}
 }
 
 func TestActiveAlertCountsForInstance(t *testing.T) {
-	am := newTestAlertManager()
+	fs := newFakeStore()
+	am := newTestAlertManager(fs)
 
-	am.Process([]collector.Alert{
+	_ = am.Reconcile(context.Background(), []collector.Alert{
 		{Instance: "inst-a", Severity: collector.SeverityCritical, Title: "c1", DedupKey: "a:c1"},
 		{Instance: "inst-a", Severity: collector.SeverityWarn, Title: "w1", DedupKey: "a:w1"},
 		{Instance: "inst-a", Severity: collector.SeverityInfo, Title: "i1", DedupKey: "a:i1"},
@@ -531,26 +719,22 @@ func TestActiveAlertCountsForInstance(t *testing.T) {
 		t.Errorf("inst-a info = %d, want 1", counts["info"])
 	}
 
-	// inst-b should have its own counts.
 	countsB := am.ActiveAlertCountsForInstance("inst-b")
-	if countsB["critical"] != 1 {
-		t.Errorf("inst-b critical = %d, want 1", countsB["critical"])
-	}
-	if countsB["warn"] != 0 {
-		t.Errorf("inst-b warn = %d, want 0", countsB["warn"])
+	if countsB["critical"] != 1 || countsB["warn"] != 0 {
+		t.Errorf("inst-b counts unexpected: %v", countsB)
 	}
 
-	// Unknown instance should return all-zeros.
 	countsX := am.ActiveAlertCountsForInstance("inst-x")
 	if countsX["critical"] != 0 || countsX["warn"] != 0 || countsX["info"] != 0 {
 		t.Errorf("unknown instance counts should all be 0, got %v", countsX)
 	}
 }
 
-func TestGetActiveAlertsForInstance(t *testing.T) {
-	am := newTestAlertManager()
+func TestGetActiveAlertsForInstance_ExcludesInfo(t *testing.T) {
+	fs := newFakeStore()
+	am := newTestAlertManager(fs)
 
-	am.Process([]collector.Alert{
+	_ = am.Reconcile(context.Background(), []collector.Alert{
 		{Instance: "host-7", Severity: collector.SeverityWarn, Title: "b-warn", DedupKey: "h7:b"},
 		{Instance: "host-7", Severity: collector.SeverityCritical, Title: "a-crit", DedupKey: "h7:a"},
 		{Instance: "host-7", Severity: collector.SeverityInfo, Title: "c-info", DedupKey: "h7:c"},
@@ -558,7 +742,6 @@ func TestGetActiveAlertsForInstance(t *testing.T) {
 	})
 
 	result := am.GetActiveAlertsForInstance("host-7")
-	// Info alerts are excluded from per-instance results.
 	if len(result) != 2 {
 		t.Fatalf("expected 2 non-info alerts for host-7, got %d", len(result))
 	}
@@ -569,3 +752,10 @@ func TestGetActiveAlertsForInstance(t *testing.T) {
 		t.Errorf("second result should be warn, got %q", result[1].Alert.Severity)
 	}
 }
+
+// errBoom is a sentinel error used by the fakeStore to simulate insert failures.
+var errBoom = &boomErr{}
+
+type boomErr struct{}
+
+func (*boomErr) Error() string { return "boom" }

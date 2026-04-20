@@ -42,6 +42,7 @@ type Server struct {
 	maintenance   *alerter.MaintenanceStore
 	snoozeStore   *alerter.SnoozeStore
 	ackStore      *alerter.AckStore
+	alertMgr      *alerter.AlertManager
 	startTime     time.Time
 	version       string
 	forcePollCh   chan struct{} // signals main loop to run an immediate poll
@@ -88,6 +89,14 @@ func (s *Server) SetSnoozeStore(ss *alerter.SnoozeStore) {
 // Called from main after the ack store is initialised.
 func (s *Server) SetAckStore(as *alerter.AckStore) {
 	s.ackStore = as
+}
+
+// SetAlertMgr gives the server a reference to the in-memory alert manager so
+// resolve handlers can clear the clean-check counter after a user-initiated
+// resolve. Otherwise a stale counter could race with the next reconcile cycle
+// and produce a wrong clean-check tick.
+func (s *Server) SetAlertMgr(am *alerter.AlertManager) {
+	s.alertMgr = am
 }
 
 // SetForcePollCh gives the server a channel it can signal to trigger an
@@ -1396,6 +1405,12 @@ func (s *Server) handleResolveAlert(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("resolve alert failed", "err", err, "dedup_key", body.DedupKey)
 		writeErr(w, http.StatusInternalServerError, "internal server error")
 		return
+	}
+	// Reset the clean-check counter so the next reconcile doesn't carry a
+	// stale count for this key. If the condition is still firing, reconcile
+	// will re-insert a fresh DB row on the next tick — that's intended.
+	if s.alertMgr != nil {
+		s.alertMgr.ClearCleanChecks(body.DedupKey)
 	}
 	slog.Info("alert resolved via API", "dedup_key", body.DedupKey)
 

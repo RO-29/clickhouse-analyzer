@@ -128,19 +128,13 @@ func (s *Store) Close() error { return nil }
 // Database returns the configured database name.
 func (s *Store) Database() string { return s.database }
 
-// clientFor returns the CH client for the given instance name.
-// Falls back to first available client if not found.
+// clientFor returns the CH client for the given instance name, or nil if the
+// instance isn't registered. The previous fallback-to-first-client behavior
+// was a silent foot-gun: an alert tagged with an unknown instance would land
+// on an unrelated node's alerts table, making it invisible to the UI filter
+// and triggering nonsense Slack routing. Callers must now handle nil.
 func (s *Store) clientFor(instance string) *chclient.Client {
-	c := s.manager.Get(instance)
-	if c != nil {
-		return c
-	}
-	// Fallback: use first available.
-	names := s.manager.Names()
-	if len(names) > 0 {
-		return s.manager.Get(names[0])
-	}
-	return nil
+	return s.manager.Get(instance)
 }
 
 // ---------------------------------------------------------------------------
@@ -314,6 +308,15 @@ func (s *Store) QueryMetricsSeries(instance, name string, from, to time.Time, po
 // ---------------------------------------------------------------------------
 
 // InsertAlert inserts an alert on the instance's own CH.
+//
+// Carry-forward semantics: if any prior row exists for the same dedup_key
+// (resolved or not), the insertion preserves the earliest first_seen_at across
+// all prior rows and advances fire_count to (max prior fire_count + 1). This
+// ensures that when a condition resolves and re-fires, the UI shows cumulative
+// lifetime stats rather than resetting each time.
+//
+// Explicit values on the incoming alert override carry-forward: this lets tests
+// and specialized callers pin first_seen_at / fire_count without the DB lookup.
 func (s *Store) InsertAlert(alert Alert) (int64, error) {
 	client := s.clientFor(alert.Instance)
 	if client == nil {
@@ -329,15 +332,26 @@ func (s *Store) InsertAlert(alert Alert) (int64, error) {
 	if len(msg) > 4000 {
 		msg = msg[:4000]
 	}
+
 	firstSeenAt := alert.FirstSeenAt
-	if firstSeenAt.IsZero() {
-		firstSeenAt = alert.CreatedAt
-	}
-	firstSeenAtStr := firstSeenAt.Format("2006-01-02 15:04:05")
 	fireCount := alert.FireCount
-	if fireCount <= 0 {
-		fireCount = 1
+
+	// Carry-forward from prior rows when caller didn't pin the values.
+	if firstSeenAt.IsZero() || fireCount <= 0 {
+		priorFS, priorFC := s.priorFireStats(ctx, client, alert.DedupKey)
+		if firstSeenAt.IsZero() {
+			if !priorFS.IsZero() {
+				firstSeenAt = priorFS
+			} else {
+				firstSeenAt = alert.CreatedAt
+			}
+		}
+		if fireCount <= 0 {
+			fireCount = priorFC + 1
+		}
 	}
+
+	firstSeenAtStr := firstSeenAt.Format("2006-01-02 15:04:05")
 
 	sql := fmt.Sprintf(`INSERT INTO %s.alerts
 		(id, instance, severity, category, title, message, resolved, resolved_at, created_at, dedup_key, version, updated_at, first_seen_at, fire_count)
@@ -350,8 +364,40 @@ func (s *Store) InsertAlert(alert Alert) (int64, error) {
 		return 0, fmt.Errorf("store: insert alert: %w", err)
 	}
 
-	slog.Info("alert inserted", "id", id, "instance", alert.Instance, "severity", alert.Severity, "title", alert.Title)
+	slog.Info("alert inserted", "id", id, "instance", alert.Instance, "severity", alert.Severity, "title", alert.Title, "fire_count", fireCount)
 	return id, nil
+}
+
+// priorFireStats returns the earliest first_seen_at and max fire_count across
+// all historic rows for the given dedup_key. Returns zero values if no prior
+// row exists or the lookup fails. Best-effort: errors are logged at debug level
+// and swallowed — a missing prior is just "this alert has never fired before".
+func (s *Store) priorFireStats(ctx context.Context, client *chclient.Client, dedupKey string) (time.Time, int) {
+	sql := fmt.Sprintf(
+		`SELECT
+			min(first_seen_at) AS first_seen,
+			max(fire_count)    AS fire_count
+		FROM %s.alerts
+		WHERE dedup_key = '%s'`,
+		s.database, escape(dedupKey),
+	)
+	rows, err := client.Query(ctx, sql)
+	if err != nil || len(rows) == 0 {
+		if err != nil {
+			slog.Debug("store: prior fire stats lookup failed", "dedup_key", dedupKey, "err", err)
+		}
+		return time.Time{}, 0
+	}
+	row := rows[0]
+	fsStr := getString(row, "first_seen")
+	fc := int(getFloat(row, "fire_count"))
+	var firstSeen time.Time
+	if fsStr != "" && fsStr != "\\N" && fsStr != "1970-01-01 00:00:00" {
+		if t, perr := time.Parse("2006-01-02 15:04:05", fsStr); perr == nil {
+			firstSeen = t
+		}
+	}
+	return firstSeen, fc
 }
 
 // ResolveAlert resolves an alert on the instance's CH by inserting a new version.
@@ -465,6 +511,24 @@ func (s *Store) GetActiveAlerts(instance string) ([]Alert, error) {
 	return parseAlertRows(rows), nil
 }
 
+// GetAllActiveAlerts returns unresolved alerts across every registered instance,
+// unioned and tagged by instance. Per-instance failures are logged and skipped
+// so one unhealthy node can't block reconciliation for the rest.
+func (s *Store) GetAllActiveAlerts() []Alert {
+	var all []Alert
+	s.manager.ForEach(func(name string, _ *chclient.Client) error {
+		alerts, err := s.GetActiveAlerts(name)
+		if err != nil {
+			slog.Warn("GetAllActiveAlerts: per-instance query failed",
+				"instance", name, "err", err)
+			return nil // continue iteration
+		}
+		all = append(all, alerts...)
+		return nil
+	})
+	return all
+}
+
 // GetAlertHistory returns all alerts from an instance's own CH.
 func (s *Store) GetAlertHistory(instance string, from, to time.Time, limit int) ([]Alert, error) {
 	if limit <= 0 {
@@ -498,28 +562,6 @@ func (s *Store) GetAlertHistory(instance string, from, to time.Time, limit int) 
 		return nil, fmt.Errorf("store: get alert history: %w", err)
 	}
 	return parseAlertRows(rows), nil
-}
-
-// IsAlertActive checks if an unresolved alert exists on the relevant instance.
-func (s *Store) IsAlertActive(dedupKey string) (bool, error) {
-	instance := extractInstance(dedupKey)
-	client := s.clientFor(instance)
-	if client == nil {
-		return false, nil
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	sql := fmt.Sprintf(`SELECT count() AS cnt FROM %s.alerts FINAL
-		WHERE dedup_key = '%s' AND resolved = 0`,
-		s.database, escape(dedupKey))
-
-	val, err := client.QuerySingleValue(ctx, sql)
-	if err != nil {
-		return false, fmt.Errorf("store: check active: %w", err)
-	}
-	return val != "0" && val != "", nil
 }
 
 // ---------------------------------------------------------------------------
@@ -762,41 +804,6 @@ func (s *Store) BulkTouchAlerts(dedupKeys []string) error {
 		}
 		return nil
 	})
-	return nil
-}
-
-// UpdateFireCount updates the fire_count and first_seen_at for an active alert.
-// Called periodically to keep persisted values in sync with in-memory counters
-// so that a restart can restore them via Rehydrate.
-func (s *Store) UpdateFireCount(dedupKey string, count int, firstSeenAt time.Time) error {
-	instance := extractInstance(dedupKey)
-	client := s.clientFor(instance)
-	if client == nil {
-		return nil
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	firstSeenAtStr := firstSeenAt.Format("2006-01-02 15:04:05")
-
-	sql := fmt.Sprintf(`INSERT INTO %s.alerts
-		(id, instance, severity, category, title, message, resolved, resolved_at, created_at, dedup_key, version, updated_at, first_seen_at, fire_count)
-		SELECT id, instance, severity, category, title, message, resolved, resolved_at, created_at, dedup_key, version+1, now(), '%s', %d
-		FROM (
-			SELECT id, instance, severity, category, title, message, resolved, resolved_at, created_at, dedup_key, version, updated_at
-			FROM %s.alerts
-			WHERE dedup_key = '%s'
-			ORDER BY dedup_key, created_at, version DESC
-			LIMIT 1 BY (dedup_key, created_at)
-		)
-		WHERE resolved = 0`,
-		s.database, firstSeenAtStr, count,
-		s.database, escape(dedupKey))
-
-	if _, err := client.QuerySingleValue(ctx, sql); err != nil {
-		return fmt.Errorf("store: update fire count: %w", err)
-	}
 	return nil
 }
 
