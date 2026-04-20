@@ -75,17 +75,17 @@ func (c *TTLCollector) Collect(ctx context.Context, client *chclient.Client) (*C
 			result.AddAlert(client.Name(), SeverityCritical, "tables",
 				fmt.Sprintf("TTL mutation stuck >%.0fh on %s.%s", stuckHours, db, tbl),
 				fmt.Sprintf("Table `%s.%s` has %.0f stuck TTL/MODIFY mutation(s) not completed in %.1f hours. "+
-					"Expired data is not being purged; disk usage will grow.\n\n"+
-					"*Investigate:*\n```\nSELECT * FROM system.mutations\nWHERE database='%s' AND table='%s' AND NOT is_done\n```",
-					db, tbl, pending, stuckHours, db, tbl),
+					"Expired data is not being purged; disk usage will grow.\n\n%s",
+					db, tbl, pending, stuckHours,
+					ttlStuckPlaybook(db, tbl)),
 				dedupKey)
 		} else if stuckHours > 2 {
 			result.AddAlert(client.Name(), SeverityWarn, "tables",
 				fmt.Sprintf("TTL mutation delayed %.0fh on %s.%s", stuckHours, db, tbl),
 				fmt.Sprintf("Table `%s.%s` has %.0f pending TTL/MODIFY mutation(s) running for %.1f hours. "+
-					"Monitor — stuck mutations prevent TTL expiry.\n\n"+
-					"*Investigate:*\n```\nSELECT * FROM system.mutations\nWHERE database='%s' AND table='%s' AND NOT is_done\n```",
-					db, tbl, pending, stuckHours, db, tbl),
+					"Monitor — stuck mutations prevent TTL expiry.\n\n%s",
+					db, tbl, pending, stuckHours,
+					ttlStuckPlaybook(db, tbl)),
 				dedupKey)
 		}
 	}

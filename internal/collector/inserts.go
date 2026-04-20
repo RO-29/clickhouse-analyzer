@@ -337,13 +337,9 @@ func (c *InsertCollector) collectInsertErrors(ctx context.Context, client *chcli
 		result.AddAlert(client.Name(), severity, "inserts",
 			fmt.Sprintf("Insert failures on %s: %.0f in last %ds", fqn, failed, intervalSec),
 			fmt.Sprintf("*%.0f INSERT exception(s)* on `%s` in the last %ds (error rate: %.1f%%).\n\n"+
-				"*Last exception:* %s\n\n"+
-				"*Investigate:*\n```\nSELECT query, exception, event_time, query_duration_ms\n"+
-				"FROM system.query_log\nWHERE type = 'ExceptionWhileProcessing'\n"+
-				"  AND query_kind = 'Insert'\n  AND databases[1] = '%s'\n"+
-				"  AND tables[1] = '%s'\n  AND event_time > now() - INTERVAL 1 HOUR\n"+
-				"ORDER BY event_time DESC LIMIT 20\n```",
-				failed, fqn, intervalSec, errRate, lastExc, db, table),
+				"*Last exception:* %s\n\n%s",
+				failed, fqn, intervalSec, errRate, lastExc,
+				insertExceptionPlaybook(db, table)),
 			fmt.Sprintf("%s:inserts:errors:%s", client.Name(), fqn))
 	}
 }

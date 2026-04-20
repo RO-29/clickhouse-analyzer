@@ -62,9 +62,8 @@ func (c *KeeperCollector) Collect(ctx context.Context, client *chclient.Client) 
 				"ClickHouse Keeper / ZooKeeper unreachable",
 				fmt.Sprintf("Cannot connect to ClickHouse Keeper or ZooKeeper. "+
 					"ReplicatedMergeTree tables will stop accepting inserts and merges.\n\n"+
-					"Error: %s\n\n"+
-					"*Investigate:*\n```\nSELECT * FROM system.zookeeper_connection\n```",
-					errStr),
+					"Error: %s\n\n%s",
+					errStr, keeperConnectionPlaybook),
 				fmt.Sprintf("%s:keeper:unreachable", client.Name()))
 			result.Duration = time.Since(start)
 			return result, nil
@@ -110,9 +109,8 @@ func (c *KeeperCollector) Collect(ctx context.Context, client *chclient.Client) 
 		result.AddAlert(client.Name(), SeverityCritical, "system",
 			fmt.Sprintf("Keeper overloaded: %.0f outstanding requests", outstanding),
 			fmt.Sprintf("ClickHouse Keeper has %.0f outstanding requests queued. "+
-				"This level of backlog delays distributed operations and may cause timeouts.\n\n"+
-				"*Investigate:*\n```\nSELECT * FROM system.zookeeper_connection\n```",
-				outstanding),
+				"This level of backlog delays distributed operations and may cause timeouts.\n\n%s",
+				outstanding, keeperConnectionPlaybook),
 			fmt.Sprintf("%s:keeper:outstanding_requests", client.Name()))
 	} else if outstanding > 100 {
 		result.AddAlert(client.Name(), SeverityWarn, "system",
@@ -125,9 +123,8 @@ func (c *KeeperCollector) Collect(ctx context.Context, client *chclient.Client) 
 		result.AddAlert(client.Name(), SeverityWarn, "system",
 			fmt.Sprintf("Keeper high latency: avg %.0fms, max %.0fms", maxAvgLatency, maxLatency),
 			fmt.Sprintf("ClickHouse Keeper average latency is %.0fms (max: %.0fms). "+
-				"High latency slows down distributed operations and inserts.\n\n"+
-				"*Investigate:*\n```\nSELECT * FROM system.zookeeper_connection\n```",
-				maxAvgLatency, maxLatency),
+				"High latency slows down distributed operations and inserts.\n\n%s",
+				maxAvgLatency, maxLatency, keeperConnectionPlaybook),
 			fmt.Sprintf("%s:keeper:latency", client.Name()))
 	}
 

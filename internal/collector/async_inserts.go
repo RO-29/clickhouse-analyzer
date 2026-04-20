@@ -78,19 +78,16 @@ func (c *AsyncInsertsCollector) Collect(ctx context.Context, client *chclient.Cl
 			result.AddAlert(client.Name(), SeverityCritical, "inserts",
 				fmt.Sprintf("Async insert failures: %.0f errors in 5 min (%.1f%%)", errors, errPct),
 				fmt.Sprintf("%.0f async insert flush failures in the last 5 minutes (%.1f%% of %.0f total). "+
-					"Data in the buffer may be lost if not retried.\n\n"+
-					"*Investigate:*\n```\nSELECT query, exception, event_time\nFROM system.asynchronous_insert_log\n"+
-					"WHERE status = 'ExceptionWhileFlushing'\n  AND event_time > now() - INTERVAL 5 MINUTE\n"+
-					"ORDER BY event_time DESC LIMIT 20\n```",
-					errors, errPct, total),
+					"Data in the buffer may be lost if not retried.\n\n%s",
+					errors, errPct, total,
+					asyncInsertErrorPlaybook(20)),
 				dedupKey)
 		} else {
 			result.AddAlert(client.Name(), SeverityWarn, "inserts",
 				fmt.Sprintf("Async insert flush errors: %.0f in 5 min", errors),
-				fmt.Sprintf("%.0f async insert flush error(s) in the last 5 minutes out of %.0f total.\n\n"+
-					"*Investigate:*\n```\nSELECT query, exception, event_time\nFROM system.asynchronous_insert_log\n"+
-					"WHERE status = 'ExceptionWhileFlushing'\n  AND event_time > now() - INTERVAL 5 MINUTE\nLIMIT 10\n```",
-					errors, total),
+				fmt.Sprintf("%.0f async insert flush error(s) in the last 5 minutes out of %.0f total.\n\n%s",
+					errors, total,
+					asyncInsertErrorPlaybook(10)),
 				dedupKey)
 		}
 	}

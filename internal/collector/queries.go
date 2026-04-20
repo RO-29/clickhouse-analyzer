@@ -137,13 +137,10 @@ func (c *QueryCollector) collectRunningQueries(ctx context.Context, client *chcl
 
 	// Critical long-running queries (>60s by default)
 	if len(critRunners) > 0 {
-		msg := fmt.Sprintf("*%d queries* running longer than %.0fs:\n%s\n\n"+
-			"*Investigate:*\n```\nSELECT query_id, user, elapsed, formatReadableSize(memory_usage) as mem,\n"+
-			"  read_rows, substring(query,1,100) as q\n"+
-			"FROM system.processes ORDER BY elapsed DESC\n```\n"+
-			"*Kill a query:*\n```\nKILL QUERY WHERE query_id = '<id>'\n```",
+		msg := fmt.Sprintf("*%d queries* running longer than %.0fs:\n%s\n\n%s",
 			len(critRunners), critThreshold,
-			strings.Join(critRunners, "\n"))
+			strings.Join(critRunners, "\n"),
+			processesPlaybook(true))
 		result.AddAlert(client.Name(), SeverityCritical, "queries",
 			fmt.Sprintf("Long-running queries (critical): %d", len(critRunners)),
 			msg,
@@ -152,12 +149,10 @@ func (c *QueryCollector) collectRunningQueries(ctx context.Context, client *chcl
 
 	// Warning long-running queries (>30s but <60s)
 	if len(warnRunners) > 0 {
-		msg := fmt.Sprintf("*%d queries* running longer than %.0fs:\n%s\n\n"+
-			"*Investigate:*\n```\nSELECT query_id, user, elapsed, formatReadableSize(memory_usage) as mem,\n"+
-			"  read_rows, substring(query,1,100) as q\n"+
-			"FROM system.processes ORDER BY elapsed DESC\n```",
+		msg := fmt.Sprintf("*%d queries* running longer than %.0fs:\n%s\n\n%s",
 			len(warnRunners), warnThreshold,
-			strings.Join(warnRunners, "\n"))
+			strings.Join(warnRunners, "\n"),
+			processesPlaybook(false))
 		result.AddAlert(client.Name(), SeverityWarn, "queries",
 			fmt.Sprintf("Long-running queries (warn): %d", len(warnRunners)),
 			msg,
@@ -239,12 +234,9 @@ func (c *QueryCollector) collectFailedQueries(ctx context.Context, client *chcli
 		for code, cnt := range exCounts {
 			exLines = append(exLines, fmt.Sprintf("  - Error code %s: %d failures", code, cnt))
 		}
-		msg := fmt.Sprintf("*%d failed queries* in last 5 minutes:\n%s\n\n"+
-			"*Investigate:*\n```\nSELECT exception_code, count() as cnt, any(exception) as sample\n"+
-			"FROM system.query_log\n"+
-			"WHERE type='ExceptionWhileProcessing' AND event_time >= now() - INTERVAL 5 MINUTE\n"+
-			"GROUP BY exception_code ORDER BY cnt DESC\n```",
-			len(rows), strings.Join(exLines, "\n"))
+		msg := fmt.Sprintf("*%d failed queries* in last 5 minutes:\n%s\n\n%s",
+			len(rows), strings.Join(exLines, "\n"),
+			queryExceptionPlaybook("", "INTERVAL 5 MINUTE"))
 		result.AddAlert(client.Name(), severity, "queries",
 			fmt.Sprintf("Query failures: %d in 5m", len(rows)),
 			msg,
@@ -319,14 +311,9 @@ func (c *QueryCollector) collectTimeouts(ctx context.Context, client *chclient.C
 		sev = SeverityCritical
 	}
 
-	msg := fmt.Sprintf("*%d query timeouts/cancellations* in last 5 minutes:\n%s\n\n"+
-		"*Investigate:*\n```\nSELECT exception_code, count() as cnt, avg(query_duration_ms) as avg_ms,\n"+
-		"  any(exception) as sample\n"+
-		"FROM system.query_log\n"+
-		"WHERE type='ExceptionWhileProcessing' AND exception_code IN (159,160,394)\n"+
-		"  AND event_time >= now() - INTERVAL 1 HOUR\n"+
-		"GROUP BY exception_code ORDER BY cnt DESC\n```",
-		totalCount, strings.Join(lines, "\n"))
+	msg := fmt.Sprintf("*%d query timeouts/cancellations* in last 5 minutes:\n%s\n\n%s",
+		totalCount, strings.Join(lines, "\n"),
+		queryExceptionPlaybook(" AND exception_code IN (159,160,394)", "INTERVAL 1 HOUR"))
 
 	result.AddAlert(client.Name(), sev, "queries",
 		fmt.Sprintf("Query timeouts: %d in 5m", totalCount),
