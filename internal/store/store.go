@@ -488,8 +488,13 @@ func (s *Store) GetActiveAlerts(instance string) ([]Alert, error) {
 	// unmerged parts accumulate faster than CH can background-merge them.
 	// FINAL forces an expensive in-memory merge that can exceed the 10s timeout,
 	// returning nil → UI shows 0 active alerts for several minutes.
-	// Instead, use a subquery with LIMIT 1 BY to get the latest version per
-	// (dedup_key, created_at) key without forcing a full table merge.
+	//
+	// Dedup by dedup_key (not by the (dedup_key, created_at) tuple): an alert
+	// may have multiple rows across different created_at values when prior bugs
+	// inserted re-fire rows without resolving the earlier one. We want the
+	// *latest* firing event per alert — picked via created_at DESC, version
+	// DESC — then filter WHERE resolved = 0. That way ghost duplicates don't
+	// inflate counts across UI views.
 	sql := fmt.Sprintf(`SELECT id, instance, severity, category, title, message,
 			resolved, resolved_at, created_at, dedup_key, updated_at
 		FROM (
@@ -497,8 +502,8 @@ func (s *Store) GetActiveAlerts(instance string) ([]Alert, error) {
 				resolved, resolved_at, created_at, dedup_key, updated_at
 			FROM %s.alerts
 			WHERE instance = '%s'
-			ORDER BY dedup_key, created_at, version DESC
-			LIMIT 1 BY (dedup_key, created_at)
+			ORDER BY dedup_key, created_at DESC, version DESC
+			LIMIT 1 BY dedup_key
 		)
 		WHERE resolved = 0
 		ORDER BY created_at DESC`,
