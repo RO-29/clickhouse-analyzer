@@ -815,8 +815,9 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 
 		activeAlerts, _ := s.store.GetActiveAlerts(name)
 
-		// Separate fresh vs stale alerts (stale = no update in >24h).
-		staleThreshold := 24 * time.Hour
+		// Separate fresh vs stale alerts. Threshold comes from the request so
+		// the UI's ch-stale-hours setting is honored end-to-end.
+		staleThreshold := parseStaleHours(r)
 		var freshAlerts []store.Alert
 		for _, a := range activeAlerts {
 			updatedAt := a.UpdatedAt
@@ -1094,9 +1095,9 @@ func (s *Server) handleAlertStats(w http.ResponseWriter, r *http.Request) {
 	// "Active" must match what the Overview top-bar shows: unresolved + fresh
 	// (updated_at within the staleness window). Overview hides stale ghosts;
 	// stats would double-count them as "firing now" if we used the raw set.
-	// The 24h threshold matches the auto-resolve sweep and the frontend's
-	// default ch-stale-hours — kept in lockstep so the numbers don't drift.
-	staleCutoff := time.Now().Add(-24 * time.Hour)
+	// The threshold comes from the request (?stale_hours=N) so it tracks the
+	// UI's slider value — default 24h matches the auto-resolve sweep.
+	staleCutoff := time.Now().Add(-parseStaleHours(r))
 	var active []store.Alert
 	var activeStale int
 	for _, name := range names {
@@ -1398,6 +1399,22 @@ func parseTimeRange(r *http.Request) (time.Time, time.Time) {
 		}
 	}
 	return from, to
+}
+
+// parseStaleHours reads the ?stale_hours=N query param that the frontend
+// appends based on its localStorage `ch-stale-hours` value. Default 24h,
+// clamped to [1, 720] so a garbage value can't break the filter. Every
+// alert-count endpoint should use this so the server and the UI agree on
+// what "fresh" means.
+func parseStaleHours(r *http.Request) time.Duration {
+	h := parseIntParam(r, "stale_hours", 24)
+	if h < 1 {
+		h = 1
+	}
+	if h > 720 {
+		h = 720
+	}
+	return time.Duration(h) * time.Hour
 }
 
 func parseIntParam(r *http.Request, key string, defaultVal int) int {

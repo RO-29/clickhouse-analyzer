@@ -172,7 +172,11 @@ export function NodeCard({
   const areas = instance.area_status ?? []
   const topAlerts = instance.top_alerts ?? []
   const counts = instance.alert_counts
-  const freshAlerts = Math.max(0, instance.active_alerts - staleAlerts)
+  // instance.active_alerts is already fresh-only (server-side 24h filter in
+  // handleOverview), so don't subtract client-computed stale again — that was
+  // a double-filter carried over from an older model where the field was raw.
+  const freshAlerts = instance.active_alerts
+  // staleAlerts prop still used below as a separate "N stale" indicator.
 
   const memPct = instance.key_metrics?.['memory_pct']
   const cpuPct = instance.key_metrics?.['cpu_pct']

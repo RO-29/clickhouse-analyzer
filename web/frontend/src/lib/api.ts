@@ -44,6 +44,21 @@ import type {
 
 const BASE = ''
 
+// staleHoursParam reads the current ch-stale-hours localStorage value (the
+// same one Overview's fresh filter honors) and returns a query-string fragment
+// `stale_hours=N`. Endpoints that apply server-side staleness filtering
+// (/api/overview, /api/alerts/stats) append this so the server's notion of
+// "fresh" tracks the user's UI preference. Default 24, clamped to sane bounds.
+function staleHoursParam(): string {
+  let h = 24
+  try {
+    const raw = localStorage.getItem('ch-stale-hours')
+    const n = raw != null ? parseInt(raw, 10) : NaN
+    if (Number.isFinite(n) && n >= 1 && n <= 720) h = n
+  } catch { /* localStorage disabled — fall back to 24 */ }
+  return `stale_hours=${h}`
+}
+
 function toastApiError(path: string, status: number) {
   // Don't toast on auth errors (will be handled by auth flow) or 404s (expected)
   if (status === 401) {
@@ -102,7 +117,7 @@ async function postWithSignal<T>(path: string, body: any, signal?: AbortSignal):
 }
 
 export const api = {
-  overview: () => get<Instance[]>('/api/overview'),
+  overview: () => get<Instance[]>(`/api/overview?${staleHoursParam()}`),
   instances: () => get<Instance[]>('/api/instances'),
   metrics: (inst: string, name: string, from: number, to: number, points = 120) =>
     get<MetricResponse>(`/api/instances/${inst}/metrics?name=${name}&from=${from}&to=${to}&points=${points}`),
@@ -119,7 +134,7 @@ export const api = {
       if (params?.category) p.set('category', params.category)
       return get<Alert[]>(`/api/alerts/history?${p}`)
     },
-    stats: (hours = 24) => get<AlertStats>(`/api/alerts/stats?hours=${hours}`),
+    stats: (hours = 24) => get<AlertStats>(`/api/alerts/stats?hours=${hours}&${staleHoursParam()}`),
     at: (inst: string, from: number, to: number) =>
       get<HealthCheck[]>(`/api/instances/${inst}/alerts-at?from=${from}&to=${to}`),
     resolveStale: (hours: number) =>
