@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -412,6 +413,19 @@ func main() {
 	instanceFailures := make(map[string]int)      // consecutive all-collector failure count
 	instanceBackoff := make(map[string]time.Time) // when backoff expires
 
+	// lastPoll is written by the poll closure after each reconcile returns and
+	// read by the web server's /health handler via SetLastPollFn. Atomic so
+	// concurrent access needs no lock.
+	var lastPoll atomic.Pointer[time.Time]
+	if webServer != nil {
+		webServer.SetLastPollFn(func() time.Time {
+			if p := lastPoll.Load(); p != nil {
+				return *p
+			}
+			return time.Time{}
+		})
+	}
+
 	// Main polling loop
 	slog.Info("starting main polling loop", "interval", cfg.Polling.Interval.String())
 	ticker := time.NewTicker(cfg.Polling.Interval.Duration)
@@ -420,6 +434,8 @@ func main() {
 	poll := func() {
 		runReconcile(ctx, clientMgr, collectors, az, alertMgr, metricStore, promExporter,
 			&cbMu, instanceFailures, instanceBackoff)
+		now := time.Now()
+		lastPoll.Store(&now)
 	}
 
 	// Run immediately on startup

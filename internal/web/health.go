@@ -31,6 +31,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		Instances: []InstanceHealth{},
 	}
 
+	if s.lastPollFn != nil {
+		if t := s.lastPollFn(); !t.IsZero() {
+			resp.LastPollAt = &t
+		}
+	}
+
 	names := s.manager.Names()
 	for _, name := range names {
 		health := InstanceHealth{

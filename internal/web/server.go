@@ -43,6 +43,11 @@ type Server struct {
 	snoozeStore   *alerter.SnoozeStore
 	ackStore      *alerter.AckStore
 	alertMgr      *alerter.AlertManager
+
+	// lastPollFn returns the wall-clock time of the last completed reconcile
+	// cycle. Set from main. Surfaced via /health so operators can confirm the
+	// poll loop is actually running at the configured interval.
+	lastPollFn func() time.Time
 	startTime     time.Time
 	version       string
 	forcePollCh   chan struct{} // signals main loop to run an immediate poll
@@ -97,6 +102,12 @@ func (s *Server) SetAckStore(as *alerter.AckStore) {
 // and produce a wrong clean-check tick.
 func (s *Server) SetAlertMgr(am *alerter.AlertManager) {
 	s.alertMgr = am
+}
+
+// SetLastPollFn registers a function returning the time of the last completed
+// reconcile cycle. Used by /health to surface poll freshness to the UI.
+func (s *Server) SetLastPollFn(fn func() time.Time) {
+	s.lastPollFn = fn
 }
 
 // SetForcePollCh gives the server a channel it can signal to trigger an
