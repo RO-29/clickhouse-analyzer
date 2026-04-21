@@ -236,7 +236,22 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
 
   const localDisks = disks.filter(d => !d.disk_name.toLowerCase().includes('s3'))
   const rangeAlerts = alertHistory.filter(a => a.created_at >= customFrom && a.created_at <= customTo)
-  const activeAlerts = alertHistory.filter(a => !a.resolved)
+
+  // Split unresolved alerts into fresh vs stale using the same 24h threshold
+  // Overview uses (configurable via the ch-stale-hours localStorage key) so
+  // the per-instance "Active Alerts" count agrees with NodeCard on Overview.
+  // Stale alerts still show, just in a separate collapsed subsection.
+  const detailStaleHours = (() => {
+    try { return parseInt(localStorage.getItem('ch-stale-hours') ?? '24', 10) || 24 } catch { return 24 }
+  })()
+  const detailNow = Date.now() / 1000
+  const detailAlertAge = (a: Alert) => {
+    const ts = (a.updated_at ?? a.created_at)
+    return ts > 0 ? detailNow - ts : 0
+  }
+  const unresolvedAlerts = alertHistory.filter(a => !a.resolved)
+  const activeAlerts = unresolvedAlerts.filter(a => detailAlertAge(a) <= detailStaleHours * 3600)
+  const staleAlerts = unresolvedAlerts.filter(a => detailAlertAge(a) > detailStaleHours * 3600)
 
   const handleResolveDetailAlert = useCallback(async (dedupKey: string) => {
     try {
@@ -494,6 +509,17 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
             <Section title={`Active Alerts · ${activeAlerts.length}`} defaultOpen>
               <Card noPad>
                 <DataTable columns={alertCols} data={activeAlerts.sort((a, b) => b.created_at - a.created_at)} pageSize={20} onRowClick={row => setSelectedAlert(row as Alert)} showColumnToggle={true} storageKey="detail-active-alerts" />
+              </Card>
+            </Section>
+          )}
+
+          {staleAlerts.length > 0 && (
+            <Section
+              title={`Stale Alerts · ${staleAlerts.length} (no update in >${detailStaleHours}h)`}
+              defaultOpen={false}
+            >
+              <Card noPad>
+                <DataTable columns={alertCols} data={staleAlerts.sort((a, b) => b.created_at - a.created_at)} pageSize={20} onRowClick={row => setSelectedAlert(row as Alert)} showColumnToggle={true} storageKey="detail-stale-alerts" />
               </Card>
             </Section>
           )}
