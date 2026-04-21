@@ -1091,10 +1091,27 @@ func (s *Server) handleAlertStats(w http.ResponseWriter, r *http.Request) {
 		alerts, _ := s.store.GetAlertHistory(name, from, to, 2000)
 		historical = append(historical, alerts...)
 	}
+	// "Active" must match what the Overview top-bar shows: unresolved + fresh
+	// (updated_at within the staleness window). Overview hides stale ghosts;
+	// stats would double-count them as "firing now" if we used the raw set.
+	// The 24h threshold matches the auto-resolve sweep and the frontend's
+	// default ch-stale-hours — kept in lockstep so the numbers don't drift.
+	staleCutoff := time.Now().Add(-24 * time.Hour)
 	var active []store.Alert
+	var activeStale int
 	for _, name := range names {
-		a, _ := s.store.GetActiveAlerts(name)
-		active = append(active, a...)
+		rows, _ := s.store.GetActiveAlerts(name)
+		for _, a := range rows {
+			updated := a.UpdatedAt
+			if updated.IsZero() {
+				updated = a.CreatedAt
+			}
+			if updated.Before(staleCutoff) {
+				activeStale++
+				continue
+			}
+			active = append(active, a)
+		}
 	}
 
 	type catEntry struct {
@@ -1140,20 +1157,33 @@ func (s *Server) handleAlertStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"period_hours":      hours,
-		"total_fired":       len(historical),
-		"currently_firing":  len(active),
-		"resolved":          resolved,
-		"critical":          critical,
-		"warn":              warn,
-		"avg_duration_secs": avgDurationSecs,
-		"top_categories":    topCats,
+		"period_hours":           hours,
+		"total_fired":            len(historical),
+		"currently_firing":       len(active),
+		"currently_firing_stale": activeStale,
+		"resolved":               resolved,
+		"critical":               critical,
+		"warn":                   warn,
+		"avg_duration_secs":      avgDurationSecs,
+		"top_categories":         topCats,
 	})
 }
 
-// GET /api/alerts/active — all active alerts across all instances.
+// GET /api/alerts/active — all active alerts. Accepts optional ?instance=X to
+// scope the result; the Detail page uses this so its per-instance active count
+// matches Overview's NodeCard count exactly (same source, same dedup).
 func (s *Server) handleActiveAlerts(w http.ResponseWriter, r *http.Request) {
-	names := s.manager.Names()
+	instanceFilter := r.URL.Query().Get("instance")
+	var names []string
+	if instanceFilter != "" {
+		if s.manager.Get(instanceFilter) == nil {
+			writeErr(w, http.StatusNotFound, "unknown instance")
+			return
+		}
+		names = []string{instanceFilter}
+	} else {
+		names = s.manager.Names()
+	}
 	var all []store.Alert
 	for _, name := range names {
 		alerts, err := s.store.GetActiveAlerts(name)

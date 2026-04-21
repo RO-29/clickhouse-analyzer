@@ -161,8 +161,14 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
       if (isFirstLoad.current) setLoading(true)
       else setRefreshing(true)
       try {
-        const [ah, q, t, d, m, s3, cs, tm, repl, maint] = await Promise.all([
-          api.alerts.history({ limit: 500 }).catch(() => [] as Alert[]),
+        // Active pulled from /api/alerts/active?instance=X so our count matches
+        // Overview exactly (same dedup, same server-side path). History is a
+        // separate fetch scoped to this instance — the old "history includes
+        // appended active" trick was unreliable because the 500-row limit
+        // applied globally and could starve alerts for a single instance.
+        const [activeRaw, historyRaw, q, t, d, m, s3, cs, tm, repl, maint] = await Promise.all([
+          api.alerts.active(instance!).catch(() => [] as Alert[]),
+          api.alerts.history({ limit: 500, instance: instance! }).catch(() => [] as Alert[]),
           api.queries(instance!).catch(() => []),
           api.tables(instance!).catch(() => []),
           api.disks(instance!).catch(() => []),
@@ -179,7 +185,12 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
             w => (w.instance === instance || w.instance === '*') && w.end_time * 1000 > now.getTime()
           ) ?? null
           setActiveWindow(win)
-          setAlertHistory((ah as Alert[]).filter(a => a.instance === instance))
+          // Merge active (authoritative for unresolved) with history (shows
+          // resolved too). Dedup by id so history + active don't double-list.
+          const byId = new Map<number, Alert>()
+          for (const a of historyRaw as Alert[]) byId.set(a.id, a)
+          for (const a of activeRaw as Alert[]) byId.set(a.id, a) // active wins on same id
+          setAlertHistory(Array.from(byId.values()))
           setQueries(q)
           setTables(t)
           setDisks(d as DiskInfo[])

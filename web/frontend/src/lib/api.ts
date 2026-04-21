@@ -108,7 +108,8 @@ export const api = {
     get<MetricResponse>(`/api/instances/${inst}/metrics?name=${name}&from=${from}&to=${to}&points=${points}`),
   healthCheck: (inst: string) => get<HealthCheck[]>(`/api/instances/${inst}/health-check`),
   alerts: {
-    active: () => get<Alert[]>('/api/alerts/active'),
+    active: (instance?: string) =>
+      get<Alert[]>(`/api/alerts/active${instance ? `?instance=${encodeURIComponent(instance)}` : ''}`),
     history: (params?: { limit?: number; from?: number; to?: number; instance?: string; severity?: string; category?: string }) => {
       const p = new URLSearchParams({ limit: String(params?.limit ?? 500) })
       if (params?.from) p.set('from', String(params.from))
