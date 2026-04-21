@@ -901,7 +901,15 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
     })
   }
 
-  const firingAlerts = filtered.filter((a) => !a.resolved && !isStale(a, staleHours) && !isSnoozed(a.dedup_key, snoozed))
+  // Stat cards and the counter row both read from the UNFILTERED set so the
+  // numbers don't flip around when the user changes the status filter. A
+  // previous version used `filtered`, which made "Resolved: 0" show when the
+  // filter was 'firing' even though there were 326 resolved alerts in the
+  // dataset — confusing at best, "the UI is lying" at worst.
+  const firingAlerts = useMemo(
+    () => allAlerts.filter((a) => !a.resolved && !isStale(a, staleHours) && !isSnoozed(a.dedup_key, snoozed)),
+    [allAlerts, staleHours, snoozed],
+  )
   const firing = firingAlerts.length
   const critFiring = firingAlerts.filter((a) => a.severity === 'critical').length
   const warnFiring = firingAlerts.filter((a) => a.severity === 'warn').length
@@ -916,24 +924,22 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
   if (warnFiring > 0) firingParts.push(`${warnFiring} warn`)
   if (infoFiring > 0) firingParts.push(`${infoFiring} info`)
   const firingSub = firing > 0 ? firingParts.join(' · ') : undefined
-  const staleCount = filtered.filter((a) => isStale(a, staleHours)).length
-  const resolved = filtered.filter((a) => a.resolved).length
-  const snoozedCount = Object.keys(snoozed).length
-
-  // Total stale across ALL (unfiltered) for the dismiss button
-  const totalStaleUnfiltered = useMemo(
-    () => allAlerts.filter((a) => isStale(a, staleHours)).length,
+  const staleCount = useMemo(
+    () => allAlerts.filter((a) => !a.resolved && isStale(a, staleHours)).length,
     [allAlerts, staleHours],
   )
+  const resolved = useMemo(() => allAlerts.filter((a) => a.resolved).length, [allAlerts])
+  const snoozedCount = Object.keys(snoozed).length
 
-  // Unfiltered breakdown counters for the badge row above filter controls
+  // Counter row badges are literal aliases of the stat cards now — kept as
+  // separate names for the JSX that references them.
   const totalAll = allAlerts.length
-  const firingAll = useMemo(
-    () => allAlerts.filter((a) => !a.resolved && !isStale(a, staleHours) && !isSnoozed(a.dedup_key, snoozed)).length,
-    [allAlerts, staleHours, snoozed],
-  )
-  const staleAll = totalStaleUnfiltered
-  const resolvedAll = useMemo(() => allAlerts.filter((a) => a.resolved).length, [allAlerts])
+  const firingAll = firing
+  const staleAll = staleCount
+  const resolvedAll = resolved
+  // Legacy alias — several call sites (dismiss-stale button, etc.) still
+  // reference this name.
+  const totalStaleUnfiltered = staleCount
 
   const handleResolveAlert = useCallback(async (dedupKey: string) => {
     if (resolvingIds.has(dedupKey)) return  // prevent double-fire
