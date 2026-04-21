@@ -86,6 +86,7 @@ export interface QueryPatternV2 {
   cnt: number
   kind: string
   total_ms: number
+  total_cpu_ms?: number    // present when backend exposes ProfileEvents.OSCPUVirtualTimeMicroseconds
   avg_ms: number
   max_ms: number
   p95_ms: number
@@ -125,6 +126,22 @@ export interface QueryUser {
   avg_ms: number
   max_ms: number
   p95_ms: number
+  total_read_bytes: number
+  total_memory: number
+  failures: number
+  selects: number
+  inserts: number
+}
+
+export interface QueryTable {
+  table: string           // "database.table"
+  database: string
+  cnt: number
+  total_ms: number
+  avg_ms: number
+  max_ms: number
+  p95_ms: number
+  total_cpu_ms: number
   total_read_bytes: number
   total_memory: number
   failures: number

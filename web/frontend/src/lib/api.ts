@@ -9,6 +9,7 @@ import type {
   QueryPatternV2,
   QuerySample,
   QueryUser,
+  QueryTable,
   PatternOverviewResponse,
   CompareQueryPatternsResult,
   QueryResult,
@@ -175,6 +176,8 @@ export const api = {
       get<PatternOverviewResponse>(`/api/instances/${inst}/query-pattern-overview?from=${from}&to=${to}&top_n=${topN}`),
     queryUsers: (inst: string, from: number, to: number) =>
       get<QueryUser[]>(`/api/instances/${inst}/query-users?from=${from}&to=${to}`),
+    queryTables: (inst: string, from: number, to: number) =>
+      get<QueryTable[]>(`/api/instances/${inst}/query-tables?from=${from}&to=${to}`),
   },
   killQuery: (inst: string, queryId: string) =>
     post<{ status: string; query_id: string }>(`/api/instances/${inst}/kill-query`, { query_id: queryId }),

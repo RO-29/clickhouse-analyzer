@@ -14,6 +14,7 @@ import type {
   QueryPatternV2,
   QuerySample,
   QueryUser,
+  QueryTable,
   PatternOverviewResponse,
   HistoryFailure,
   HistoryMerge,
@@ -31,6 +32,7 @@ type Tab =
   | 'samples'
   | 'live'
   | 'users'
+  | 'tables'
   | 'failures'
   | 'merges'
   | 'mvs'
@@ -47,6 +49,7 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'samples', label: 'Samples' },
   { key: 'live', label: 'Live Queries' },
   { key: 'users', label: 'Users' },
+  { key: 'tables', label: 'Tables' },
   { key: 'failures', label: 'Failures' },
   { key: 'merges', label: 'Merges & Parts' },
   { key: 'partsage', label: 'Parts Age' },
@@ -733,6 +736,13 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
       ),
     },
     {
+      key: 'total_cpu_ms',
+      label: 'CPU Time',
+      tooltip: 'Sum of CPU time across all executions — present when ProfileEvents.OSCPUVirtualTimeMicroseconds is available',
+      format: (v: any) => v == null ? <span className="text-[var(--dim)] text-[11px]">—</span>
+        : <span className="tabular-nums text-[11px] text-[var(--dim)]">{fmtDuration(Number(v) || 0)}</span>,
+    },
+    {
       key: 'avg_read_bytes',
       label: 'Avg Read Bytes',
       tooltip: 'Average bytes read from disk per execution',
@@ -743,6 +753,13 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
       label: 'Avg Read Rows',
       tooltip: 'Average rows scanned per execution',
       format: (v: any) => <span className="tabular-nums text-[11px] text-[var(--dim)]">{fmtCompact(v)}</span>,
+    },
+    {
+      key: 'avg_memory',
+      label: 'Avg Memory',
+      tooltip: 'Average peak memory per execution',
+      format: (v: any) => v == null ? <span className="text-[var(--dim)] text-[11px]">—</span>
+        : <span className="tabular-nums text-[11px] text-[var(--dim)]">{fmtBytes(Number(v) || 0)}</span>,
     },
     {
       key: 'p95_ms',
@@ -1479,6 +1496,7 @@ function LiveTab({ instance, onShowQuery }: { instance: string; onShowQuery: (q:
               <span className="flex-1">Query</span>
               <span className="w-16 text-right shrink-0">Memory</span>
               <span className="w-16 text-right shrink-0">Read</span>
+              <span className="w-16 text-right shrink-0">Rows</span>
               <span className="w-12 shrink-0" />
             </div>
             {rows.map((r, i) => {
@@ -1520,6 +1538,10 @@ function LiveTab({ instance, onShowQuery }: { instance: string; onShowQuery: (q:
                   {/* Read bytes */}
                   <span className="text-xs text-[var(--dim)] w-16 text-right shrink-0 tabular-nums" title="Read bytes">
                     {r.read_size || '—'}
+                  </span>
+                  {/* Read rows */}
+                  <span className="text-xs text-[var(--dim)] w-16 text-right shrink-0 tabular-nums" title="Read rows">
+                    {r.read_rows != null ? fmtCompact(Number(r.read_rows)) : '—'}
                   </span>
                   <div className="flex items-center gap-0.5 w-12 shrink-0 justify-end">
                     <button onClick={() => onShowQuery(q)}
@@ -1696,6 +1718,151 @@ function UsersTab({ instance, from, to, refreshKey, onDrillUser, onFetched }: Us
                     contentStyle={{ background: '#0f1420', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, fontSize: 11 }}
                     formatter={(v: any, name: any) => {
                       const pct = grandTotal > 0 ? ((Number(v) / grandTotal) * 100).toFixed(1) : '0'
+                      return [`${fmtDuration(Number(v))} (${pct}%)`, name]
+                    }}
+                  />
+                  <Legend iconSize={8} wrapperStyle={{ fontSize: 10, color: '#9ca3af' }} />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/*  Tables Tab — mirrors UsersTab shape but grouped by table           */
+/* ------------------------------------------------------------------ */
+
+interface TablesTabProps extends TabProps {
+  onDrillTable?: (database: string, table: string) => void
+  onFetched?: () => void
+}
+
+function TablesTab({ instance, from, to, refreshKey, onDrillTable, onFetched }: TablesTabProps) {
+  const [tables, setTables] = useState<QueryTable[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let c = false
+    setLoading(true)
+    setError(null)
+    api.history.queryTables(instance, from, to)
+      .then(d => { if (!c) setTables(Array.isArray(d) ? d : []) })
+      .catch(e => { if (!c) setError(e.message) })
+      .finally(() => { if (!c) { setLoading(false); onFetched?.() } })
+    return () => { c = true }
+  }, [instance, from, to, refreshKey, onFetched])
+
+  // ALL hooks BEFORE any early return (Rules of Hooks)
+  const pieData = useMemo(() => {
+    if (tables.length === 0) return null
+    const cpuFor = (t: QueryTable) => Number(t.total_cpu_ms) || Number(t.total_ms) || 0
+    const top = tables.slice(0, 7)
+    const otherMs = tables.slice(7).reduce((s, t) => s + cpuFor(t), 0)
+    const entries = [...top.map((t, i) => ({ name: t.table || '(unknown)', value: cpuFor(t), color: USER_COLORS[i % USER_COLORS.length] })),
+      ...(otherMs > 0 ? [{ name: 'other', value: otherMs, color: '#475569' }] : [])]
+    return entries
+  }, [tables])
+
+  if (loading) return <LoadingSkeleton />
+  if (error) return <ErrorBox message={error} />
+
+  const maxTotalMs = tables.reduce((m, t) => Math.max(m, t.total_ms || 0), 1)
+  const cpuOf = (t: QueryTable) => Number(t.total_cpu_ms) || Number(t.total_ms) || 0
+  const grandCpu = tables.reduce((s, t) => s + cpuOf(t), 0)
+  const topTable = tables[0]
+
+  return (
+    <div className="space-y-4">
+      {/* Stat cards */}
+      {tables.length > 0 && (
+        <div className="flex gap-3 flex-wrap">
+          <StatCard label="Active Tables" value={String(tables.length)} />
+          {topTable && (
+            <StatCard
+              label="Top Table"
+              value={topTable.table || '(unknown)'}
+              sub={grandCpu > 0 ? `${((cpuOf(topTable) / grandCpu) * 100).toFixed(0)}% of total CPU` : ''}
+              color="text-[var(--accent)]"
+            />
+          )}
+          <StatCard label="Total CPU" value={fmtDuration(grandCpu)} />
+          <StatCard
+            label="Total Execs"
+            value={fmtCompact(tables.reduce((s, t) => s + (t.cnt || 0), 0))}
+          />
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-4">
+        {/* Horizontal bars */}
+        <Card>
+          <div className="text-xs text-[var(--dim)] uppercase tracking-wider font-medium mb-3">
+            {tables.length} tables — by total query time
+          </div>
+          {tables.length === 0 ? (
+            <div className="text-sm text-[var(--dim)] text-center py-8">No data in range</div>
+          ) : (
+            <div className="space-y-1.5">
+              {tables.map((t, i) => {
+                const pct = (t.total_ms / maxTotalMs) * 100
+                const color = USER_COLORS[i % USER_COLORS.length]
+                const clickable = !!onDrillTable && !!t.database && !!t.table
+                return (
+                  <div
+                    key={i}
+                    onClick={() => {
+                      if (!clickable) return
+                      const dotted = t.table || ''
+                      const bare = dotted.includes('.') ? dotted.slice(dotted.indexOf('.') + 1) : dotted
+                      onDrillTable!(t.database, bare)
+                    }}
+                    className={cn(
+                      'group flex items-center gap-3 px-3 py-2.5 rounded-lg border border-[var(--border)] hover:bg-[var(--hover)] transition-colors',
+                      clickable && 'cursor-pointer',
+                    )}
+                  >
+                    <span className="text-sm font-medium w-40 shrink-0 truncate font-mono" title={t.table || '(unknown)'}>{t.table || '(unknown)'}</span>
+                    <div className="flex-1 flex items-center gap-2 min-w-0">
+                      <div className="flex-1 h-2 rounded-full bg-[var(--border)] overflow-hidden">
+                        <div className="h-full rounded-full transition-all duration-500"
+                          style={{ width: `${pct}%`, background: color }} />
+                      </div>
+                      <span className="text-xs tabular-nums text-[var(--dim)] w-16 text-right shrink-0">{fmtDuration(t.total_ms)}</span>
+                    </div>
+                    <div className="hidden lg:flex gap-3 text-xs text-[var(--dim)] shrink-0">
+                      <span><span className="text-[var(--fg)]">{fmtCompact(t.cnt)}</span> execs</span>
+                      <span className={cn('font-mono', latencyBg(t.avg_ms), 'px-1.5 py-0.5 rounded text-[11px]')}>{fmtDuration(t.avg_ms)}</span>
+                      {t.failures > 0 && <span className="text-red-400">{t.failures} err</span>}
+                    </div>
+                    {clickable && (
+                      <span className="text-xs text-[var(--accent)] opacity-0 group-hover:opacity-100 shrink-0 transition-opacity">→</span>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </Card>
+
+        {/* Pie chart */}
+        {pieData && (
+          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 flex flex-col">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--dim)] mb-3">CPU Share</div>
+            <div className="flex-1" style={{ minHeight: 180 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius="55%" outerRadius="80%">
+                    {pieData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+                  </Pie>
+                  <Tooltip
+                    contentStyle={{ background: '#0f1420', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, fontSize: 11 }}
+                    formatter={(v: any, name: any) => {
+                      const pct = grandCpu > 0 ? ((Number(v) / grandCpu) * 100).toFixed(1) : '0'
                       return [`${fmtDuration(Number(v))} (${pct}%)`, name]
                     }}
                   />
@@ -2726,13 +2893,13 @@ function fmtAgo(d: Date): string {
 }
 
 export default function Explore({ refreshKey }: { refreshKey?: number }) {
-  const { instances, selectedInstance, setSelectedInstance, setView, from, to } = useStore()
+  const { instances, selectedInstance, setSelectedInstance, setView, from, to, openTableDetail } = useStore()
 
   // Read initial tab from URL params (set by Discover page navigation)
   const [tab, setTab] = useState<Tab>(() => {
     const p = new URLSearchParams(window.location.search)
     const t = p.get('tab') as Tab | null
-    const validTabs: Tab[] = ['antipatterns','patterns','samples','live','users','failures','merges','mvs','s3','inserts','metrics','diskio','partsage']
+    const validTabs: Tab[] = ['antipatterns','patterns','samples','live','users','tables','failures','merges','mvs','s3','inserts','metrics','diskio','partsage']
     return t && validTabs.includes(t) ? t : 'patterns'
   })
   const [queryModal, setQueryModal] = useState<string | null>(null)
@@ -2781,6 +2948,7 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
   const handlePatternsFetched = useCallback(() => handleDataFetched('patterns'), [handleDataFetched])
   const handleSamplesFetched = useCallback(() => handleDataFetched('samples'), [handleDataFetched])
   const handleUsersFetched = useCallback(() => handleDataFetched('users'), [handleDataFetched])
+  const handleTablesFetched = useCallback(() => handleDataFetched('tables'), [handleDataFetched])
 
   const { analyze } = useAIAnalysis(inst)
 
@@ -2825,6 +2993,11 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
     setDrillErrorsOnly(false)
     switchTab('samples')
   }, [switchTab])
+
+  const handleDrillTable = useCallback((database: string, table: string) => {
+    if (!database || !table) return
+    openTableDetail(inst, database, table)
+  }, [openTableDetail, inst])
 
   const handleClearDrill = useCallback(() => {
     setDrillHash(undefined)
@@ -2907,7 +3080,7 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
       </div>
 
       {/* Stale data banner — shown for patterns/samples/users tabs when current tab's fetch is >5 min old */}
-      {currentTabFetchedAt && (Date.now() - currentTabFetchedAt.getTime()) > 5 * 60_000 && (tab === 'patterns' || tab === 'samples' || tab === 'users') && (
+      {currentTabFetchedAt && (Date.now() - currentTabFetchedAt.getTime()) > 5 * 60_000 && (tab === 'patterns' || tab === 'samples' || tab === 'users' || tab === 'tables') && (
         <div className="flex items-center gap-2 px-3 py-1.5 mt-2 mb-0 rounded text-xs bg-amber-500/10 border border-amber-500/20 text-amber-400">
           <span>Data may be stale — fetched {staleAgoStr} ago.</span>
           <button onClick={handleManualRefresh} className="underline hover:no-underline ml-1">Refresh</button>
@@ -2954,6 +3127,14 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
               onAnalyze={handleAnalyze} onShowQuery={handleShowQuery}
               onDrillUser={handleDrillUser}
               onFetched={handleUsersFetched}
+            />
+          )}
+          {tab === 'tables' && (
+            <TablesTab
+              instance={inst} from={from} to={to} refreshKey={effectiveRefreshKey}
+              onAnalyze={handleAnalyze} onShowQuery={handleShowQuery}
+              onDrillTable={handleDrillTable}
+              onFetched={handleTablesFetched}
             />
           )}
           {tab === 'failures' && <FailuresTab instance={inst} from={from} to={to} refreshKey={effectiveRefreshKey} onAnalyze={handleAnalyze} onShowQuery={handleShowQuery} />}
