@@ -300,7 +300,7 @@ function StatementPane({ stmt, index, total }: StatementPaneProps) {
             </span>
           </div>
           <code className="flex-1 truncate text-[11px] font-mono text-[var(--fg)] opacity-70" title={stmt.sql}>
-            {stmt.sql.length > 80 ? stmt.sql.slice(0, 80) + '…' : stmt.sql}
+            {stmt.sql}
           </code>
         </div>
       )}
@@ -953,7 +953,7 @@ export default function Terminal() {
                       <span className="text-xs text-[var(--dim)] ml-auto">{fmtDuration(entry.elapsed_ms)} · {fmtCompact(entry.row_count)} rows</span>
                     </div>
                     <div className="text-xs font-mono text-[var(--fg)] truncate" title={entry.query}>
-                      {entry.query.length > 80 ? entry.query.slice(0, 80) + '…' : entry.query}
+                      {entry.query}
                     </div>
                     {entry.error && <div className="text-xs text-[var(--red)] mt-1 truncate" title={entry.error}>{entry.error}</div>}
                   </button>

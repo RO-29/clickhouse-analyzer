@@ -1626,7 +1626,7 @@ function CrossQueryView({ from, to }: { from: number; to: number }) {
                     {row.hash.slice(0, 12)}
                   </td>
                   <td className="py-2 px-3 max-w-xs">
-                    <div className="text-xs text-[var(--dim)] font-mono truncate" title={String(row.label)}>{String(row.label).slice(0, 60)}</div>
+                    <div className="text-xs text-[var(--dim)] font-mono truncate" title={String(row.label)}>{String(row.label)}</div>
                     <div className="text-xs text-[var(--dim)] mt-0.5 opacity-60">{row.kind}</div>
                   </td>
                   {instances.map((inst, j) => {

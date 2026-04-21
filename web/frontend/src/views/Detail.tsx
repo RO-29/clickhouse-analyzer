@@ -278,7 +278,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
   ]
 
   const queryCols = [
-    { key: 'query_short', label: 'Query', format: (v: any) => <span className="font-mono truncate block max-w-md" title={String(v ?? '')}>{String(v ?? '').slice(0, 100)}</span> },
+    { key: 'query_short', label: 'Query', format: (v: any) => <span className="font-mono truncate block max-w-md" title={String(v ?? '')}>{String(v ?? '')}</span> },
     { key: 'elapsed', label: 'Elapsed', format: (v: any) => fmtDuration((v ?? 0) * 1000) },
     { key: 'user', label: 'User' },
     { key: 'memory_usage', label: 'Memory', format: (v: any) => fmtBytes(v ?? 0) },
@@ -848,7 +848,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
               <Card noPad>
                 <DataTable
                   columns={[
-                    { key: 'sample_query', label: 'Query', format: (v: any) => <span className="font-mono truncate block max-w-sm" title={v}>{String(v ?? '').slice(0, 80)}</span> },
+                    { key: 'sample_query', label: 'Query', format: (v: any) => <span className="font-mono truncate block max-w-sm" title={v}>{String(v ?? '')}</span> },
                     { key: 'cnt', label: 'Count', format: (v: any) => fmtNum(v) },
                     { key: 'avg_ms', label: 'Avg', format: (v: any) => fmtDuration(v) },
                     { key: 'p95_ms', label: 'p95', format: (v: any) => fmtDuration(v) },
@@ -872,7 +872,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
                     { key: 'ts', label: 'Time', format: (v: any) => <span className="text-[var(--dim)]">{fmtTime(typeof v === 'string' ? new Date(v).getTime() / 1000 : v)}</span> },
                     { key: 'exception_code', label: 'Code' },
                     { key: 'cnt', label: 'Count', format: (v: any) => <span className="text-red-400">{fmtNum(v)}</span> },
-                    { key: 'sample', label: 'Sample', format: (v: any) => <span className="text-[var(--dim)]">{String(v ?? '').slice(0, 80)}</span> },
+                    { key: 'sample', label: 'Sample', format: (v: any) => <span className="text-[var(--dim)] font-mono truncate block max-w-sm" title={String(v ?? '')}>{String(v ?? '')}</span> },
                   ]}
                   data={queryFailures}
                   maxHeight="200px"

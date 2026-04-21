@@ -895,8 +895,8 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
             <span className="text-xs font-semibold text-red-400 uppercase tracking-wider">
               Failure Detail — hash {failHash.slice(0, 14)}
             </span>
-            <span className="text-[11px] text-[var(--dim)]">
-              {patterns.find(p => String(p.normalized_query_hash) === failHash)?.sample_query?.slice(0, 60)}
+            <span className="text-[11px] text-[var(--dim)] truncate max-w-md font-mono" title={patterns.find(p => String(p.normalized_query_hash) === failHash)?.sample_query ?? ''}>
+              {patterns.find(p => String(p.normalized_query_hash) === failHash)?.sample_query ?? ''}
             </span>
             <button onClick={() => setFailHash(null)} className="ml-auto text-[var(--dim)] hover:text-[var(--fg)]">
               <X size={14} />
@@ -2075,8 +2075,8 @@ function S3Tab({ instance, from, to, refreshKey, onAnalyze, onShowQuery }: TabPr
                   const q = String(v ?? '')
                   return (
                     <span className="flex items-center gap-1.5 group/q min-w-0" title={q}>
-                      <span className="text-[var(--dim)] text-xs font-mono">
-                        {q.length > 150 ? q.slice(0, 150) + '…' : q}
+                      <span className="text-[var(--dim)] text-xs font-mono truncate block max-w-[400px]">
+                        {q}
                       </span>
                       {q && (
                         <button
@@ -2527,7 +2527,7 @@ function QueryAPCard({ group, onRunQuery }: { group: any; onRunQuery: (q: string
                   ...metricCols,
                   { key: 'sample_query', label: 'Sample Query', format: (v: any) => (
                     <button onClick={() => onRunQuery(String(v ?? ''))} className="font-mono text-xs text-left text-[var(--accent)] hover:underline truncate block max-w-sm" title={String(v ?? '')}>
-                      {String(v ?? '').slice(0, 80)}{String(v ?? '').length > 80 ? '…' : ''}
+                      {String(v ?? '')}
                     </button>
                   )},
                 ]}

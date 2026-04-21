@@ -72,7 +72,7 @@ export function TableDetail({ instance, database, table, onClose }: TableDetailP
       label: 'Sample Query',
       format: (v: any) => (
         <span className="font-mono text-xs truncate block max-w-md" title={String(v ?? '')}>
-          {String(v ?? '').slice(0, 120)}
+          {String(v ?? '')}
         </span>
       ),
     },

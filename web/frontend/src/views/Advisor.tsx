@@ -580,7 +580,7 @@ export default function Advisor() {
                   label: 'Query',
                   format: (v: any) => (
                     <span className="font-mono text-xs truncate block max-w-sm" title={String(v ?? '')}>
-                      {String(v ?? '').slice(0, 100)}
+                      {String(v ?? '')}
                     </span>
                   ),
                 },
@@ -649,7 +649,7 @@ export default function Advisor() {
                   label: 'Sample',
                   format: (v: any) => (
                     <span className="font-mono text-xs truncate block max-w-sm" title={String(v ?? '')}>
-                      {String(v ?? '').slice(0, 100)}
+                      {String(v ?? '')}
                     </span>
                   ),
                 },
@@ -1009,7 +1009,7 @@ export default function Advisor() {
                           label: 'Query',
                           format: (v: any) => (
                             <span className="font-mono text-xs block max-w-xs truncate" title={String(v ?? '')}>
-                              {String(v ?? '').slice(0, 120)}
+                              {String(v ?? '')}
                             </span>
                           ),
                         },
