@@ -114,12 +114,8 @@ func (c *QueryCollector) collectRunningQueries(ctx context.Context, client *chcl
 		result.AddMetric(client.Name(), "queries.running.read_rows", readRows, labels)
 		result.AddMetric(client.Name(), "queries.running.read_bytes", readBytes, labels)
 
-		truncQuery := query
-		if len(truncQuery) > 120 {
-			truncQuery = truncQuery[:120] + "..."
-		}
 		line := fmt.Sprintf("  - `%s` user=%s elapsed=%.0fs mem=%s: %s",
-			queryID, user, elapsed, humanBytes(memUsage), truncQuery)
+			queryID, user, elapsed, humanBytes(memUsage), query)
 
 		if elapsed >= critThreshold {
 			critRunners = append(critRunners, line)
@@ -287,9 +283,6 @@ func (c *QueryCollector) collectTimeouts(ctx context.Context, client *chclient.C
 		cnt := int(getFloat(row, "cnt"))
 		user := getString(row, "user")
 		sample := getString(row, "sample_query")
-		if len(sample) > 100 {
-			sample = sample[:100] + "..."
-		}
 		name := codeNames[code]
 		if name == "" {
 			name = fmt.Sprintf("code_%d", code)
@@ -362,9 +355,6 @@ func (c *QueryCollector) collectZombieQueries(ctx context.Context, client *chcli
 		elapsed := getFloat(row, "elapsed")
 		mem := getFloat(row, "memory_usage")
 		query := getString(row, "query")
-		if len(query) > 100 {
-			query = query[:100] + "..."
-		}
 		if len(agent) > 40 {
 			agent = agent[:40]
 		}
@@ -437,10 +427,6 @@ func (c *QueryCollector) collectRepeatedPatterns(ctx context.Context, client *ch
 			sample := getString(row, "sample_query")
 			avgDur := getFloat(row, "avg_duration_ms")
 			user := getString(row, "user")
-
-			if len(sample) > 100 {
-				sample = sample[:100] + "..."
-			}
 
 			result.AddMetric(client.Name(), "queries.repeated_pattern.count", cnt, map[string]string{
 				"hash": hash,

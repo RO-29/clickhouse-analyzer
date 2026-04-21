@@ -75,9 +75,6 @@ func (c *SlowQueryFingerprintCollector) Collect(ctx context.Context, client *chc
 		user := getString(row, "user")
 
 		displayQuery := sample
-		if len(displayQuery) > 200 {
-			displayQuery = displayQuery[:200] + "..."
-		}
 
 		dedupKey := fmt.Sprintf("%s:slow_query_fingerprint:storm:%s", client.Name(), hash)
 

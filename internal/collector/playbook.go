@@ -51,7 +51,7 @@ func insertExceptionPlaybook(database, table string) string {
 func processesPlaybook(withKill bool) string {
 	block := "*Investigate:*\n```\n" +
 		"SELECT query_id, user, elapsed, formatReadableSize(memory_usage) as mem,\n" +
-		"  read_rows, substring(query,1,100) as q\n" +
+		"  read_rows, query\n" +
 		"FROM system.processes ORDER BY elapsed DESC\n```"
 	if withKill {
 		block += "\n*Kill a query:*\n```\nKILL QUERY WHERE query_id = '<id>'\n```"
