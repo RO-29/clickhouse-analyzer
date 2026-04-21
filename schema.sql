@@ -94,7 +94,11 @@ CREATE TABLE IF NOT EXISTS ch_analyzer.query_samples (
     exception_code        Int32,
     is_exception          UInt8,
     client_name           LowCardinality(String),
-    interface             LowCardinality(String)
+    interface             LowCardinality(String),
+    databases             Array(String)          DEFAULT [],
+    tables                Array(String)          DEFAULT [],
+    cpu_user_us           UInt64                 DEFAULT 0,
+    cpu_system_us         UInt64                 DEFAULT 0
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMM(event_time)
 ORDER BY (event_time, normalized_query_hash)

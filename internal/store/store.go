@@ -75,6 +75,9 @@ func New(manager *chclient.Manager, database string) (*Store, error) {
 	// Migrate: add first_seen_at and fire_count columns (no-op on new installs).
 	s.migrateAlertFireTracking()
 
+	// Migrate: add databases/tables/cpu columns to query_samples (no-op on new installs).
+	s.migrateQuerySamplesExtras()
+
 	// One-shot cleanup: collapse historical duplicate active alerts. Prior
 	// bugs could leave multiple resolved=0 rows for the same dedup_key across
 	// different created_at values; GetActiveAlerts dedups at read time, but
@@ -123,6 +126,41 @@ func (s *Store) migrateAlertFireTracking() {
 		for _, sql := range sqls {
 			if _, err := client.QuerySingleValue(ctx, sql); err != nil {
 				slog.Warn("alert migration: fire tracking columns failed", "instance", name, "err", err)
+			}
+		}
+		return nil
+	})
+}
+
+// migrateQuerySamplesExtras adds databases/tables/cpu_user_us/cpu_system_us
+// columns to ch_analyzer.query_samples. Safe to call on new installs —
+// ADD COLUMN IF NOT EXISTS is idempotent. These columns let the dashboard
+// attribute query cost to specific tables and surface CPU-bound patterns.
+func (s *Store) migrateQuerySamplesExtras() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sqls := []string{
+		fmt.Sprintf(
+			"ALTER TABLE %s.query_samples ADD COLUMN IF NOT EXISTS databases Array(String) DEFAULT []",
+			s.database,
+		),
+		fmt.Sprintf(
+			"ALTER TABLE %s.query_samples ADD COLUMN IF NOT EXISTS tables Array(String) DEFAULT []",
+			s.database,
+		),
+		fmt.Sprintf(
+			"ALTER TABLE %s.query_samples ADD COLUMN IF NOT EXISTS cpu_user_us UInt64 DEFAULT 0",
+			s.database,
+		),
+		fmt.Sprintf(
+			"ALTER TABLE %s.query_samples ADD COLUMN IF NOT EXISTS cpu_system_us UInt64 DEFAULT 0",
+			s.database,
+		),
+	}
+	s.manager.ForEach(func(name string, client *chclient.Client) error {
+		for _, sql := range sqls {
+			if _, err := client.QuerySingleValue(ctx, sql); err != nil {
+				slog.Warn("query_samples migration: add extras failed", "instance", name, "err", err)
 			}
 		}
 		return nil

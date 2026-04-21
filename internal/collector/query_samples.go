@@ -120,13 +120,16 @@ func (c *QuerySamplesCollector) setWatermark(instance string, t time.Time) {
 
 func (c *QuerySamplesCollector) readQueryLog(ctx context.Context, client *chclient.Client, since time.Time) ([]map[string]interface{}, error) {
 	sinceStr := since.Format("2006-01-02 15:04:05")
+	// ProfileEvents.Names/Values are parallel arrays. Guard with indexOf > 0
+	// because older CH versions may not have UserTimeMicroseconds /
+	// SystemTimeMicroseconds entries — indexOf returns 0 when absent.
 	sql := fmt.Sprintf(`
 		SELECT
 			event_time,
 			user,
 			query_kind,
 			normalized_query_hash,
-			substring(query, 1, 2000)        AS query_text,
+			query AS query_text,
 			query_duration_ms,
 			memory_usage,
 			read_rows,
@@ -138,7 +141,17 @@ func (c *QuerySamplesCollector) readQueryLog(ctx context.Context, client *chclie
 			exception_code,
 			if(type = 'ExceptionWhileProcessing', 1, 0) AS is_exception,
 			client_name,
-			interface
+			interface,
+			databases,
+			tables,
+			if(indexOf(ProfileEvents.Names, 'UserTimeMicroseconds') > 0,
+				arrayElement(ProfileEvents.Values,
+					indexOf(ProfileEvents.Names, 'UserTimeMicroseconds')),
+				toUInt64(0)) AS cpu_user_us,
+			if(indexOf(ProfileEvents.Names, 'SystemTimeMicroseconds') > 0,
+				arrayElement(ProfileEvents.Values,
+					indexOf(ProfileEvents.Names, 'SystemTimeMicroseconds')),
+				toUInt64(0)) AS cpu_system_us
 		FROM system.query_log
 		WHERE event_time > '%s'
 		  AND is_initial_query = 1
@@ -175,7 +188,8 @@ func (c *QuerySamplesCollector) insertRows(ctx context.Context, client *chclient
 			(event_time, user, query_kind, normalized_query_hash, query_text,
 			 query_duration_ms, memory_usage, read_rows, read_bytes,
 			 written_rows, written_bytes, result_rows, result_bytes,
-			 exception_code, is_exception, client_name, interface) VALUES `)
+			 exception_code, is_exception, client_name, interface,
+			 databases, tables, cpu_user_us, cpu_system_us) VALUES `)
 
 		for i, row := range batch {
 			if i > 0 {
@@ -188,7 +202,7 @@ func (c *QuerySamplesCollector) insertRows(ctx context.Context, client *chclient
 				maxTime = t
 			}
 
-			sb.WriteString(fmt.Sprintf("('%s','%s','%s',%s,'%s',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'%s','%s')",
+			sb.WriteString(fmt.Sprintf("('%s','%s','%s',%s,'%s',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'%s','%s',%s,%s,%s,%s)",
 				sqlEscape(evtTime),
 				sqlEscape(toString(row["user"])),
 				sqlEscape(toString(row["query_kind"])),
@@ -206,6 +220,10 @@ func (c *QuerySamplesCollector) insertRows(ctx context.Context, client *chclient
 				safeUInt8(row["is_exception"]),
 				sqlEscape(toString(row["client_name"])),
 				sqlEscape(toString(row["interface"])),
+				safeStringArray(row["databases"]),
+				safeStringArray(row["tables"]),
+				safeUInt64(row["cpu_user_us"]),
+				safeUInt64(row["cpu_system_us"]),
 			))
 		}
 
@@ -248,4 +266,30 @@ func safeUInt8(v interface{}) string {
 		f = 1
 	}
 	return fmt.Sprintf("%.0f", f)
+}
+
+// safeStringArray formats an Array(String) value from a ClickHouse JSON
+// response (typically []interface{} of strings) as a CH array literal
+// suitable for inclusion in an INSERT VALUES clause. A nil or empty
+// array produces "[]". Individual strings are SQL-escaped.
+func safeStringArray(v interface{}) string {
+	if v == nil {
+		return "[]"
+	}
+	items, ok := v.([]interface{})
+	if !ok {
+		return "[]"
+	}
+	if len(items) == 0 {
+		return "[]"
+	}
+	parts := make([]string, 0, len(items))
+	for _, it := range items {
+		s, ok := it.(string)
+		if !ok {
+			s = toString(it)
+		}
+		parts = append(parts, "'"+sqlEscape(s)+"'")
+	}
+	return "[" + strings.Join(parts, ",") + "]"
 }
