@@ -666,7 +666,7 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
   const [filterSeverity, setFilterSeverity] = useState(alertPreset?.severity ?? _pf.severityFilter ?? 'all')
   const [filterCategory, setFilterCategory] = useState(_pf.categoryFilter ?? 'all')
   const [filterType, setFilterType] = useState('all')
-  const [filterStatus, setFilterStatus] = useState('all')
+  const [filterStatus, setFilterStatus] = useState('firing')
 
   const [searchRaw, setSearchRaw] = useState(_pf.searchRaw ?? '')
   const searchText = parseSearchTokens(searchRaw).text
@@ -925,6 +925,15 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
     () => allAlerts.filter((a) => isStale(a, staleHours)).length,
     [allAlerts, staleHours],
   )
+
+  // Unfiltered breakdown counters for the badge row above filter controls
+  const totalAll = allAlerts.length
+  const firingAll = useMemo(
+    () => allAlerts.filter((a) => !a.resolved && !isStale(a, staleHours) && !isSnoozed(a.dedup_key, snoozed)).length,
+    [allAlerts, staleHours, snoozed],
+  )
+  const staleAll = totalStaleUnfiltered
+  const resolvedAll = useMemo(() => allAlerts.filter((a) => a.resolved).length, [allAlerts])
 
   const handleResolveAlert = useCallback(async (dedupKey: string) => {
     if (resolvingIds.has(dedupKey)) return  // prevent double-fire
@@ -1284,6 +1293,36 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
             )}
           </div>
         )}
+      </div>
+
+      {/* ---- Status breakdown badges (clickable filters) ---- */}
+      <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
+        {([
+          { key: 'all', label: 'total', count: totalAll, color: 'var(--dim)' },
+          { key: 'firing', label: 'firing', count: firingAll, color: '#ef4444' },
+          { key: 'stale', label: 'stale', count: staleAll, color: '#eab308' },
+          { key: 'resolved', label: 'resolved', count: resolvedAll, color: '#22c55e' },
+        ] as const).map((b, i) => {
+          const active = filterStatus === b.key
+          return (
+            <span key={b.key} className="flex items-center gap-1.5">
+              {i > 0 && <span className="text-[var(--dim)]/40">·</span>}
+              <button
+                type="button"
+                onClick={() => setFilterStatus(b.key)}
+                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border transition-colors ${
+                  active
+                    ? 'bg-[var(--accent-subtle)] text-[var(--accent)] border-[var(--accent)]/40'
+                    : 'bg-[var(--surface)] text-[var(--text)] border-[var(--border)] hover:border-[var(--accent)]/40'
+                }`}
+                title={`Filter: ${b.label}`}
+              >
+                <span className="text-[var(--dim)]">{b.label}:</span>
+                <span className="font-semibold tabular-nums" style={{ color: active ? undefined : b.color }}>{b.count}</span>
+              </button>
+            </span>
+          )
+        })}
       </div>
 
       {/* ---- Filters ---- */}
