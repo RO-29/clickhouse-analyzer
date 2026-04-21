@@ -1277,6 +1277,95 @@ func (s *Server) handleQueryUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------------------------------------------------------------------------
+// 13b. Query Tables (per-table aggregation)
+// ---------------------------------------------------------------------------
+
+// handleQueryTables groups query_samples by the tables each query touched
+// (unnesting the `tables` array with ARRAY JOIN) and aggregates the same
+// cost-and-failure metrics as handleQueryUsers. Falls back to
+// system.query_log when query_samples is empty or missing the new columns.
+// System / ch_analyzer tables are excluded — operators don't care about
+// the monitoring tool's own reads, and system schema reads flood the list.
+func (s *Server) handleQueryTables(w http.ResponseWriter, r *http.Request) {
+	instance := r.PathValue("name")
+	client := s.manager.Get(instance)
+	if client == nil {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	fromTime, toTime := parseFromTo(r)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	// Prefer ch_analyzer.query_samples (requires Commit 3's new columns).
+	sql := fmt.Sprintf(`SELECT
+		concat(databases[indexOf(tables, table_name)], '.', table_name) AS table,
+		databases[indexOf(tables, table_name)] AS database,
+		count() AS cnt,
+		sum(query_duration_ms) AS total_ms,
+		avg(query_duration_ms) AS avg_ms,
+		max(query_duration_ms) AS max_ms,
+		quantile(0.95)(query_duration_ms) AS p95_ms,
+		sum(cpu_user_us + cpu_system_us) / 1000 AS total_cpu_ms,
+		sum(read_bytes) AS total_read_bytes,
+		sum(memory_usage) AS total_memory,
+		countIf(is_exception = 1) AS failures,
+		countIf(query_kind = 'Select') AS selects,
+		countIf(query_kind = 'Insert') AS inserts
+	FROM ch_analyzer.query_samples
+	ARRAY JOIN tables AS table_name
+	WHERE event_time >= '%s' AND event_time <= '%s'
+	  AND table_name != ''
+	  AND databases[indexOf(tables, table_name)] NOT IN
+	      ('system', 'information_schema', 'INFORMATION_SCHEMA', 'ch_analyzer')
+	GROUP BY table, database
+	ORDER BY total_ms DESC
+	LIMIT 50`, fromTime, toTime)
+
+	rows, err := client.Query(ctx, sql)
+	if err != nil || len(rows) == 0 {
+		// Fall back to system.query_log — same shape, CPU from ProfileEvents.
+		sql = fmt.Sprintf(`SELECT
+			concat(databases[indexOf(tables, table_name)], '.', table_name) AS table,
+			databases[indexOf(tables, table_name)] AS database,
+			count() AS cnt,
+			sum(query_duration_ms) AS total_ms,
+			avg(query_duration_ms) AS avg_ms,
+			max(query_duration_ms) AS max_ms,
+			quantile(0.95)(query_duration_ms) AS p95_ms,
+			sum(ProfileEvents['UserTimeMicroseconds'] +
+			    ProfileEvents['SystemTimeMicroseconds']) / 1000 AS total_cpu_ms,
+			sum(read_bytes) AS total_read_bytes,
+			sum(memory_usage) AS total_memory,
+			countIf(type = 'ExceptionWhileProcessing') AS failures,
+			countIf(query_kind = 'Select') AS selects,
+			countIf(query_kind = 'Insert') AS inserts
+		FROM system.query_log
+		ARRAY JOIN tables AS table_name
+		WHERE event_time >= '%s' AND event_time <= '%s'
+		  AND is_initial_query = 1
+		  AND type IN ('QueryFinish', 'ExceptionWhileProcessing')
+		  AND table_name != ''
+		  AND databases[indexOf(tables, table_name)] NOT IN
+		      ('system', 'information_schema', 'INFORMATION_SCHEMA', 'ch_analyzer')
+		GROUP BY table, database
+		ORDER BY total_ms DESC
+		LIMIT 50`, fromTime, toTime)
+
+		rows, err = client.Query(ctx, sql)
+		if err != nil {
+			slog.Warn("query tables", "err", err, "instance", instance)
+			writeJSON(w, http.StatusOK, []interface{}{})
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusOK, rows)
+}
+
+// ---------------------------------------------------------------------------
 // 14. Enhanced Query Patterns (total_ms, sort_by, is_initial_query)
 // ---------------------------------------------------------------------------
 

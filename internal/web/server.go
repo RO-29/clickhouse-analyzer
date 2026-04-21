@@ -261,6 +261,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/instances/{name}/query-samples", s.handleQuerySamples)
 	mux.HandleFunc("GET /api/instances/{name}/query-pattern-overview", s.handleQueryPatternOverview)
 	mux.HandleFunc("GET /api/instances/{name}/query-users", s.handleQueryUsers)
+	mux.HandleFunc("GET /api/instances/{name}/query-tables", s.handleQueryTables)
 	mux.HandleFunc("POST /api/instances/{name}/kill-query", s.handleKillQuery)
 	mux.HandleFunc("GET /api/instances/{name}/history/failures", s.handleHistoryFailures)
 	mux.HandleFunc("GET /api/instances/{name}/history/merges", s.handleHistoryMerges)
