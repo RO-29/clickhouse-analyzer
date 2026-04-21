@@ -170,7 +170,10 @@ function Layout() {
   return (
     <div className="flex min-h-screen overflow-x-hidden bg-[var(--bg)] text-[var(--text)]">
       <Sidebar mobileOpen={mobileSidebarOpen} onMobileClose={() => setMobileSidebarOpen(false)} onOpenPalette={() => setPaletteOpen(true)} />
-      <div className={cn("flex-1 flex flex-col transition-all duration-200", sidebarCollapsed ? "md:ml-14" : "md:ml-[220px]")}>
+      {/* Sidebar is position:fixed (Sidebar.tsx), so flex-1 on this wrapper resolves to 100% viewport width.
+          Using margin-left here would visually offset content right and overflow the viewport by the sidebar width.
+          Padding-left keeps the box 100% wide (box-sizing: border-box) and shrinks the inner content area correctly. */}
+      <div className={cn("flex-1 flex flex-col min-w-0 transition-all duration-200", sidebarCollapsed ? "md:pl-14" : "md:pl-[220px]")}>
         <TopBar onMobileMenuClick={() => setMobileSidebarOpen(o => !o)} />
         <main className={cn(
           'flex-1 w-full min-h-0',
