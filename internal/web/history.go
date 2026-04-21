@@ -979,21 +979,23 @@ func (s *Server) handleQuerySamples(w http.ResponseWriter, r *http.Request) {
 
 	fromTime, toTime := parseFromTo(r)
 	limit := parseIntParam(r, "limit", 100)
-	hash := r.URL.Query().Get("hash")             // filter by normalized_query_hash
-	user := r.URL.Query().Get("user")             // filter by user
-	kind := r.URL.Query().Get("kind")             // filter by query_kind
-	minMs := r.URL.Query().Get("min_ms")          // filter by min duration
-	table := r.URL.Query().Get("table")           // filter: has(tables, table)
-	errorsOnly := r.URL.Query().Get("errors_only") == "1" // show only exceptions
+	offset := parseIntParam(r, "offset", 0)             // pagination for Query Log
+	hash := r.URL.Query().Get("hash")                   // filter by normalized_query_hash
+	user := r.URL.Query().Get("user")                   // filter by user
+	kind := r.URL.Query().Get("kind")                   // filter by query_kind
+	minMs := r.URL.Query().Get("min_ms")                // filter by min duration
+	table := r.URL.Query().Get("table")                 // filter: has(tables, table)
+	textSearch := r.URL.Query().Get("q")                // ILIKE substring match on query text
+	errorsOnly := r.URL.Query().Get("errors_only") == "1"
 
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
 	// Try ch_analyzer.query_samples first (fast).
-	samples, err := s.queryFromSamples(ctx, client, fromTime, toTime, hash, user, kind, minMs, table, errorsOnly, limit)
+	samples, err := s.queryFromSamples(ctx, client, fromTime, toTime, hash, user, kind, minMs, table, textSearch, errorsOnly, limit, offset)
 	if err != nil || len(samples) == 0 {
 		// Fall back to system.query_log.
-		samples, err = s.queryFromQueryLog(ctx, client, fromTime, toTime, hash, user, kind, minMs, table, errorsOnly, limit)
+		samples, err = s.queryFromQueryLog(ctx, client, fromTime, toTime, hash, user, kind, minMs, table, textSearch, errorsOnly, limit, offset)
 		if err != nil {
 			slog.Warn("query samples fallback failed", "err", err, "instance", instance)
 			writeJSON(w, http.StatusOK, []map[string]interface{}{})
@@ -1006,7 +1008,7 @@ func (s *Server) handleQuerySamples(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) queryFromSamples(ctx context.Context, client *chclient.Client,
-	fromTime, toTime, hash, user, kind, minMs, table string, errorsOnly bool, limit int) ([]map[string]interface{}, error) {
+	fromTime, toTime, hash, user, kind, minMs, table, textSearch string, errorsOnly bool, limit, offset int) ([]map[string]interface{}, error) {
 
 	// Check table exists first.
 	rows, err := client.Query(ctx, "SELECT count() as cnt FROM ch_analyzer.query_samples LIMIT 1")
@@ -1031,6 +1033,10 @@ func (s *Server) queryFromSamples(ctx context.Context, client *chclient.Client,
 	}
 	if table != "" {
 		filters = append(filters, fmt.Sprintf("has(tables, '%s')", sqlSafeStr(table)))
+	}
+	if textSearch != "" {
+		// ILIKE + % wildcards for simple case-insensitive substring.
+		filters = append(filters, fmt.Sprintf("query_text ILIKE '%%%s%%'", sqlSafeStr(textSearch)))
 	}
 	if errorsOnly {
 		filters = append(filters, "is_exception = 1")
@@ -1060,13 +1066,13 @@ func (s *Server) queryFromSamples(ctx context.Context, client *chclient.Client,
 	FROM ch_analyzer.query_samples
 	WHERE %s
 	ORDER BY event_time DESC
-	LIMIT %d`, strings.Join(filters, " AND "), limit)
+	LIMIT %d OFFSET %d`, strings.Join(filters, " AND "), limit, offset)
 
 	return client.Query(ctx, sql)
 }
 
 func (s *Server) queryFromQueryLog(ctx context.Context, client *chclient.Client,
-	fromTime, toTime, hash, user, kind, minMs, table string, errorsOnly bool, limit int) ([]map[string]interface{}, error) {
+	fromTime, toTime, hash, user, kind, minMs, table, textSearch string, errorsOnly bool, limit, offset int) ([]map[string]interface{}, error) {
 
 	var filters []string
 	filters = append(filters,
@@ -1091,6 +1097,9 @@ func (s *Server) queryFromQueryLog(ctx context.Context, client *chclient.Client,
 	}
 	if table != "" {
 		filters = append(filters, fmt.Sprintf("has(tables, '%s')", sqlSafeStr(table)))
+	}
+	if textSearch != "" {
+		filters = append(filters, fmt.Sprintf("query ILIKE '%%%s%%'", sqlSafeStr(textSearch)))
 	}
 
 	sql := fmt.Sprintf(`SELECT
@@ -1117,7 +1126,7 @@ func (s *Server) queryFromQueryLog(ctx context.Context, client *chclient.Client,
 	FROM system.query_log
 	WHERE %s
 	ORDER BY event_time DESC
-	LIMIT %d`, strings.Join(filters, " AND "), limit)
+	LIMIT %d OFFSET %d`, strings.Join(filters, " AND "), limit, offset)
 
 	return client.Query(ctx, sql)
 }

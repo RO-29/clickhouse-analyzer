@@ -30,6 +30,7 @@ import type { AnalyzeOptions } from '../hooks/useAIAnalysis'
 type Tab =
   | 'patterns'
   | 'samples'
+  | 'querylog'
   | 'live'
   | 'users'
   | 'tables'
@@ -47,6 +48,7 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'antipatterns', label: 'Anti-patterns' },
   { key: 'patterns', label: 'Query Patterns' },
   { key: 'samples', label: 'Samples' },
+  { key: 'querylog', label: 'Query Log' },
   { key: 'live', label: 'Live Queries' },
   { key: 'users', label: 'Users' },
   { key: 'tables', label: 'Tables' },
@@ -1104,6 +1106,291 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
           />
         )
       })()}
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/*  Query Log Tab                                                      */
+/*                                                                     */
+/*  A free-form query browser — different from Samples, which is       */
+/*  optimized for drilling in from a specific pattern hash. This tab   */
+/*  lets operators sift through every query that ran in range, filter  */
+/*  by user / kind / status / table / min duration, and full-text      */
+/*  search the query body. Reuses the /api/instances/:inst/query-      */
+/*  samples endpoint with the ?q= and ?offset= params we just added.   */
+/* ------------------------------------------------------------------ */
+
+function QueryLogTab({ instance, from, to, refreshKey, onShowQuery }: TabProps) {
+  const PAGE_SIZE = 200
+
+  const [rows, setRows] = useState<QuerySample[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [exhausted, setExhausted] = useState(false)
+
+  // Filters
+  const [searchRaw, setSearchRaw] = useState('')
+  const [searchQuery, setSearchQuery] = useState('')
+  const [userFilter, setUserFilter] = useState('')
+  const [kindFilter, setKindFilter] = useState<'' | 'Select' | 'Insert' | 'Alter' | 'System' | 'Create' | 'Drop'>('')
+  const [statusFilter, setStatusFilter] = useState<'all' | 'success' | 'error'>('all')
+  const [tableRaw, setTableRaw] = useState('')
+  const [tableQuery, setTableQuery] = useState('')
+  const [minMs, setMinMs] = useState<string>('')
+
+  // Debounce search + table inputs so we don't fire a CH query per keystroke.
+  useEffect(() => {
+    const id = setTimeout(() => setSearchQuery(searchRaw.trim()), 300)
+    return () => clearTimeout(id)
+  }, [searchRaw])
+  useEffect(() => {
+    const id = setTimeout(() => setTableQuery(tableRaw.trim()), 300)
+    return () => clearTimeout(id)
+  }, [tableRaw])
+
+  const filterKey = `${instance}|${from}|${to}|${searchQuery}|${userFilter}|${kindFilter}|${statusFilter}|${tableQuery}|${minMs}|${refreshKey ?? 0}`
+
+  // Initial load + reload when any filter changes.
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+    setExhausted(false)
+    api.history.querySamples(instance, from, to, {
+      limit: PAGE_SIZE,
+      offset: 0,
+      user: userFilter || undefined,
+      kind: kindFilter || undefined,
+      minMs: minMs || undefined,
+      errorsOnly: statusFilter === 'error' || undefined,
+      table: tableQuery || undefined,
+      q: searchQuery || undefined,
+    })
+      .then(d => {
+        if (cancelled) return
+        const list = Array.isArray(d) ? d : []
+        setRows(list)
+        if (list.length < PAGE_SIZE) setExhausted(true)
+      })
+      .catch(e => { if (!cancelled) setError(e.message) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterKey])
+
+  const loadMore = useCallback(() => {
+    if (loadingMore || exhausted) return
+    setLoadingMore(true)
+    api.history.querySamples(instance, from, to, {
+      limit: PAGE_SIZE,
+      offset: rows.length,
+      user: userFilter || undefined,
+      kind: kindFilter || undefined,
+      minMs: minMs || undefined,
+      errorsOnly: statusFilter === 'error' || undefined,
+      table: tableQuery || undefined,
+      q: searchQuery || undefined,
+    })
+      .then(d => {
+        const list = Array.isArray(d) ? d : []
+        if (list.length === 0) setExhausted(true)
+        else {
+          setRows(prev => [...prev, ...list])
+          if (list.length < PAGE_SIZE) setExhausted(true)
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoadingMore(false))
+  }, [instance, from, to, rows.length, loadingMore, exhausted,
+      userFilter, kindFilter, statusFilter, tableQuery, minMs, searchQuery])
+
+  const resetFilters = () => {
+    setSearchRaw('')
+    setUserFilter('')
+    setKindFilter('')
+    setStatusFilter('all')
+    setTableRaw('')
+    setMinMs('')
+  }
+
+  const totalShown = rows.length
+  const statusSuccess = statusFilter === 'success'
+    ? rows.filter(r => !r.is_exception)
+    : rows
+  const displayRows = statusSuccess
+
+  // Client-side "success only" filter because the server only has
+  // errors_only (not success_only). Cheap — everything returned is already
+  // paginated server-side.
+  if (loading && rows.length === 0) return <LoadingSkeleton />
+  if (error && rows.length === 0) return <ErrorBox message={error} />
+
+  return (
+    <div className="space-y-3">
+      {/* Filter bar */}
+      <Card>
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            type="text"
+            value={searchRaw}
+            onChange={e => setSearchRaw(e.target.value)}
+            placeholder="Search query text…"
+            className="flex-1 min-w-[200px] bg-[var(--surface)] border border-[var(--border)] rounded-md px-3 py-1.5 text-sm text-[var(--fg)] focus:outline-none focus:border-[var(--accent)]"
+          />
+          <input
+            type="text"
+            value={userFilter}
+            onChange={e => setUserFilter(e.target.value)}
+            placeholder="User"
+            className="w-28 bg-[var(--surface)] border border-[var(--border)] rounded-md px-3 py-1.5 text-sm text-[var(--fg)] focus:outline-none focus:border-[var(--accent)]"
+          />
+          <select
+            value={kindFilter}
+            onChange={e => setKindFilter(e.target.value as any)}
+            className="bg-[var(--surface)] border border-[var(--border)] rounded-md px-2 py-1.5 text-sm text-[var(--fg)] focus:outline-none focus:border-[var(--accent)]"
+          >
+            <option value="">All kinds</option>
+            <option value="Select">Select</option>
+            <option value="Insert">Insert</option>
+            <option value="Alter">Alter</option>
+            <option value="Create">Create</option>
+            <option value="Drop">Drop</option>
+            <option value="System">System</option>
+          </select>
+          <select
+            value={statusFilter}
+            onChange={e => setStatusFilter(e.target.value as any)}
+            className="bg-[var(--surface)] border border-[var(--border)] rounded-md px-2 py-1.5 text-sm text-[var(--fg)] focus:outline-none focus:border-[var(--accent)]"
+          >
+            <option value="all">All statuses</option>
+            <option value="success">Success</option>
+            <option value="error">Error</option>
+          </select>
+          <input
+            type="text"
+            value={tableRaw}
+            onChange={e => setTableRaw(e.target.value)}
+            placeholder="Table (bare name)"
+            className="w-36 bg-[var(--surface)] border border-[var(--border)] rounded-md px-3 py-1.5 text-sm text-[var(--fg)] focus:outline-none focus:border-[var(--accent)]"
+          />
+          <input
+            type="number"
+            value={minMs}
+            onChange={e => setMinMs(e.target.value)}
+            placeholder="Min ms"
+            min={0}
+            className="w-24 bg-[var(--surface)] border border-[var(--border)] rounded-md px-3 py-1.5 text-sm text-[var(--fg)] focus:outline-none focus:border-[var(--accent)]"
+          />
+          <button
+            onClick={resetFilters}
+            className="text-[11px] text-[var(--dim)] hover:text-[var(--fg)] px-2 py-1 rounded border border-[var(--border)] transition-colors"
+          >
+            Reset
+          </button>
+        </div>
+        <div className="mt-2 text-[11px] text-[var(--dim)]">
+          {loading
+            ? 'Loading…'
+            : `Showing ${displayRows.length.toLocaleString()} queries${exhausted ? '' : ' (more available)'}${searchQuery ? ` matching "${searchQuery}"` : ''}`}
+        </div>
+      </Card>
+
+      {/* Rows */}
+      <Card noPad>
+        {displayRows.length === 0 && !loading ? (
+          <div className="text-sm text-[var(--dim)] text-center py-10">
+            No queries matched.
+          </div>
+        ) : (
+          <div className="divide-y divide-[var(--border)]">
+            {/* Header */}
+            <div className="grid gap-2 px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--dim)] bg-[var(--surface)]"
+                 style={{ gridTemplateColumns: '120px 80px 60px 60px 90px 80px 90px 1fr 160px' }}>
+              <span>Time</span>
+              <span>User</span>
+              <span>Kind</span>
+              <span>Status</span>
+              <span className="text-right">Duration</span>
+              <span className="text-right">CPU</span>
+              <span className="text-right">Memory</span>
+              <span>Query</span>
+              <span>Tables</span>
+            </div>
+            {displayRows.map((s, i) => {
+              const cpuMs = (Number(s.cpu_user_us) || 0) / 1000 + (Number(s.cpu_system_us) || 0) / 1000
+              const q = String(s.query_text ?? '')
+              const fromServer: string[] = Array.isArray(s.tables) ? s.tables : []
+              const tablesArr = fromServer.length > 0 ? fromServer : inferTablesFromQuery(q)
+              const tablesInferred = fromServer.length === 0 && tablesArr.length > 0
+              const dur = Number(s.query_duration_ms) || 0
+              const durColor = dur > 30000 ? 'text-red-400' : dur > 5000 ? 'text-orange-400' : dur > 1000 ? 'text-yellow-400' : 'text-[var(--fg)]'
+              const evtTime = String(s.event_time ?? '')
+              return (
+                <div
+                  key={i}
+                  className="grid gap-2 px-3 py-2 text-xs hover:bg-[var(--hover)] transition-colors cursor-pointer"
+                  style={{ gridTemplateColumns: '120px 80px 60px 60px 90px 80px 90px 1fr 160px' }}
+                  onClick={() => onShowQuery(q)}
+                >
+                  <span className="font-mono text-[var(--dim)] tabular-nums truncate" title={evtTime}>
+                    {evtTime.slice(5, 19)}
+                  </span>
+                  <span className="truncate text-[var(--dim)]" title={String(s.user ?? '')}>
+                    {String(s.user ?? '')}
+                  </span>
+                  <span>
+                    {s.query_kind && (
+                      <span className={cn('inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium', kindBg(String(s.query_kind)))}>
+                        {String(s.query_kind).slice(0, 3).toUpperCase()}
+                      </span>
+                    )}
+                  </span>
+                  <span>
+                    {s.is_exception
+                      ? <span className="inline-flex px-1.5 py-0.5 rounded bg-red-500/15 text-red-400 text-[10px] font-medium">err</span>
+                      : <span className="inline-flex px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 text-[10px] font-medium">ok</span>}
+                  </span>
+                  <span className={cn('text-right font-mono tabular-nums', durColor)}>
+                    {fmtDuration(dur)}
+                  </span>
+                  <span className="text-right font-mono tabular-nums text-[var(--dim)]">
+                    {cpuMs > 0 ? fmtDuration(cpuMs) : '—'}
+                  </span>
+                  <span className="text-right font-mono tabular-nums text-[var(--dim)]">
+                    {Number(s.memory_usage) > 0 ? fmtBytes(Number(s.memory_usage)) : '—'}
+                  </span>
+                  <span className="font-mono truncate min-w-0 text-[var(--fg)]" title={q}>
+                    <SqlHighlight text={q} maxLen={160} />
+                  </span>
+                  <span className="overflow-hidden">
+                    <TablesCell tables={tablesArr} inferred={tablesInferred} />
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </Card>
+
+      {/* Load more */}
+      {!loading && displayRows.length > 0 && !exhausted && (
+        <div className="flex justify-center">
+          <button
+            onClick={loadMore}
+            disabled={loadingMore}
+            className="px-4 py-1.5 rounded-md border border-[var(--border)] text-xs text-[var(--dim)] hover:text-[var(--fg)] hover:border-[var(--accent)] transition-colors disabled:opacity-50"
+          >
+            {loadingMore ? 'Loading…' : `Load ${PAGE_SIZE} more`}
+          </button>
+        </div>
+      )}
+      {totalShown > 0 && exhausted && (
+        <div className="text-[11px] text-[var(--dim)] text-center py-2">
+          End of results — {totalShown.toLocaleString()} queries total.
+        </div>
+      )}
     </div>
   )
 }
@@ -3290,6 +3577,12 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
               initialErrorsOnly={drillErrorsOnly}
               onClearDrill={handleClearDrill}
               onFetched={handleSamplesFetched}
+            />
+          )}
+          {tab === 'querylog' && (
+            <QueryLogTab
+              instance={inst} from={from} to={to} refreshKey={effectiveRefreshKey}
+              onAnalyze={handleAnalyze} onShowQuery={handleShowQuery}
             />
           )}
           {tab === 'live' && (
