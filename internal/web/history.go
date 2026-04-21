@@ -983,16 +983,17 @@ func (s *Server) handleQuerySamples(w http.ResponseWriter, r *http.Request) {
 	user := r.URL.Query().Get("user")             // filter by user
 	kind := r.URL.Query().Get("kind")             // filter by query_kind
 	minMs := r.URL.Query().Get("min_ms")          // filter by min duration
+	table := r.URL.Query().Get("table")           // filter: has(tables, table)
 	errorsOnly := r.URL.Query().Get("errors_only") == "1" // show only exceptions
 
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
 	// Try ch_analyzer.query_samples first (fast).
-	samples, err := s.queryFromSamples(ctx, client, fromTime, toTime, hash, user, kind, minMs, errorsOnly, limit)
+	samples, err := s.queryFromSamples(ctx, client, fromTime, toTime, hash, user, kind, minMs, table, errorsOnly, limit)
 	if err != nil || len(samples) == 0 {
 		// Fall back to system.query_log.
-		samples, err = s.queryFromQueryLog(ctx, client, fromTime, toTime, hash, user, kind, minMs, errorsOnly, limit)
+		samples, err = s.queryFromQueryLog(ctx, client, fromTime, toTime, hash, user, kind, minMs, table, errorsOnly, limit)
 		if err != nil {
 			slog.Warn("query samples fallback failed", "err", err, "instance", instance)
 			writeJSON(w, http.StatusOK, []map[string]interface{}{})
@@ -1005,7 +1006,7 @@ func (s *Server) handleQuerySamples(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) queryFromSamples(ctx context.Context, client *chclient.Client,
-	fromTime, toTime, hash, user, kind, minMs string, errorsOnly bool, limit int) ([]map[string]interface{}, error) {
+	fromTime, toTime, hash, user, kind, minMs, table string, errorsOnly bool, limit int) ([]map[string]interface{}, error) {
 
 	// Check table exists first.
 	rows, err := client.Query(ctx, "SELECT count() as cnt FROM ch_analyzer.query_samples LIMIT 1")
@@ -1028,6 +1029,9 @@ func (s *Server) queryFromSamples(ctx context.Context, client *chclient.Client,
 	if minMs != "" {
 		filters = append(filters, fmt.Sprintf("query_duration_ms >= %s", sqlSafeUInt(minMs)))
 	}
+	if table != "" {
+		filters = append(filters, fmt.Sprintf("has(tables, '%s')", sqlSafeStr(table)))
+	}
 	if errorsOnly {
 		filters = append(filters, "is_exception = 1")
 	}
@@ -1048,6 +1052,10 @@ func (s *Server) queryFromSamples(ctx context.Context, client *chclient.Client,
 		ifNull(exception, '') AS exception,
 		client_name,
 		interface,
+		cpu_user_us,
+		cpu_system_us,
+		tables,
+		databases,
 		'' AS tables_accessed
 	FROM ch_analyzer.query_samples
 	WHERE %s
@@ -1058,7 +1066,7 @@ func (s *Server) queryFromSamples(ctx context.Context, client *chclient.Client,
 }
 
 func (s *Server) queryFromQueryLog(ctx context.Context, client *chclient.Client,
-	fromTime, toTime, hash, user, kind, minMs string, errorsOnly bool, limit int) ([]map[string]interface{}, error) {
+	fromTime, toTime, hash, user, kind, minMs, table string, errorsOnly bool, limit int) ([]map[string]interface{}, error) {
 
 	var filters []string
 	filters = append(filters,
@@ -1081,6 +1089,9 @@ func (s *Server) queryFromQueryLog(ctx context.Context, client *chclient.Client,
 	if minMs != "" {
 		filters = append(filters, fmt.Sprintf("query_duration_ms >= %s", sqlSafeUInt(minMs)))
 	}
+	if table != "" {
+		filters = append(filters, fmt.Sprintf("has(tables, '%s')", sqlSafeStr(table)))
+	}
 
 	sql := fmt.Sprintf(`SELECT
 		event_time,
@@ -1098,6 +1109,10 @@ func (s *Server) queryFromQueryLog(ctx context.Context, client *chclient.Client,
 		ifNull(exception, '') AS exception,
 		client_name,
 		interface,
+		toUInt64(ProfileEvents['UserTimeMicroseconds']) AS cpu_user_us,
+		toUInt64(ProfileEvents['SystemTimeMicroseconds']) AS cpu_system_us,
+		tables,
+		databases,
 		arrayStringConcat(arrayFilter(x -> x != 'ch_analyzer', tables), ', ') AS tables_accessed
 	FROM system.query_log
 	WHERE %s
@@ -1407,6 +1422,8 @@ func (s *Server) handleQueryPatternsV2(w http.ResponseWriter, r *http.Request) {
 		avg(read_bytes) AS avg_read_bytes,
 		avg(memory_usage) AS avg_memory,
 		max(memory_usage) AS max_memory,
+		sum(cpu_user_us + cpu_system_us) / 1000 AS total_cpu_ms,
+		arrayDistinct(arrayFlatten(groupArray(tables))) AS tables,
 		countIf(is_exception = 1) AS failures,
 		any(user) AS user,
 		any(client_name) AS client,
@@ -1432,6 +1449,9 @@ func (s *Server) handleQueryPatternsV2(w http.ResponseWriter, r *http.Request) {
 			avg(read_bytes) AS avg_read_bytes,
 			avg(memory_usage) AS avg_memory,
 			max(memory_usage) AS max_memory,
+			sum(ProfileEvents['UserTimeMicroseconds'] +
+			    ProfileEvents['SystemTimeMicroseconds']) / 1000 AS total_cpu_ms,
+			arrayDistinct(arrayFlatten(groupArray(tables))) AS tables,
 			countIf(type = 'ExceptionWhileProcessing') AS failures,
 			any(user) AS user,
 			any(client_name) AS client,

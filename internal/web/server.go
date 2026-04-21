@@ -61,20 +61,37 @@ type Server struct {
 	// Threshold override persistence.
 	thresholdsMu           sync.RWMutex
 	thresholdsOverridePath string
+
+	// Per-instance cache of which optional system.processes columns are
+	// present (tables, databases, ProfileEvents). Probed once per instance
+	// via DESCRIBE on first /queries call; subsequent calls reuse the result.
+	processesColsMu sync.RWMutex
+	processesCols   map[string]processesColumns
+}
+
+// processesColumns records which optional columns were seen on
+// system.processes for a given instance. Older ClickHouse builds lack some
+// of these fields; probing once avoids a retry-on-error round-trip on every
+// live-queries request.
+type processesColumns struct {
+	HasTables        bool
+	HasDatabases     bool
+	HasProfileEvents bool
 }
 
 // New creates a new web Server.
 func New(addr string, cfg *config.Config, store *store.Store, analyzer *analyzer.Analyzer, manager *chclient.Manager, logs *LogBuffer) *Server {
 	return &Server{
-		cfg:          cfg,
-		store:        store,
-		analyzer:     analyzer,
-		manager:      manager,
-		addr:         addr,
-		configPath:   os.Getenv("CH_ANALYZER_CONFIG"),
-		logs:         logs,
-		queryHistory: NewQueryHistory(100),
-		startTime:    time.Now(),
+		cfg:           cfg,
+		store:         store,
+		analyzer:      analyzer,
+		manager:       manager,
+		addr:          addr,
+		configPath:    os.Getenv("CH_ANALYZER_CONFIG"),
+		logs:          logs,
+		queryHistory:  NewQueryHistory(100),
+		startTime:     time.Now(),
+		processesCols: make(map[string]processesColumns),
 	}
 }
 
@@ -481,7 +498,27 @@ func (s *Server) handleQueries(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	rows, err := client.Query(ctx, `
+	cols := s.probeProcessesColumns(ctx, client, instance)
+
+	// Build the SELECT variant: tables / databases / ProfileEvents are only
+	// emitted when the column is known to exist on this server. Old CH gets
+	// empty arrays / zeros so the JSON shape stays stable.
+	tablesExpr := "[] AS tables"
+	databasesExpr := "[] AS databases"
+	cpuUserExpr := "toUInt64(0) AS cpu_user_us"
+	cpuSystemExpr := "toUInt64(0) AS cpu_system_us"
+	if cols.HasTables {
+		tablesExpr = "tables"
+	}
+	if cols.HasDatabases {
+		databasesExpr = "databases"
+	}
+	if cols.HasProfileEvents {
+		cpuUserExpr = "toUInt64(ProfileEvents['UserTimeMicroseconds']) AS cpu_user_us"
+		cpuSystemExpr = "toUInt64(ProfileEvents['SystemTimeMicroseconds']) AS cpu_system_us"
+	}
+
+	sql := fmt.Sprintf(`
 		SELECT
 			query_id,
 			substring(query, 1, 200) AS query_short,
@@ -490,12 +527,18 @@ func (s *Server) handleQueries(w http.ResponseWriter, r *http.Request) {
 			read_rows,
 			formatReadableSize(memory_usage) AS memory,
 			formatReadableSize(read_bytes) AS read_size,
-			query_kind
+			query_kind,
+			%s,
+			%s,
+			%s,
+			%s
 		FROM system.processes
 		WHERE is_initial_query = 1
 		ORDER BY elapsed DESC
 		LIMIT 50
-	`)
+	`, cpuUserExpr, cpuSystemExpr, tablesExpr, databasesExpr)
+
+	rows, err := client.Query(ctx, sql)
 	if err != nil {
 		slog.Error("query running queries", "err", err, "instance", instance)
 		writeErr(w, http.StatusInternalServerError, "failed to query running processes")
@@ -503,6 +546,42 @@ func (s *Server) handleQueries(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, rows)
+}
+
+// probeProcessesColumns returns the cached column-presence record for
+// system.processes on the given instance, running DESCRIBE once if needed.
+// On probe failure we return a zero-value record (all optional columns
+// treated as absent) so the SELECT still succeeds on very old ClickHouse.
+func (s *Server) probeProcessesColumns(ctx context.Context, client *chclient.Client, instance string) processesColumns {
+	s.processesColsMu.RLock()
+	if cols, ok := s.processesCols[instance]; ok {
+		s.processesColsMu.RUnlock()
+		return cols
+	}
+	s.processesColsMu.RUnlock()
+
+	var cols processesColumns
+	rows, err := client.Query(ctx, "DESCRIBE TABLE system.processes")
+	if err == nil {
+		for _, row := range rows {
+			name, _ := row["name"].(string)
+			switch name {
+			case "tables":
+				cols.HasTables = true
+			case "databases":
+				cols.HasDatabases = true
+			case "ProfileEvents":
+				cols.HasProfileEvents = true
+			}
+		}
+	} else {
+		slog.Warn("describe system.processes", "err", err, "instance", instance)
+	}
+
+	s.processesColsMu.Lock()
+	s.processesCols[instance] = cols
+	s.processesColsMu.Unlock()
+	return cols
 }
 
 // POST /api/instances/{name}/kill-query — kill a running query by query_id.
