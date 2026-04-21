@@ -180,7 +180,7 @@ export function MetricChart({ instance, instances, title, metrics, height = 160,
           </div>
         ) : (
           <ResponsiveContainer width="100%" height={height}>
-            <AreaChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+            <AreaChart data={chartData} margin={{ top: 4, right: 8, left: 4, bottom: 0 }}>
               <defs>
                 {series.map((s, i) => (
                   <linearGradient key={s.label} id={`mc-grad-${i}`} x1="0" y1="0" x2="0" y2="1">
@@ -203,7 +203,7 @@ export function MetricChart({ instance, instances, title, metrics, height = 160,
                 tick={{ fontSize: 10, fill: '#64748b' }}
                 axisLine={false}
                 tickLine={false}
-                width={44}
+                width={yFormat === 'percent' ? 44 : 58}
                 domain={yFormat === 'percent' ? [0, 100] : ['auto', 'auto']}
               />
               <Tooltip
