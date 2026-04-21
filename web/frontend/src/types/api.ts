@@ -98,6 +98,7 @@ export interface QueryPatternV2 {
   user: string
   client: string
   sample_query: string
+  tables?: string[]         // db.table names accessed by this pattern (best-effort)
 }
 
 export interface QuerySample {
@@ -117,6 +118,11 @@ export interface QuerySample {
   client_name: string
   interface: string
   tables_accessed?: string
+  // Best-effort: may be absent on old CH versions.
+  cpu_user_us?: number
+  cpu_system_us?: number
+  tables?: string[]
+  databases?: string[]
 }
 
 export interface QueryUser {

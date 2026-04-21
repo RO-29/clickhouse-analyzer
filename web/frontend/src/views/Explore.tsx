@@ -243,6 +243,53 @@ function StatCard({ label, value, sub, color }: { label: string; value: string; 
   )
 }
 
+/* ── Tables list cell — truncates to 2 visible + "+N more" ───────────────── */
+
+function shortTableName(t: string): string {
+  const s = String(t || '')
+  return s.startsWith('default.') ? s.slice('default.'.length) : s
+}
+
+function TablesCell({ tables, onSelect }: { tables: string[]; onSelect?: (table: string) => void }) {
+  if (!tables || tables.length === 0) {
+    return <span className="text-[var(--dim)] text-[11px]">—</span>
+  }
+  const visible = tables.slice(0, 2)
+  const rest = tables.slice(2)
+  const full = tables.join('\n')
+  return (
+    <span className="flex items-center gap-1 flex-wrap max-w-[220px]" title={full}>
+      {visible.map((t, i) => {
+        const short = shortTableName(t)
+        const pill = (
+          <span
+            key={i}
+            className={cn(
+              'inline-flex px-1.5 py-0.5 rounded border font-mono text-[10px] truncate max-w-[140px]',
+              onSelect
+                ? 'border-[var(--border)] bg-[var(--hover)] text-[var(--text)] hover:border-[var(--accent)]/40 hover:text-[var(--accent)] cursor-pointer'
+                : 'border-[var(--border)] bg-[var(--hover)] text-[var(--text)]',
+            )}
+            title={t}
+            onClick={onSelect ? (e) => { e.stopPropagation(); onSelect(t) } : undefined}
+          >
+            {short}
+          </span>
+        )
+        return pill
+      })}
+      {rest.length > 0 && (
+        <span
+          className="text-[10px] text-[var(--dim)] shrink-0"
+          title={rest.join('\n')}
+        >
+          +{rest.length} more
+        </span>
+      )}
+    </span>
+  )
+}
+
 /* ------------------------------------------------------------------ */
 /*  Query Detail Panel — Datadog-style right slide-in                 */
 /* ------------------------------------------------------------------ */
@@ -253,7 +300,7 @@ interface QueryDetailPanelProps {
   tlLoading: boolean
   instance: string
   onClose: () => void
-  onDrillHash?: (hash: string) => void
+  onDrillHash?: (hash: string, opts?: { table?: string }) => void
   onAnalyze: TabProps['onAnalyze']
   onShowQuery: (q: string) => void
 }
@@ -533,7 +580,7 @@ const SORT_OPTIONS = [
 ]
 
 interface QueryPatternsTabProps extends TabProps {
-  onDrillHash?: (hash: string, user?: string) => void
+  onDrillHash?: (hash: string, opts?: { user?: string; table?: string }) => void
   onDrillFail?: (hash: string) => void
   onFetched?: () => void
 }
@@ -741,6 +788,17 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
       tooltip: 'Sum of CPU time across all executions — present when ProfileEvents.OSCPUVirtualTimeMicroseconds is available',
       format: (v: any) => v == null ? <span className="text-[var(--dim)] text-[11px]">—</span>
         : <span className="tabular-nums text-[11px] text-[var(--dim)]">{fmtDuration(Number(v) || 0)}</span>,
+    },
+    {
+      key: 'tables',
+      label: 'Tables',
+      tooltip: 'db.table names this query pattern touches. Click a table to drill into Samples filtered by that table.',
+      format: (v: any, row: any) => (
+        <TablesCell
+          tables={Array.isArray(v) ? v : []}
+          onSelect={onDrillHash ? (t) => onDrillHash(String(row.normalized_query_hash), { table: t }) : undefined}
+        />
+      ),
     },
     {
       key: 'avg_read_bytes',
@@ -1033,12 +1091,13 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
 interface SamplesTabProps extends TabProps {
   initialHash?: string
   initialUser?: string
+  initialTable?: string
   initialErrorsOnly?: boolean
   onClearDrill?: () => void
   onFetched?: () => void
 }
 
-function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, initialUser, initialErrorsOnly, onClearDrill, onFetched }: SamplesTabProps) {
+function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, initialUser, initialTable, initialErrorsOnly, onClearDrill, onFetched }: SamplesTabProps) {
   const { setView, setSelectedInstance } = useStore()
   const [samples, setSamples] = useState<QuerySample[]>([])
   const [loading, setLoading] = useState(true)
@@ -1048,6 +1107,9 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
   const [kindFilter, setKindFilter] = useState('')
   const [minMs, setMinMs] = useState('')
   const [errorsOnly, setErrorsOnly] = useState(initialErrorsOnly ?? false)
+  const [tableFilter, setTableFilter] = useState(initialTable ?? '')
+  // Debounced copy actually sent to the API — avoids firing on every keystroke.
+  const [tableFilterQuery, setTableFilterQuery] = useState(initialTable ?? '')
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
 
   // Charts shown when drilling into failures for a specific hash
@@ -1058,6 +1120,16 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
   useEffect(() => { setHashFilter(initialHash ?? '') }, [initialHash])
   useEffect(() => { setUserFilter(initialUser ?? '') }, [initialUser])
   useEffect(() => { setErrorsOnly(initialErrorsOnly ?? false) }, [initialErrorsOnly])
+  useEffect(() => {
+    setTableFilter(initialTable ?? '')
+    setTableFilterQuery(initialTable ?? '')
+  }, [initialTable])
+
+  // Debounce text input → actual query param by 300ms.
+  useEffect(() => {
+    const id = setTimeout(() => setTableFilterQuery(tableFilter.trim()), 300)
+    return () => clearTimeout(id)
+  }, [tableFilter])
 
   // Load charts when we have a hash + errorsOnly drill (came from FAILS click)
   useEffect(() => {
@@ -1087,13 +1159,14 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
       kind: kindFilter || undefined,
       minMs: minMs || undefined,
       errorsOnly: errorsOnly || undefined,
+      table: tableFilterQuery || undefined,
       limit: 200,
     })
       .then(d => { if (!c) setSamples(d) })
       .catch(e => { if (!c) setError(e.message) })
       .finally(() => { if (!c) { setLoading(false); onFetched?.() } })
     return () => { c = true }
-  }, [instance, from, to, refreshKey, hashFilter, userFilter, kindFilter, minMs, errorsOnly, onFetched])
+  }, [instance, from, to, refreshKey, hashFilter, userFilter, kindFilter, minMs, errorsOnly, tableFilterQuery, onFetched])
 
   const toggleExpand = (i: number) => {
     setExpanded(prev => {
@@ -1214,19 +1287,30 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
       {/* Filters */}
       <Card>
         <div className="flex flex-wrap gap-2 items-center">
-          {(hashFilter || userFilter || errorsOnly) && (
+          {(hashFilter || userFilter || errorsOnly || tableFilter) && (
             <div className="flex items-center gap-1.5 px-2 py-1 rounded-full bg-[var(--accent)]/15 border border-[var(--accent)]/30 text-xs text-[var(--accent)]">
               {hashFilter && <span>hash: {hashFilter.slice(0, 12)}</span>}
               {userFilter && <span>user: {userFilter}</span>}
+              {tableFilter && <span>table: {tableFilter}</span>}
               {errorsOnly && <span className="text-red-400">errors only</span>}
               <button
-                onClick={() => { setHashFilter(''); setUserFilter(''); setErrorsOnly(false); onClearDrill?.() }}
+                onClick={() => { setHashFilter(''); setUserFilter(''); setErrorsOnly(false); setTableFilter(''); setTableFilterQuery(''); onClearDrill?.() }}
                 className="ml-1 hover:text-[var(--fg)]"
               >
                 <X size={10} />
               </button>
             </div>
           )}
+          <div className="flex items-center gap-1">
+            <label className="text-xs text-[var(--dim)]">Table</label>
+            <input
+              value={tableFilter}
+              onChange={e => setTableFilter(e.target.value)}
+              className="rounded border border-[var(--border)] bg-[var(--card)] px-2 py-1 text-xs w-44 focus:outline-none"
+              placeholder="db.table or table…"
+              title="Filter samples by table — accepts db.table or bare table name. Debounced 300ms."
+            />
+          </div>
           <div className="flex items-center gap-1">
             <label className="text-xs text-[var(--dim)]">User</label>
             <input
@@ -1281,6 +1365,11 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
           )}
           {samples.map((s, i) => {
             const isOpen = expanded.has(i)
+            const cpuMs = (Number(s.cpu_user_us) || 0) / 1000 + (Number(s.cpu_system_us) || 0) / 1000
+            const hasCpu = cpuMs > 0
+            const tablesArr: string[] = Array.isArray(s.tables) && s.tables.length > 0
+              ? s.tables
+              : (s.tables_accessed ? String(s.tables_accessed).split(', ').filter(Boolean) : [])
             return (
               <div key={i} className="rounded-lg border border-[var(--border)] bg-[var(--card)] overflow-hidden">
                 <button
@@ -1294,6 +1383,9 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
                   <span className={cn('text-xs font-semibold tabular-nums w-20 shrink-0', durationColor(s.query_duration_ms))}>
                     {fmtDuration(s.query_duration_ms)}
                   </span>
+                  <span className="text-xs text-[var(--dim)] w-16 shrink-0 tabular-nums" title="CPU time (user + system)">
+                    {hasCpu ? fmtDuration(cpuMs) : <span className="text-[var(--dim)]">—</span>}
+                  </span>
                   <span className="text-xs text-[var(--dim)] w-20 shrink-0">{s.user}</span>
                   <span className={cn('text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0', kindBg(s.query_kind))}>
                     {String(s.query_kind || '—').slice(0, 6)}
@@ -1303,6 +1395,17 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
                       error
                     </span>
                   )}
+                  <span className="shrink-0 hidden lg:inline-flex" onClick={e => e.stopPropagation()}>
+                    <TablesCell
+                      tables={tablesArr}
+                      onSelect={(t) => {
+                        const dotted = String(t)
+                        const bare = dotted.includes('.') ? dotted.slice(dotted.indexOf('.') + 1) : dotted
+                        setTableFilter(bare)
+                        setTableFilterQuery(bare)
+                      }}
+                    />
+                  </span>
                   <span className="truncate min-w-0" title={String(s.query_text ?? '')}>
                     <SqlHighlight text={String(s.query_text ?? '')} maxLen={80} />
                   </span>
@@ -1323,15 +1426,18 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
                       <span><span className="text-[var(--dim)]">Read bytes:</span> {fmtBytes(s.read_bytes)}</span>
                       <span><span className="text-[var(--dim)]">Memory:</span> {fmtBytes(s.memory_usage)}</span>
                       <span><span className="text-[var(--dim)]">Result rows:</span> {fmtNum(s.result_rows)}</span>
+                      {hasCpu && (
+                        <span><span className="text-[var(--dim)]">CPU:</span> {fmtDuration(cpuMs)}</span>
+                      )}
                       <span><span className="text-[var(--dim)]">Client:</span> {s.client_name || '—'}</span>
                       <span><span className="text-[var(--dim)]">Hash:</span>
                         <span className="font-mono ml-1">{String(s.normalized_query_hash).slice(0, 16)}</span>
                       </span>
                     </div>
-                    {s.tables_accessed && (
+                    {tablesArr.length > 0 && (
                       <div className="flex flex-wrap gap-1 text-xs">
                         <span className="text-[var(--dim)] shrink-0">Tables:</span>
-                        {String(s.tables_accessed).split(', ').filter(Boolean).map((t, i) => (
+                        {tablesArr.map((t, i) => (
                           <span key={i} className="inline-flex px-1.5 py-0.5 rounded bg-[var(--hover)] border border-[var(--border)] font-mono text-[11px]">{t}</span>
                         ))}
                       </div>
@@ -1487,13 +1593,15 @@ function LiveTab({ instance, onShowQuery }: { instance: string; onShowQuery: (q:
       )}
       {!loading && !error && rows.length > 0 && (
         <div className="overflow-x-auto">
-          <div className="space-y-1 min-w-[600px]">
+          <div className="space-y-1 min-w-[760px]">
             {/* Column headers */}
             <div className="flex items-center gap-2.5 px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--dim)]">
               <span className="w-20 shrink-0">Elapsed</span>
+              <span className="w-16 shrink-0">CPU</span>
               <span className="w-20 shrink-0">User</span>
               <span className="w-12 shrink-0">Kind</span>
               <span className="flex-1">Query</span>
+              <span className="w-40 shrink-0">Tables</span>
               <span className="w-16 text-right shrink-0">Memory</span>
               <span className="w-16 text-right shrink-0">Read</span>
               <span className="w-16 text-right shrink-0">Rows</span>
@@ -1506,6 +1614,8 @@ function LiveTab({ instance, onShowQuery }: { instance: string; onShowQuery: (q:
               const pct = Math.min(100, (sec / 300) * 100) // 300s = 100%
               const pill = sec > 300 ? 'bg-red-500' : sec > 60 ? 'bg-orange-500' : sec > 10 ? 'bg-yellow-500' : 'bg-emerald-500'
               const kind = String(r.query_kind || r.kind || '').toLowerCase()
+              const cpuMs = (Number(r.cpu_user_us) || 0) / 1000 + (Number(r.cpu_system_us) || 0) / 1000
+              const tablesArr: string[] = Array.isArray(r.tables) ? r.tables : []
               return (
                 <div key={i} className="flex items-center gap-2.5 px-3 py-2.5 rounded-lg border border-[var(--border)] bg-[var(--card)] hover:bg-[var(--hover)] transition-colors group">
                   {/* Elapsed pill */}
@@ -1517,6 +1627,10 @@ function LiveTab({ instance, onShowQuery }: { instance: string; onShowQuery: (q:
                       {elapsed(r.elapsed)}
                     </span>
                   </div>
+                  {/* CPU time */}
+                  <span className="text-xs text-[var(--dim)] w-16 shrink-0 tabular-nums" title="CPU time (user + system)">
+                    {cpuMs > 0 ? fmtDuration(cpuMs) : '—'}
+                  </span>
                   {/* User */}
                   <span className="text-xs text-[var(--dim)] w-20 shrink-0 truncate" title={r.user}>{r.user}</span>
                   {/* Kind badge */}
@@ -1530,6 +1644,10 @@ function LiveTab({ instance, onShowQuery }: { instance: string; onShowQuery: (q:
                   {/* Query preview */}
                   <span className="text-xs font-mono text-[var(--fg)] truncate flex-1 min-w-0" title={q}>
                     <SqlHighlight text={q} maxLen={120} />
+                  </span>
+                  {/* Tables */}
+                  <span className="w-40 shrink-0 overflow-hidden">
+                    <TablesCell tables={tablesArr} />
                   </span>
                   {/* Memory */}
                   <span className="text-xs text-[var(--dim)] w-16 text-right shrink-0 tabular-nums" title="Memory usage">
@@ -1758,14 +1876,21 @@ function TablesTab({ instance, from, to, refreshKey, onDrillTable, onFetched }: 
   }, [instance, from, to, refreshKey, onFetched])
 
   // ALL hooks BEFORE any early return (Rules of Hooks)
-  const pieData = useMemo(() => {
-    if (tables.length === 0) return null
-    const cpuFor = (t: QueryTable) => Number(t.total_cpu_ms) || Number(t.total_ms) || 0
+  // pie.mode tells the panel header whether we're showing real CPU data or
+  // falling back to total query duration. Both values come back from the
+  // same backend, but ProfileEvents-based CPU columns can be zero on older
+  // ClickHouse versions or for freshly-ingested rows.
+  const pie = useMemo(() => {
+    if (tables.length === 0) return { data: null as null | { name: string; value: number; color: string }[], mode: 'cpu' as 'cpu' | 'total', sum: 0 }
+    const cpuSum = tables.reduce((s, t) => s + (Number(t.total_cpu_ms) || 0), 0)
+    const useCpu = cpuSum > 0
+    const valFor = (t: QueryTable) => useCpu ? (Number(t.total_cpu_ms) || 0) : (Number(t.total_ms) || 0)
     const top = tables.slice(0, 7)
-    const otherMs = tables.slice(7).reduce((s, t) => s + cpuFor(t), 0)
-    const entries = [...top.map((t, i) => ({ name: t.table || '(unknown)', value: cpuFor(t), color: USER_COLORS[i % USER_COLORS.length] })),
+    const otherMs = tables.slice(7).reduce((s, t) => s + valFor(t), 0)
+    const entries = [...top.map((t, i) => ({ name: t.table || '(unknown)', value: valFor(t), color: USER_COLORS[i % USER_COLORS.length] })),
       ...(otherMs > 0 ? [{ name: 'other', value: otherMs, color: '#475569' }] : [])]
-    return entries
+    const sum = entries.reduce((s, e) => s + e.value, 0)
+    return { data: entries, mode: useCpu ? 'cpu' : 'total', sum }
   }, [tables])
 
   if (loading) return <LoadingSkeleton />
@@ -1850,26 +1975,34 @@ function TablesTab({ instance, from, to, refreshKey, onDrillTable, onFetched }: 
         </Card>
 
         {/* Pie chart */}
-        {pieData && (
-          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 flex flex-col">
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--dim)] mb-3">CPU Share</div>
-            <div className="flex-1" style={{ minHeight: 180 }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius="55%" outerRadius="80%">
-                    {pieData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
-                  </Pie>
-                  <Tooltip
-                    contentStyle={{ background: '#0f1420', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, fontSize: 11 }}
-                    formatter={(v: any, name: any) => {
-                      const pct = grandCpu > 0 ? ((Number(v) / grandCpu) * 100).toFixed(1) : '0'
-                      return [`${fmtDuration(Number(v))} (${pct}%)`, name]
-                    }}
-                  />
-                  <Legend iconSize={8} wrapperStyle={{ fontSize: 10, color: '#9ca3af' }} />
-                </PieChart>
-              </ResponsiveContainer>
+        {pie.data && (
+          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 flex flex-col self-start">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--dim)] mb-3">
+              {pie.mode === 'cpu' ? 'CPU Share' : 'Query Time Share'}
             </div>
+            {pie.sum === 0 ? (
+              <div className="text-[11px] text-[var(--dim)] text-center py-10 px-2 leading-relaxed">
+                No CPU data yet — try a longer range
+              </div>
+            ) : (
+              <div className="flex-1" style={{ minHeight: 180, maxHeight: 240 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie data={pie.data} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius="55%" outerRadius="80%">
+                      {pie.data.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+                    </Pie>
+                    <Tooltip
+                      contentStyle={{ background: '#0f1420', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, fontSize: 11 }}
+                      formatter={(v: any, name: any) => {
+                        const pct = pie.sum > 0 ? ((Number(v) / pie.sum) * 100).toFixed(1) : '0'
+                        return [`${fmtDuration(Number(v))} (${pct}%)`, name]
+                      }}
+                    />
+                    <Legend iconSize={8} wrapperStyle={{ fontSize: 10, color: '#9ca3af' }} />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -2906,6 +3039,7 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
   // Drill state
   const [drillHash, setDrillHash] = useState<string | undefined>()
   const [drillUser, setDrillUser] = useState<string | undefined>()
+  const [drillTable, setDrillTable] = useState<string | undefined>()
   const [drillErrorsOnly, setDrillErrorsOnly] = useState(false)
   // Manual refresh
   const [manualTick, setManualTick] = useState(0)
@@ -2973,9 +3107,12 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
     window.history.replaceState(null, '', url.toString())
   }, [])
 
-  const handleDrillHash = useCallback((hash: string) => {
+  const handleDrillHash = useCallback((hash: string, opts?: { user?: string; table?: string }) => {
     setDrillHash(hash)
-    setDrillUser(undefined)
+    setDrillUser(opts?.user)
+    // When the caller passes a table, drill filters Samples by that table too.
+    // Accept db.table or bare table; SamplesTab strips the "db." prefix server-side via ?table=.
+    setDrillTable(opts?.table)
     setDrillErrorsOnly(false)
     switchTab('samples')
   }, [switchTab])
@@ -2983,6 +3120,7 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
   const handleDrillFail = useCallback((hash: string) => {
     setDrillHash(hash)
     setDrillUser(undefined)
+    setDrillTable(undefined)
     setDrillErrorsOnly(true)
     switchTab('samples')
   }, [switchTab])
@@ -2990,6 +3128,7 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
   const handleDrillUser = useCallback((user: string) => {
     setDrillUser(user)
     setDrillHash(undefined)
+    setDrillTable(undefined)
     setDrillErrorsOnly(false)
     switchTab('samples')
   }, [switchTab])
@@ -3002,6 +3141,7 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
   const handleClearDrill = useCallback(() => {
     setDrillHash(undefined)
     setDrillUser(undefined)
+    setDrillTable(undefined)
     setDrillErrorsOnly(false)
   }, [])
 
@@ -3113,6 +3253,7 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
               onAnalyze={handleAnalyze} onShowQuery={handleShowQuery}
               initialHash={drillHash}
               initialUser={drillUser}
+              initialTable={drillTable}
               initialErrorsOnly={drillErrorsOnly}
               onClearDrill={handleClearDrill}
               onFetched={handleSamplesFetched}
