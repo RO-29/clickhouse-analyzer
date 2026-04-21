@@ -75,6 +75,13 @@ func New(manager *chclient.Manager, database string) (*Store, error) {
 	// Migrate: add first_seen_at and fire_count columns (no-op on new installs).
 	s.migrateAlertFireTracking()
 
+	// One-shot cleanup: collapse historical duplicate active alerts. Prior
+	// bugs could leave multiple resolved=0 rows for the same dedup_key across
+	// different created_at values; GetActiveAlerts dedups at read time, but
+	// consumers of GetAlertHistory still see ghost firings. This resolves
+	// everything but the latest firing per offender. Idempotent.
+	s.cleanupDuplicateActiveAlerts()
+
 	slog.Info("store initialized", "backend", "clickhouse-distributed", "database", database, "instances", manager.Len())
 	return s, nil
 }
@@ -118,6 +125,149 @@ func (s *Store) migrateAlertFireTracking() {
 				slog.Warn("alert migration: fire tracking columns failed", "instance", name, "err", err)
 			}
 		}
+		return nil
+	})
+}
+
+// cleanupDuplicateActiveAlerts collapses any dedup_key with multiple unresolved
+// rows (across distinct created_at values) down to a single active row — the
+// latest firing event. All older unresolved firings for that key get a new
+// version with resolved=1, resolved_at=now().
+//
+// This addresses historical bugs where a re-fire path inserted a new row for
+// the same alert without resolving the prior one, leading to ghost duplicates
+// in GetAlertHistory and in any consumer counting unresolved events over time.
+//
+// Per-instance cleanup is capped at 10s so a slow CH can't block startup; on
+// timeout we log and move on (the next restart retries). The logic is two-pass
+// to stay compatible with CH versions that don't support OFFSET BY: first find
+// the offending dedup_keys and the (per-key) latest created_at to keep, then
+// resolve every other (dedup_key, created_at) firing for those keys.
+func (s *Store) cleanupDuplicateActiveAlerts() {
+	s.manager.ForEach(func(name string, client *chclient.Client) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		// Step 1: collapse each (dedup_key, created_at) to its latest version,
+		// keep only unresolved rows. Count firings per dedup_key; offenders
+		// have >1 distinct created_at firings still unresolved.
+		offenderSQL := fmt.Sprintf(`
+			SELECT dedup_key, max(created_at) AS keep_created_at, count() AS firings
+			FROM (
+				SELECT dedup_key, created_at, argMax(resolved, version) AS resolved
+				FROM %s.alerts
+				GROUP BY dedup_key, created_at
+			)
+			WHERE resolved = 0
+			GROUP BY dedup_key
+			HAVING firings > 1`,
+			s.database)
+
+		offenders, err := client.Query(ctx, offenderSQL)
+		if err != nil {
+			if ctx.Err() != nil {
+				slog.Warn("alert cleanup: offender scan timed out",
+					"instance", name, "err", err)
+			} else {
+				slog.Warn("alert cleanup: offender scan failed",
+					"instance", name, "err", err)
+			}
+			return nil
+		}
+		if len(offenders) == 0 {
+			return nil
+		}
+
+		// Build a map: dedup_key → keep_created_at. We resolve every other
+		// (dedup_key, created_at) firing that is still unresolved.
+		type keepRow struct {
+			dedupKey      string
+			keepCreatedAt string
+		}
+		keeps := make([]keepRow, 0, len(offenders))
+		for _, row := range offenders {
+			dk := getString(row, "dedup_key")
+			ts := getString(row, "keep_created_at")
+			if dk == "" || ts == "" {
+				continue
+			}
+			keeps = append(keeps, keepRow{dedupKey: dk, keepCreatedAt: ts})
+		}
+		if len(keeps) == 0 {
+			return nil
+		}
+
+		// Step 2: build a big WHERE (dedup_key, created_at) NOT IN (kept pairs)
+		// filter and resolve the rest. We use an IN on dedup_key plus a <>
+		// check on created_at per key by generating OR clauses in pairs.
+		quotedKeys := make([]string, 0, len(keeps))
+		notEqualClauses := make([]string, 0, len(keeps))
+		for _, k := range keeps {
+			quotedKeys = append(quotedKeys, "'"+escape(k.dedupKey)+"'")
+			// "resolve this dedup_key's row when created_at != its keep value"
+			notEqualClauses = append(notEqualClauses, fmt.Sprintf(
+				"(dedup_key = '%s' AND created_at != '%s')",
+				escape(k.dedupKey), escape(k.keepCreatedAt)))
+		}
+		inClause := strings.Join(quotedKeys, ", ")
+		perKeyOr := strings.Join(notEqualClauses, " OR ")
+
+		// Insert a resolved=1 new version for every (dedup_key, created_at)
+		// row in the offender set that is NOT the kept firing and is still
+		// unresolved. Uses LIMIT 1 BY (dedup_key, created_at) to pick the
+		// latest version of each row, matching the pattern used elsewhere.
+		resolveSQL := fmt.Sprintf(`INSERT INTO %s.alerts
+			(id, instance, severity, category, title, message,
+			 resolved, resolved_at, created_at, dedup_key, version, updated_at,
+			 first_seen_at, fire_count)
+			SELECT id, instance, severity, category, title, message,
+				1 AS resolved, now() AS resolved_at, created_at, dedup_key,
+				version+1 AS version, now() AS updated_at,
+				first_seen_at, fire_count
+			FROM (
+				SELECT id, instance, severity, category, title, message,
+					resolved, resolved_at, created_at, dedup_key, version,
+					updated_at, first_seen_at, fire_count
+				FROM %s.alerts
+				WHERE dedup_key IN (%s)
+				  AND (%s)
+				ORDER BY dedup_key, created_at, version DESC
+				LIMIT 1 BY (dedup_key, created_at)
+			)
+			WHERE resolved = 0`,
+			s.database, s.database, inClause, perKeyOr)
+
+		// Count rows we're about to resolve so we can log a useful summary.
+		countSQL := fmt.Sprintf(`
+			SELECT count() AS cnt FROM (
+				SELECT id, resolved
+				FROM %s.alerts
+				WHERE dedup_key IN (%s)
+				  AND (%s)
+				ORDER BY dedup_key, created_at, version DESC
+				LIMIT 1 BY (dedup_key, created_at)
+			) WHERE resolved = 0`,
+			s.database, inClause, perKeyOr)
+		var rowsResolved int64
+		if val, cerr := client.QuerySingleValue(ctx, countSQL); cerr == nil {
+			fmt.Sscanf(val, "%d", &rowsResolved)
+		}
+
+		if _, err := client.QuerySingleValue(ctx, resolveSQL); err != nil {
+			if ctx.Err() != nil {
+				slog.Warn("alert cleanup: resolve duplicates timed out",
+					"instance", name, "err", err)
+			} else {
+				slog.Warn("alert cleanup: resolve duplicates failed",
+					"instance", name, "err", err)
+			}
+			return nil
+		}
+
+		slog.Info("alert cleanup: resolved duplicate active alerts",
+			"instance", name,
+			"dedup_keys_cleaned", len(keeps),
+			"rows_resolved", rowsResolved)
 		return nil
 	})
 }
