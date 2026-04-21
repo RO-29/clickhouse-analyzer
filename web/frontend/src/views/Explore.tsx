@@ -250,15 +250,38 @@ function shortTableName(t: string): string {
   return s.startsWith('default.') ? s.slice('default.'.length) : s
 }
 
-function TablesCell({ tables, onSelect }: { tables: string[]; onSelect?: (table: string) => void }) {
+// inferTablesFromQuery extracts table references from a query string as a
+// fallback when system.processes.tables / query_samples.tables are empty
+// (older CH doesn't populate those columns for in-flight queries). Not a full
+// SQL parser — misses subqueries, CTEs, lateral joins — but catches the
+// common FROM/INTO/JOIN cases that cover ~90% of real queries.
+function inferTablesFromQuery(sql: string): string[] {
+  if (!sql) return []
+  const seen = new Set<string>()
+  // (?:FROM|INTO|JOIN|UPDATE|OPTIMIZE\s+TABLE)  →  optional backtick  →
+  // ident (db.table | table)  →  optional backtick. Case-insensitive.
+  const re = /\b(?:FROM|INTO|JOIN|UPDATE|OPTIMIZE\s+TABLE)\s+`?([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)?)`?/gi
+  let m: RegExpExecArray | null
+  while ((m = re.exec(sql)) !== null) {
+    const t = m[1]
+    // Drop FORMAT clause noise and system-internal targets.
+    if (!t || t.toUpperCase() === 'FORMAT') continue
+    if (t.startsWith('system.') || t.startsWith('information_schema.')) continue
+    seen.add(t)
+  }
+  return Array.from(seen)
+}
+
+function TablesCell({ tables, onSelect, inferred }: { tables: string[]; onSelect?: (table: string) => void; inferred?: boolean }) {
   if (!tables || tables.length === 0) {
     return <span className="text-[var(--dim)] text-[11px]">—</span>
   }
   const visible = tables.slice(0, 2)
   const rest = tables.slice(2)
   const full = tables.join('\n')
+  const inferredTitle = inferred ? ' (inferred from query text)' : ''
   return (
-    <span className="flex items-center gap-1 flex-wrap max-w-[220px]" title={full}>
+    <span className="flex items-center gap-1 flex-wrap max-w-[220px]" title={full + inferredTitle}>
       {visible.map((t, i) => {
         const short = shortTableName(t)
         const pill = (
@@ -266,11 +289,12 @@ function TablesCell({ tables, onSelect }: { tables: string[]; onSelect?: (table:
             key={i}
             className={cn(
               'inline-flex px-1.5 py-0.5 rounded border font-mono text-[10px] truncate max-w-[140px]',
+              inferred && 'opacity-70 border-dashed',
               onSelect
                 ? 'border-[var(--border)] bg-[var(--hover)] text-[var(--text)] hover:border-[var(--accent)]/40 hover:text-[var(--accent)] cursor-pointer'
                 : 'border-[var(--border)] bg-[var(--hover)] text-[var(--text)]',
             )}
-            title={t}
+            title={t + inferredTitle}
             onClick={onSelect ? (e) => { e.stopPropagation(); onSelect(t) } : undefined}
           >
             {short}
@@ -1615,7 +1639,13 @@ function LiveTab({ instance, onShowQuery }: { instance: string; onShowQuery: (q:
               const pill = sec > 300 ? 'bg-red-500' : sec > 60 ? 'bg-orange-500' : sec > 10 ? 'bg-yellow-500' : 'bg-emerald-500'
               const kind = String(r.query_kind || r.kind || '').toLowerCase()
               const cpuMs = (Number(r.cpu_user_us) || 0) / 1000 + (Number(r.cpu_system_us) || 0) / 1000
-              const tablesArr: string[] = Array.isArray(r.tables) ? r.tables : []
+              const fromServer: string[] = Array.isArray(r.tables) ? r.tables : []
+              // On older CH versions system.processes.tables is absent, so the
+              // backend emits `[]`. Fall back to regex-parsing the query text.
+              const tablesArr = fromServer.length > 0
+                ? fromServer
+                : inferTablesFromQuery(String(r.query ?? r.query_short ?? ''))
+              const tablesInferred = fromServer.length === 0 && tablesArr.length > 0
               return (
                 <div key={i} className="flex items-center gap-2.5 px-3 py-2.5 rounded-lg border border-[var(--border)] bg-[var(--card)] hover:bg-[var(--hover)] transition-colors group">
                   {/* Elapsed pill */}
@@ -1647,7 +1677,7 @@ function LiveTab({ instance, onShowQuery }: { instance: string; onShowQuery: (q:
                   </span>
                   {/* Tables */}
                   <span className="w-40 shrink-0 overflow-hidden">
-                    <TablesCell tables={tablesArr} />
+                    <TablesCell tables={tablesArr} inferred={tablesInferred} />
                   </span>
                   {/* Memory */}
                   <span className="text-xs text-[var(--dim)] w-16 text-right shrink-0 tabular-nums" title="Memory usage">
@@ -1974,37 +2004,40 @@ function TablesTab({ instance, from, to, refreshKey, onDrillTable, onFetched }: 
           )}
         </Card>
 
-        {/* Pie chart */}
-        {pie.data && (
-          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 flex flex-col self-start">
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--dim)] mb-3">
-              {pie.mode === 'cpu' ? 'CPU Share' : 'Query Time Share'}
-            </div>
-            {pie.sum === 0 ? (
-              <div className="text-[11px] text-[var(--dim)] text-center py-10 px-2 leading-relaxed">
-                No CPU data yet — try a longer range
-              </div>
-            ) : (
-              <div className="flex-1" style={{ minHeight: 180, maxHeight: 240 }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie data={pie.data} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius="55%" outerRadius="80%">
-                      {pie.data.map((entry, i) => <Cell key={i} fill={entry.color} />)}
-                    </Pie>
-                    <Tooltip
-                      contentStyle={{ background: '#0f1420', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, fontSize: 11 }}
-                      formatter={(v: any, name: any) => {
-                        const pct = pie.sum > 0 ? ((Number(v) / pie.sum) * 100).toFixed(1) : '0'
-                        return [`${fmtDuration(Number(v))} (${pct}%)`, name]
-                      }}
-                    />
-                    <Legend iconSize={8} wrapperStyle={{ fontSize: 10, color: '#9ca3af' }} />
-                  </PieChart>
-                </ResponsiveContainer>
-              </div>
-            )}
+        {/* Pie chart — panel always renders once tables load so the user never
+            sees a silent empty column. Explicit height (not flex-1) prevents
+            the inner ResponsiveContainer from collapsing to 0 when the outer
+            is self-sizing. */}
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 self-start">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--dim)] mb-3">
+            {pie.mode === 'cpu' ? 'CPU Share' : 'Query Time Share'}
           </div>
-        )}
+          {!pie.data || pie.sum === 0 ? (
+            <div className="text-[11px] text-[var(--dim)] text-center py-14 px-2 leading-relaxed">
+              {tables.length === 0
+                ? 'No data in range'
+                : 'No CPU data yet — ProfileEvents will populate within a poll cycle or two'}
+            </div>
+          ) : (
+            <div style={{ height: 220 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={pie.data} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius="55%" outerRadius="80%">
+                    {pie.data.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+                  </Pie>
+                  <Tooltip
+                    contentStyle={{ background: '#0f1420', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, fontSize: 11 }}
+                    formatter={(v: any, name: any) => {
+                      const pct = pie.sum > 0 ? ((Number(v) / pie.sum) * 100).toFixed(1) : '0'
+                      return [`${fmtDuration(Number(v))} (${pct}%)`, name]
+                    }}
+                  />
+                  <Legend iconSize={8} wrapperStyle={{ fontSize: 10, color: '#9ca3af' }} />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )
