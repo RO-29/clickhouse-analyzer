@@ -47,6 +47,17 @@ type Config struct {
 	Inhibition  []InhibitionConfig `yaml:"inhibition"`
 	Maintenance MaintenanceConfig  `yaml:"maintenance"`
 	Escalation  EscalationConfig   `yaml:"escalation"`
+	Alerting    AlertingConfig     `yaml:"alerting"`
+}
+
+// AlertingConfig holds alerter-wide knobs that don't fit the per-threshold or
+// per-notifier groups.
+type AlertingConfig struct {
+	// StaleResolveHours auto-resolves any alert whose updated_at is older than
+	// this threshold on every heartbeat tick. Catches ghost alerts that
+	// escaped the normal clean-check resolution path (process restarts,
+	// flapping conditions). 0 disables the sweep. Default: 24.
+	StaleResolveHours int `yaml:"stale_resolve_hours"`
 }
 
 // EscalationConfig controls when escalation notices are sent.

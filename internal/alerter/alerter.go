@@ -24,6 +24,11 @@ type StoreInterface interface {
 	// TouchAlerts bumps updated_at = now() for the given dedup keys. Used to
 	// keep staleness detection accurate; rate-limited by the alerter.
 	TouchAlerts(dedupKeys []string) error
+	// AutoResolveStale marks any resolved=0 alert with updated_at older than
+	// olderThan as resolved. Called from the heartbeat loop as a safety net
+	// against ghost alerts that escaped the clean-check resolution path
+	// (process restarts, flapping conditions). Returns count resolved.
+	AutoResolveStale(olderThan time.Duration) (int64, error)
 	// GetAllActiveAlerts returns every unresolved alert across every instance.
 	// Used once per reconcile cycle to compute diffs against current collector
 	// output.
@@ -91,6 +96,10 @@ type AlertManager struct {
 	// lastTouched rate-limits BulkTouch. Each touch inserts a new version row
 	// into the ReplacingMergeTree; doing it every poll floods parts.
 	lastTouched time.Time
+
+	// staleResolveAfter is the age threshold for the heartbeat stale-sweep.
+	// Zero disables the sweep. Default 24h via WithStaleResolveAfter.
+	staleResolveAfter time.Duration
 
 	escalation EscalationConfig
 
@@ -162,6 +171,15 @@ func WithEscalation(cfg EscalationConfig) Option {
 	return func(am *AlertManager) { am.escalation = cfg }
 }
 
+// WithStaleResolveAfter enables the heartbeat-driven stale-alert sweep.
+// Any alert whose updated_at is older than d gets resolved on each heartbeat
+// tick. Zero disables the sweep. Covers the gap where cleanChecks can't
+// resolve an alert (in-memory counter lost on restart, or condition flaps
+// enough to reset the counter).
+func WithStaleResolveAfter(d time.Duration) Option {
+	return func(am *AlertManager) { am.staleResolveAfter = d }
+}
+
 // NewAlertManager creates a ready-to-use AlertManager. Call Start to begin
 // the heartbeat goroutine and Stop to shut it down.
 func NewAlertManager(slackNotifier *SlackNotifier, store StoreInterface, opts ...Option) *AlertManager {
@@ -171,6 +189,7 @@ func NewAlertManager(slackNotifier *SlackNotifier, store StoreInterface, opts ..
 		dedupWindow:        15 * time.Minute,
 		heartbeatInterval:  5 * time.Minute,
 		resolveCleanChecks: 4,
+		staleResolveAfter:  24 * time.Hour,
 		escalation:         DefaultEscalationConfig(),
 		cleanChecks:        make(map[string]int),
 		instanceTS:         make(map[string]string),
@@ -594,6 +613,21 @@ func (am *AlertManager) heartbeatTick() {
 	if am.store == nil {
 		return
 	}
+
+	// Safety sweep: resolve any ghost alerts whose updated_at is older than
+	// the configured stale threshold. This handles the case where cleanChecks
+	// can't resolve (process restarted, counter lost) or flapping conditions
+	// keep resetting the counter but the underlying condition is actually gone.
+	if am.staleResolveAfter > 0 {
+		if n, err := am.store.AutoResolveStale(am.staleResolveAfter); err != nil {
+			am.logger.Warn("stale sweep failed", slog.String("err", err.Error()))
+		} else if n > 0 {
+			am.logger.Info("stale sweep resolved alerts",
+				slog.Int64("count", n),
+				slog.Duration("threshold", am.staleResolveAfter))
+		}
+	}
+
 	dbActive := am.store.GetAllActiveAlerts()
 	instances := make(map[string]bool)
 	for _, a := range dbActive {

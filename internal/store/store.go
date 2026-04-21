@@ -812,6 +812,18 @@ func (s *Store) BulkTouchAlerts(dedupKeys []string) error {
 	return nil
 }
 
+// AutoResolveStale marks any resolved=0 alert whose updated_at is older than
+// olderThan as resolved. Thin wrapper around BulkResolveStale that accepts a
+// Duration so callers don't need to reason about whole-hour rounding.
+// Durations less than an hour are clamped to 1 hour.
+func (s *Store) AutoResolveStale(olderThan time.Duration) (int64, error) {
+	hours := int(olderThan / time.Hour)
+	if hours < 1 {
+		hours = 1
+	}
+	return s.BulkResolveStale(hours)
+}
+
 // BulkResolveStale marks all unresolved alerts whose updated_at is older than
 // the given number of hours as resolved. Returns the number of alerts resolved.
 func (s *Store) BulkResolveStale(hours int) (int64, error) {

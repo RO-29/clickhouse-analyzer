@@ -193,6 +193,12 @@ func main() {
 	}
 	inhibitionRules = append(inhibitionRules, alerter.DefaultInhibitionRules()...)
 
+	// Stale-sweep threshold. Default 24h when unset or zero.
+	staleHours := cfg.Alerting.StaleResolveHours
+	if staleHours <= 0 {
+		staleHours = 24
+	}
+
 	alertMgrOpts := []alerter.Option{
 		alerter.WithDedupWindow(cfg.Slack.DedupWindow.Duration),
 		alerter.WithInhibition(inhibitionRules),
@@ -201,6 +207,7 @@ func main() {
 			NoticeAfter: cfg.Escalation.NoticeAfter.Duration,
 			RepeatEvery: cfg.Escalation.RepeatEvery.Duration,
 		}),
+		alerter.WithStaleResolveAfter(time.Duration(staleHours) * time.Hour),
 	}
 
 	// PagerDuty notifier.
@@ -924,6 +931,10 @@ func (a *alertStoreAdapter) ResolveAlert(dedupKey string) error {
 
 func (a *alertStoreAdapter) TouchAlerts(dedupKeys []string) error {
 	return a.store.BulkTouchAlerts(dedupKeys)
+}
+
+func (a *alertStoreAdapter) AutoResolveStale(olderThan time.Duration) (int64, error) {
+	return a.store.AutoResolveStale(olderThan)
 }
 
 func (a *alertStoreAdapter) GetAllActiveAlerts() []collector.Alert {
