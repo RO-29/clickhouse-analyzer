@@ -499,8 +499,11 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
             {/* Alert event timeline — marks alert fires in the current time range */}
             {rangeAlerts.length > 0 && (
               <div className="mt-3 px-1">
-                <div className="text-[10px] text-[var(--dim)] mb-1 uppercase tracking-wider font-medium">
-                  Alert events in range ({rangeAlerts.length})
+                <div
+                  className="text-[10px] text-[var(--dim)] mb-1 uppercase tracking-wider font-medium"
+                  title="Every alert firing (resolved + active) whose created_at falls inside the selected time range. The Active Alerts section below only counts what's unresolved right now."
+                >
+                  Alert firings in range ({rangeAlerts.length}) · includes resolved
                 </div>
                 <div className="relative h-3 w-full">
                   {rangeAlerts.map((evt, idx) => {
@@ -831,7 +834,7 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
       {/* ═══ HISTORY TAB ═══ */}
       {activeTab === 'history' && (
         <div className="space-y-4">
-          <Section title={`Alerts in Range · ${rangeAlerts.length}${activeAlerts.length > 0 ? ` (${activeAlerts.length} active)` : ''}`} defaultOpen>
+          <Section title={`Alert firings in range · ${rangeAlerts.length}${activeAlerts.length > 0 ? ` · ${activeAlerts.length} still active` : ''}`} defaultOpen>
             <div className="flex items-center gap-2 mb-3">
               <button
                 onClick={() => setShowActiveOnly(!showActiveOnly)}
