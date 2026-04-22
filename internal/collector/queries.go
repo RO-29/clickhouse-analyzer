@@ -72,12 +72,14 @@ func (c *QueryCollector) collectRunningQueries(ctx context.Context, client *chcl
 	if len(rows) >= c.Thresholds.MaxConcurrent {
 		result.AddAlert(client.Name(), SeverityCritical, "queries",
 			"Maximum concurrent queries reached",
-			fmt.Sprintf("%d queries running (limit: %d)", len(rows), c.Thresholds.MaxConcurrent),
+			fmt.Sprintf("%d queries running (limit: %d)\n\n%s",
+				len(rows), c.Thresholds.MaxConcurrent, processesPlaybook(true)),
 			fmt.Sprintf("%s:queries:max_concurrent", client.Name()))
 	} else if len(rows) >= c.Thresholds.WarnConcurrent {
 		result.AddAlert(client.Name(), SeverityWarn, "queries",
 			"High concurrent query count",
-			fmt.Sprintf("%d queries running (warn threshold: %d)", len(rows), c.Thresholds.WarnConcurrent),
+			fmt.Sprintf("%d queries running (warn threshold: %d)\n\n%s",
+				len(rows), c.Thresholds.WarnConcurrent, processesPlaybook(false)),
 			fmt.Sprintf("%s:queries:warn_concurrent", client.Name()))
 	}
 
@@ -157,8 +159,8 @@ func (c *QueryCollector) collectRunningQueries(ctx context.Context, client *chcl
 
 	// Single grouped alert for full table scans.
 	if len(fullScans) > 0 {
-		msg := fmt.Sprintf("*%d queries* doing full table scans (>1B rows):\n%s",
-			len(fullScans), strings.Join(fullScans, "\n"))
+		msg := fmt.Sprintf("*%d queries* doing full table scans (>1B rows):\n%s\n\n%s",
+			len(fullScans), strings.Join(fullScans, "\n"), fullScansPlaybook)
 		result.AddAlert(client.Name(), SeverityWarn, "queries",
 			fmt.Sprintf("Full table scans: %d queries", len(fullScans)),
 			msg,
@@ -230,9 +232,12 @@ func (c *QueryCollector) collectFailedQueries(ctx context.Context, client *chcli
 		for code, cnt := range exCounts {
 			exLines = append(exLines, fmt.Sprintf("  - Error code %s: %d failures", code, cnt))
 		}
+		// Alert condition excludes timeout codes (handled by collectTimeouts);
+		// the playbook must match, otherwise the SQL returns MORE rows than
+		// the alert flagged and operators see numbers that don't tie out.
 		msg := fmt.Sprintf("*%d failed queries* in last 5 minutes:\n%s\n\n%s",
 			len(rows), strings.Join(exLines, "\n"),
-			queryExceptionPlaybook("", "INTERVAL 5 MINUTE"))
+			queryExceptionPlaybook(" AND exception_code NOT IN (159, 160, 394)", "INTERVAL 5 MINUTE"))
 		result.AddAlert(client.Name(), severity, "queries",
 			fmt.Sprintf("Query failures: %d in 5m", len(rows)),
 			msg,
@@ -364,11 +369,12 @@ func (c *QueryCollector) collectZombieQueries(ctx context.Context, client *chcli
 
 	result.AddMetric(client.Name(), "queries.zombie_count", float64(len(rows)), nil)
 
-	msg := fmt.Sprintf("*%d possible zombie queries* (HTTP client disconnected, server still running >10m):\n%s\n\n"+
+	msg := fmt.Sprintf("*%d possible zombie queries* (HTTP client disconnected, server still running >10m):\n%s\n\n%s\n\n"+
 		"*To fix:* Enable `cancel_http_readonly_queries_on_client_close = 1` in server config\n"+
 		"*Kill manually:*\n```\nKILL QUERY WHERE query_id IN ('%s')\n```\n\n"+
 		"*To prevent:* Set `max_execution_time` in user profiles or query settings",
 		len(rows), strings.Join(lines, "\n"),
+		zombieQueriesPlaybook,
 		strings.Join(extractQueryIDs(rows), "','"))
 
 	sev := SeverityWarn

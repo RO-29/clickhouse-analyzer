@@ -93,6 +93,7 @@ func (c *DictionaryCollector) collectDictionaries(ctx context.Context, client *c
 				}
 				msg += fmt.Sprintf(", last_exception: %s", lastException)
 			}
+			msg += "\n\n" + dictionariesStatusPlaybook
 
 			result.AddAlert(client.Name(), sev, "dictionaries",
 				"Dictionary not loaded",
@@ -105,7 +106,8 @@ func (c *DictionaryCollector) collectDictionaries(ctx context.Context, client *c
 		if isLoaded && elementCount == 0 {
 			result.AddAlert(client.Name(), SeverityWarn, "dictionaries",
 				"Dictionary loaded but empty",
-				fmt.Sprintf("Dictionary %s is LOADED but has 0 elements. Source may be misconfigured.", fqn),
+				fmt.Sprintf("Dictionary %s is LOADED but has 0 elements. Source may be misconfigured.\n\n%s",
+					fqn, dictionariesStatusPlaybook),
 				fmt.Sprintf("%s:dictionaries:empty:%s", client.Name(), fqn))
 		}
 	}
@@ -117,8 +119,8 @@ func (c *DictionaryCollector) collectDictionaries(ctx context.Context, client *c
 	if notLoaded >= c.Thresholds.ReloadFailThreshold {
 		result.AddAlert(client.Name(), SeverityCritical, "dictionaries",
 			"Multiple dictionaries failing to load",
-			fmt.Sprintf("%d dictionaries are not in LOADED status (threshold: %d)",
-				notLoaded, c.Thresholds.ReloadFailThreshold),
+			fmt.Sprintf("%d dictionaries are not in LOADED status (threshold: %d)\n\n%s",
+				notLoaded, c.Thresholds.ReloadFailThreshold, dictionariesStatusPlaybook),
 			fmt.Sprintf("%s:dictionaries:multi_fail", client.Name()))
 	}
 }

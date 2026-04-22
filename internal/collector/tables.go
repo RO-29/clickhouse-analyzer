@@ -180,14 +180,14 @@ func (c *TableCollector) collectMerges(ctx context.Context, client *chclient.Cli
 	if mergeCount >= c.MergesThresholds.MaxActive {
 		result.AddAlert(client.Name(), SeverityCritical, "tables",
 			"Too many concurrent merges (critical)",
-			fmt.Sprintf("%d active merges (max: %d). This can saturate disk I/O.",
-				mergeCount, c.MergesThresholds.MaxActive),
+			fmt.Sprintf("%d active merges (max: %d). This can saturate disk I/O.\n\n%s",
+				mergeCount, c.MergesThresholds.MaxActive, activeMergesPlaybook),
 			fmt.Sprintf("%s:tables:merges:max", client.Name()))
 	} else if mergeCount >= c.MergesThresholds.WarnActive {
 		result.AddAlert(client.Name(), SeverityWarn, "tables",
 			"Elevated merge count",
-			fmt.Sprintf("%d active merges (warn: %d)",
-				mergeCount, c.MergesThresholds.WarnActive),
+			fmt.Sprintf("%d active merges (warn: %d)\n\n%s",
+				mergeCount, c.MergesThresholds.WarnActive, activeMergesPlaybook),
 			fmt.Sprintf("%s:tables:merges:warn", client.Name()))
 	}
 }
@@ -235,6 +235,7 @@ func (c *TableCollector) collectMutations(ctx context.Context, client *chclient.
 			}
 			msg += fmt.Sprintf(", fail_reason=%s", failReason)
 		}
+		msg += "\n\n" + stuckMutationsPlaybook
 
 		sev := SeverityWarn
 		if failReason != "" {
@@ -304,8 +305,8 @@ func (c *TableCollector) collectDiskBalance(ctx context.Context, client *chclien
 	if coeffOfVar > 30 {
 		result.AddAlert(client.Name(), SeverityWarn, "tables",
 			"JBOD disk imbalance detected",
-			fmt.Sprintf("Data distribution across %d disks has %.1f%% coefficient of variation (mean: %s, stddev: %s)",
-				len(diskBytes), coeffOfVar, humanBytes(mean), humanBytes(stddev)),
+			fmt.Sprintf("Data distribution across %d disks has %.1f%% coefficient of variation (mean: %s, stddev: %s)\n\n%s",
+				len(diskBytes), coeffOfVar, humanBytes(mean), humanBytes(stddev), disksBalancePlaybook),
 			fmt.Sprintf("%s:tables:disk_imbalance", client.Name()))
 	}
 }

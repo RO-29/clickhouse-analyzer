@@ -80,14 +80,14 @@ func (c *StorageCollector) collectDisks(ctx context.Context, client *chclient.Cl
 		if usedPct >= c.DiskThresholds.CriticalPercent {
 			result.AddAlert(client.Name(), SeverityCritical, "storage",
 				"Disk nearly full (critical)",
-				fmt.Sprintf("Disk %s (%s) at %.1f%% capacity (free: %s / total: %s)",
-					name, path, usedPct, humanBytes(freeSpace), humanBytes(totalSpace)),
+				fmt.Sprintf("Disk %s (%s) at %.1f%% capacity (free: %s / total: %s)\n\n%s",
+					name, path, usedPct, humanBytes(freeSpace), humanBytes(totalSpace), topTablesBySizePlaybook),
 				fmt.Sprintf("%s:storage:disk_full:%s", client.Name(), name))
 		} else if usedPct >= c.DiskThresholds.WarnPercent {
 			result.AddAlert(client.Name(), SeverityWarn, "storage",
 				"Disk approaching capacity",
-				fmt.Sprintf("Disk %s (%s) at %.1f%% capacity (free: %s / total: %s)",
-					name, path, usedPct, humanBytes(freeSpace), humanBytes(totalSpace)),
+				fmt.Sprintf("Disk %s (%s) at %.1f%% capacity (free: %s / total: %s)\n\n%s",
+					name, path, usedPct, humanBytes(freeSpace), humanBytes(totalSpace), topTablesBySizePlaybook),
 				fmt.Sprintf("%s:storage:disk_full:%s", client.Name(), name))
 		}
 
@@ -95,8 +95,8 @@ func (c *StorageCollector) collectDisks(ctx context.Context, client *chclient.Cl
 		if freeSpace == 0 && totalSpace > 0 {
 			result.AddAlert(client.Name(), SeverityCritical, "storage",
 				"Disk may be broken or full",
-				fmt.Sprintf("Disk %s (%s) reports 0 free bytes with total %s",
-					name, path, humanBytes(totalSpace)),
+				fmt.Sprintf("Disk %s (%s) reports 0 free bytes with total %s\n\n%s",
+					name, path, humanBytes(totalSpace), disksOverviewPlaybook),
 				fmt.Sprintf("%s:storage:disk_broken:%s", client.Name(), name))
 		}
 	}
@@ -190,14 +190,14 @@ func (c *StorageCollector) collectS3Latency(ctx context.Context, client *chclien
 		if avgLatencyMs >= critMs {
 			result.AddAlert(client.Name(), SeverityCritical, "storage",
 				"S3 latency critically high",
-				fmt.Sprintf("Avg S3 request latency %.0fms across %.0f requests (max: %.0fms). Threshold: %.0fms.",
-					avgLatencyMs, totalS3Requests, maxLatencyMs, critMs),
+				fmt.Sprintf("Avg S3 request latency %.0fms across %.0f requests (max: %.0fms). Threshold: %.0fms.\n\n%s",
+					avgLatencyMs, totalS3Requests, maxLatencyMs, critMs, s3SlowRequestsPlaybook),
 				fmt.Sprintf("%s:storage:s3_latency", client.Name()))
 		} else if avgLatencyMs >= warnMs {
 			result.AddAlert(client.Name(), SeverityWarn, "storage",
 				"S3 latency elevated",
-				fmt.Sprintf("Avg S3 request latency %.0fms across %.0f requests (max: %.0fms). Threshold: %.0fms.",
-					avgLatencyMs, totalS3Requests, maxLatencyMs, warnMs),
+				fmt.Sprintf("Avg S3 request latency %.0fms across %.0f requests (max: %.0fms). Threshold: %.0fms.\n\n%s",
+					avgLatencyMs, totalS3Requests, maxLatencyMs, warnMs, s3SlowRequestsPlaybook),
 				fmt.Sprintf("%s:storage:s3_latency", client.Name()))
 		}
 	}
@@ -234,7 +234,8 @@ func (c *StorageCollector) collectTierMovement(ctx context.Context, client *chcl
 	if len(rows) > 50 {
 		result.AddAlert(client.Name(), SeverityInfo, "storage",
 			"High tier movement activity",
-			fmt.Sprintf("%d part moves in last 10 minutes", len(rows)),
+			fmt.Sprintf("%d part moves in last 10 minutes\n\n%s",
+				len(rows), partMovesPlaybook),
 			fmt.Sprintf("%s:storage:tier_moves", client.Name()))
 	}
 

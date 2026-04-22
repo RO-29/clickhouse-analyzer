@@ -81,7 +81,8 @@ func (c *CacheHealthCollector) collectMarkCacheHitRate(ctx context.Context, clie
 
 	dedupKey := fmt.Sprintf("%s:cache:mark_hit_rate", client.Name())
 	msg := fmt.Sprintf("Mark cache hit rate low: %.1f%% (%.0f hits, %.0f misses in 10 min). "+
-		"Queries are doing full disk reads instead of cache.", hitRate, hits, misses)
+		"Queries are doing full disk reads instead of cache.\n\n%s",
+		hitRate, hits, misses, cacheHitRatePlaybook)
 
 	if hitRate < 30 {
 		result.AddAlert(client.Name(), SeverityCritical, "system",

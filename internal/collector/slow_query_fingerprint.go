@@ -85,18 +85,15 @@ func (c *SlowQueryFingerprintCollector) Collect(ctx context.Context, client *chc
 			result.AddAlert(client.Name(), SeverityCritical, "queries",
 				fmt.Sprintf("Query storm: %.0f executions/5min, avg %.0fms", execCount, avgMs),
 				fmt.Sprintf("Single query pattern executed *%.0f times* in 5 minutes (avg %.0fms, max %.0fms, user: %s).\n\n"+
-					"*Sample query:*\n```\n%s\n```\n\n"+
-					"*Investigate:*\n```\nSELECT user, count(), avg(query_duration_ms)\nFROM system.query_log\n"+
-					"WHERE normalized_query_hash = '%s'\n  AND event_time > now() - INTERVAL 5 MINUTE\n"+
-					"GROUP BY user\n```",
-					execCount, avgMs, maxMs, user, displayQuery, hash),
+					"*Sample query:*\n```\n%s\n```\n\n%s",
+					execCount, avgMs, maxMs, user, displayQuery, slowQueryByHashPlaybook(hash)),
 				dedupKey)
 		} else if execCount > 50 || (execCount > 10 && avgMs > 30000) {
 			result.AddAlert(client.Name(), SeverityWarn, "queries",
 				fmt.Sprintf("High-frequency pattern: %.0f exec/5min, avg %.0fms", execCount, avgMs),
 				fmt.Sprintf("Query pattern executed %.0f times in 5 min (avg %.0fms, max %.0fms, user: %s).\n\n"+
-					"*Sample query:*\n```\n%s\n```",
-					execCount, avgMs, maxMs, user, displayQuery),
+					"*Sample query:*\n```\n%s\n```\n\n%s",
+					execCount, avgMs, maxMs, user, displayQuery, slowQueryByHashPlaybook(hash)),
 				dedupKey)
 		}
 	}

@@ -111,8 +111,8 @@ func (c *MVCollector) collectMVFailures(ctx context.Context, client *chclient.Cl
 		}
 		result.AddAlert(client.Name(), sev, "mvs",
 			"Materialized view failures",
-			fmt.Sprintf("MV %s -> %s: %.0f failures in 5m, example: %s",
-				viewName, viewTarget, count, sampleEx),
+			fmt.Sprintf("MV %s -> %s: %.0f failures in 5m, example: %s\n\n%s",
+				viewName, viewTarget, count, sampleEx, mvFailuresPlaybook(viewName)),
 			fmt.Sprintf("%s:mvs:failure:%s", client.Name(), viewName))
 	}
 
@@ -164,8 +164,8 @@ func (c *MVCollector) collectMVTiming(ctx context.Context, client *chclient.Clie
 		if p95Ms > lagWarnMs {
 			result.AddAlert(client.Name(), SeverityWarn, "mvs",
 				"Slow materialized view",
-				fmt.Sprintf("MV %s -> %s: p95=%.0fms avg=%.0fms (%.0f executions in 5m, warn threshold: %.0fms)",
-					viewName, viewTarget, p95Ms, avgMs, executions, lagWarnMs),
+				fmt.Sprintf("MV %s -> %s: p95=%.0fms avg=%.0fms (%.0f executions in 5m, warn threshold: %.0fms)\n\n%s",
+					viewName, viewTarget, p95Ms, avgMs, executions, lagWarnMs, mvSlowPlaybook(viewName)),
 				fmt.Sprintf("%s:mvs:slow:%s", client.Name(), viewName))
 		}
 	}
@@ -252,8 +252,8 @@ func (c *MVCollector) detectChainedMVs(ctx context.Context, client *chclient.Cli
 
 		result.AddAlert(client.Name(), SeverityInfo, "mvs",
 			"Chained materialized view detected",
-			fmt.Sprintf("MV %s.%s depends on MV %s. Chained MVs are fragile; verify the chain is intact.",
-				mv1DB, mv1, mv2),
+			fmt.Sprintf("MV %s.%s depends on MV %s. Chained MVs are fragile; verify the chain is intact.\n\n%s",
+				mv1DB, mv1, mv2, mvChainPlaybook(mv1DB, mv1)),
 			fmt.Sprintf("%s:mvs:chain:%s:%s", client.Name(), mv1, mv2))
 	}
 }

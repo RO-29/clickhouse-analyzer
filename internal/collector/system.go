@@ -126,14 +126,14 @@ func (c *SystemCollector) collectAsyncMetrics(ctx context.Context, client *chcli
 		if usedPct >= c.MemoryThresholds.CriticalPercent {
 			result.AddAlert(client.Name(), SeverityCritical, "memory",
 				"OS memory critically high",
-				fmt.Sprintf("OS memory usage at %.1f%% (available: %s / total: %s)",
-					usedPct, humanBytes(memAvail), humanBytes(memTotal)),
+				fmt.Sprintf("OS memory usage at %.1f%% (available: %s / total: %s)\n\n%s",
+					usedPct, humanBytes(memAvail), humanBytes(memTotal), memoryConsumersPlaybook),
 				fmt.Sprintf("%s:memory:os_used", client.Name()))
 		} else if usedPct >= c.MemoryThresholds.WarnPercent {
 			result.AddAlert(client.Name(), SeverityWarn, "memory",
 				"OS memory usage elevated",
-				fmt.Sprintf("OS memory usage at %.1f%% (available: %s / total: %s)",
-					usedPct, humanBytes(memAvail), humanBytes(memTotal)),
+				fmt.Sprintf("OS memory usage at %.1f%% (available: %s / total: %s)\n\n%s",
+					usedPct, humanBytes(memAvail), humanBytes(memTotal), memoryConsumersPlaybook),
 				fmt.Sprintf("%s:memory:os_used", client.Name()))
 		}
 
@@ -144,14 +144,14 @@ func (c *SystemCollector) collectAsyncMetrics(ctx context.Context, client *chcli
 			if rssPct >= c.MemoryThresholds.RSSCriticalPercent {
 				result.AddAlert(client.Name(), SeverityCritical, "memory",
 					"ClickHouse RSS critically high",
-					fmt.Sprintf("RSS is %.1f%% of total memory (%s / %s)",
-						rssPct, humanBytes(rss), humanBytes(memTotal)),
+					fmt.Sprintf("RSS is %.1f%% of total memory (%s / %s)\n\n%s",
+						rssPct, humanBytes(rss), humanBytes(memTotal), memoryConsumersPlaybook),
 					fmt.Sprintf("%s:memory:rss", client.Name()))
 			} else if rssPct >= c.MemoryThresholds.RSSWarnPercent {
 				result.AddAlert(client.Name(), SeverityWarn, "memory",
 					"ClickHouse RSS elevated",
-					fmt.Sprintf("RSS is %.1f%% of total memory (%s / %s)",
-						rssPct, humanBytes(rss), humanBytes(memTotal)),
+					fmt.Sprintf("RSS is %.1f%% of total memory (%s / %s)\n\n%s",
+						rssPct, humanBytes(rss), humanBytes(memTotal), memoryConsumersPlaybook),
 					fmt.Sprintf("%s:memory:rss", client.Name()))
 			}
 		}
@@ -190,12 +190,12 @@ func (c *SystemCollector) checkCPUAlert(instance string, busyPct float64, result
 	if busyPct >= c.CPUThresholds.CriticalPercent {
 		result.AddAlert(instance, SeverityCritical, "cpu",
 			"CPU critically high",
-			fmt.Sprintf("CPU busy at %.1f%%", busyPct),
+			fmt.Sprintf("CPU busy at %.1f%%\n\n%s", busyPct, cpuConsumersPlaybook),
 			fmt.Sprintf("%s:cpu:busy", instance))
 	} else if busyPct >= c.CPUThresholds.WarnPercent {
 		result.AddAlert(instance, SeverityWarn, "cpu",
 			"CPU usage elevated",
-			fmt.Sprintf("CPU busy at %.1f%%", busyPct),
+			fmt.Sprintf("CPU busy at %.1f%%\n\n%s", busyPct, cpuConsumersPlaybook),
 			fmt.Sprintf("%s:cpu:busy", instance))
 	}
 }

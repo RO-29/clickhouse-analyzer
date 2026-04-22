@@ -129,8 +129,8 @@ func (c *InsertCollector) collectInsertThroughput(ctx context.Context, client *c
 			if dropPct >= c.Thresholds.ThroughputDropPercent {
 				result.AddAlert(client.Name(), SeverityWarn, "inserts",
 					"Insert throughput drop detected",
-					fmt.Sprintf("Current interval: %.0f rows vs rolling avg: %.0f rows (%.1f%% drop, threshold: %.0f%%)",
-						totalRows, avgRows, dropPct, c.Thresholds.ThroughputDropPercent),
+					fmt.Sprintf("Current interval: %.0f rows vs rolling avg: %.0f rows (%.1f%% drop, threshold: %.0f%%)\n\n%s",
+						totalRows, avgRows, dropPct, c.Thresholds.ThroughputDropPercent, insertThroughputPlaybook),
 					fmt.Sprintf("%s:inserts:throughput_drop", client.Name()))
 			}
 		}
@@ -190,8 +190,8 @@ func (c *InsertCollector) collectSmallInserts(ctx context.Context, client *chcli
 
 		result.AddAlert(client.Name(), SeverityWarn, "inserts",
 			"Small insert anti-pattern detected",
-			fmt.Sprintf("%s: %.0f inserts with <=%d rows each (avg %.0f rows/insert) in last %ds. Consider batching.",
-				fqn, count, threshold, avgRows, intervalSec),
+			fmt.Sprintf("%s: %.0f inserts with <=%d rows each (avg %.0f rows/insert) in last %ds. Consider batching.\n\n%s",
+				fqn, count, threshold, avgRows, intervalSec, smallInsertsPlaybook),
 			fmt.Sprintf("%s:inserts:small:%s", client.Name(), fqn))
 	}
 }
@@ -251,8 +251,8 @@ func (c *InsertCollector) collectPipelineStalls(ctx context.Context, client *chc
 
 		result.AddAlert(client.Name(), SeverityWarn, "inserts",
 			"Possible pipeline stall",
-			fmt.Sprintf("%s has not received inserts for %.0fs (had inserts earlier in the hour, stall threshold: %ds)",
-				fqn, secsSince, stallWindowSec),
+			fmt.Sprintf("%s has not received inserts for %.0fs (had inserts earlier in the hour, stall threshold: %ds)\n\n%s",
+				fqn, secsSince, stallWindowSec, insertStallPlaybook),
 			fmt.Sprintf("%s:inserts:stall:%s", client.Name(), fqn))
 	}
 }

@@ -87,13 +87,14 @@ func (c *BackgroundPoolCollector) Collect(ctx context.Context, client *chclient.
 			result.AddAlert(client.Name(), SeverityCritical, "system",
 				fmt.Sprintf("Background %s pool near full (%.0f/%.0f)", pool.name, used, size),
 				fmt.Sprintf("Background pool `%s` is %.1f%% full: %.0f tasks / %.0f slots. "+
-					"Merges may stop and parts accumulate.", pool.name, usedPct, used, size),
+					"Merges may stop and parts accumulate.\n\n%s",
+					pool.name, usedPct, used, size, backgroundPoolPlaybook),
 				dedupKey)
 		} else if usedPct > 70 {
 			result.AddAlert(client.Name(), SeverityWarn, "system",
 				fmt.Sprintf("Background %s pool near full (%.0f/%.0f)", pool.name, used, size),
-				fmt.Sprintf("Background pool `%s` is %.1f%% full: %.0f tasks / %.0f slots.",
-					pool.name, usedPct, used, size),
+				fmt.Sprintf("Background pool `%s` is %.1f%% full: %.0f tasks / %.0f slots.\n\n%s",
+					pool.name, usedPct, used, size, backgroundPoolPlaybook),
 				dedupKey)
 		}
 	}

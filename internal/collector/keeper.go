@@ -115,7 +115,8 @@ func (c *KeeperCollector) Collect(ctx context.Context, client *chclient.Client) 
 	} else if outstanding > 100 {
 		result.AddAlert(client.Name(), SeverityWarn, "system",
 			fmt.Sprintf("Keeper backlog: %.0f outstanding requests", outstanding),
-			fmt.Sprintf("ClickHouse Keeper has %.0f outstanding requests — monitor for growth.", outstanding),
+			fmt.Sprintf("ClickHouse Keeper has %.0f outstanding requests — monitor for growth.\n\n%s",
+				outstanding, keeperConnectionPlaybook),
 			fmt.Sprintf("%s:keeper:outstanding_requests", client.Name()))
 	}
 

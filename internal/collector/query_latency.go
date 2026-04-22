@@ -79,15 +79,15 @@ func (c *QueryLatencyCollector) Collect(ctx context.Context, client *chclient.Cl
 		result.AddAlert(client.Name(), SeverityCritical, "queries",
 			fmt.Sprintf("Query P95 latency spike: %.0fms vs %.0fms baseline (×%.1f)", currentP95, baselineP95, ratio),
 			fmt.Sprintf("Query P95 latency spike: %.0fms vs %.0fms baseline (×%.1f). "+
-				"Current window: last 30 min (%.0f queries). Baseline: same window yesterday.",
-				currentP95, baselineP95, ratio, currentCnt),
+				"Current window: last 30 min (%.0f queries). Baseline: same window yesterday.\n\n%s",
+				currentP95, baselineP95, ratio, currentCnt, querySlowInWindowPlaybook("INTERVAL 30 MINUTE")),
 			dedupKey)
 	} else if ratio > 2 {
 		result.AddAlert(client.Name(), SeverityWarn, "queries",
 			fmt.Sprintf("Query P95 latency spike: %.0fms vs %.0fms baseline (×%.1f)", currentP95, baselineP95, ratio),
 			fmt.Sprintf("Query P95 latency elevated: %.0fms vs %.0fms baseline (×%.1f). "+
-				"Current window: last 30 min (%.0f queries). Baseline: same window yesterday.",
-				currentP95, baselineP95, ratio, currentCnt),
+				"Current window: last 30 min (%.0f queries). Baseline: same window yesterday.\n\n%s",
+				currentP95, baselineP95, ratio, currentCnt, querySlowInWindowPlaybook("INTERVAL 30 MINUTE")),
 			dedupKey)
 	}
 

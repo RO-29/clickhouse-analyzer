@@ -110,7 +110,8 @@ func (c *AsyncInsertsCollector) Collect(ctx context.Context, client *chclient.Cl
 		} else if depth > 50 {
 			result.AddAlert(client.Name(), SeverityWarn, "inserts",
 				fmt.Sprintf("Async insert queue growing: %.0f entries", depth),
-				fmt.Sprintf("Async insert buffer has %.0f pending entries — monitor for continued growth.", depth),
+				fmt.Sprintf("Async insert buffer has %.0f pending entries — monitor for continued growth.\n\n%s",
+					depth, asyncInsertQueuePlaybook),
 				dedupKey)
 		}
 	}
