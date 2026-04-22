@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { ArrowLeft, HelpCircle, RefreshCw, Sparkles, Wrench, AlertTriangle, CheckCircle2, Activity } from 'lucide-react'
+import { ArrowLeft, HelpCircle, RefreshCw, Sparkles, Wrench, AlertTriangle, CheckCircle2, Activity, Power } from 'lucide-react'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip as RechartTooltip, ResponsiveContainer, CartesianGrid,
 } from 'recharts'
@@ -264,6 +264,21 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
   const activeAlerts = unresolvedAlerts.filter(a => detailAlertAge(a) <= detailStaleHours * 3600)
   const staleAlerts = unresolvedAlerts.filter(a => detailAlertAge(a) > detailStaleHours * 3600)
 
+  // Restart events in last 7d — produced by RestartCollector as distinct
+  // alerts per restart (unique dedup_key per start epoch) so counting rows
+  // is accurate.
+  const SEVEN_DAYS = 7 * 86400
+  const restartCutoff = detailNow - SEVEN_DAYS
+  const restartAlerts = alertHistory.filter(
+    a => a.category === 'system'
+      && a.created_at >= restartCutoff
+      && (a.title.startsWith('ClickHouse restarted') || a.title.startsWith('ClickHouse crashed'))
+  )
+  const crashCount = restartAlerts.filter(a => a.title.startsWith('ClickHouse crashed')).length
+  const lastRestart = restartAlerts.length > 0
+    ? Math.max(...restartAlerts.map(a => a.created_at))
+    : 0
+
   const handleResolveDetailAlert = useCallback(async (dedupKey: string) => {
     try {
       await api.alerts.resolve(dedupKey)
@@ -347,6 +362,39 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
           </div>
           {maintUntil && <span className="opacity-70 text-[11px] shrink-0">Alerts suppressed until {maintUntil}</span>}
         </div>
+      )}
+
+      {/* ── Restart chip ──
+          Pulled from alertHistory (category=system, title starts with
+          'ClickHouse restarted|crashed') in the last 7d. RestartCollector
+          writes one alert per event with a unique dedup_key so counting
+          rows is an accurate event count, not a dedup'd firing count. */}
+      {restartAlerts.length > 0 && (
+        <button
+          onClick={() => setActiveTab('history')}
+          className={cn(
+            "flex items-center gap-2 px-4 py-2 rounded-lg border text-[12px] transition-colors text-left",
+            crashCount > 0
+              ? "border-red-500/30 bg-red-500/10 text-red-400 hover:bg-red-500/15"
+              : "border-yellow-500/30 bg-yellow-500/10 text-yellow-400 hover:bg-yellow-500/15"
+          )}
+          title="Open the History tab to see each restart and its pre-restart investigation queries"
+        >
+          <Power size={13} className="shrink-0" />
+          <span className="font-semibold">
+            {restartAlerts.length} restart{restartAlerts.length === 1 ? '' : 's'} in last 7d
+          </span>
+          {crashCount > 0 && (
+            <span className="opacity-90">· {crashCount} crash{crashCount === 1 ? '' : 'es'}</span>
+          )}
+          {lastRestart > 0 && (
+            <span className="opacity-70 text-[11px] ml-auto">
+              last: {new Date(lastRestart * 1000).toLocaleString(undefined, {
+                month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+              })}
+            </span>
+          )}
+        </button>
       )}
 
       {/* ── Header ── */}

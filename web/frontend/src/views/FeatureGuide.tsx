@@ -23,6 +23,7 @@ const WHATS_NEW: Section[] = [
       'query_samples retention bumped 30d → 365d so long-range forensics work.',
       'Playbook SQL in alerts audited end-to-end — windows and filters now match the triggering condition.',
       'Memory chart now shows Host Total as a 4th line, plain-English labels (CH RSS / OS Available / CH Tracked / Host Total), and per-series hover tooltips. Empty or all-zero series auto-hide on managed CH builds.',
+      'Restart detection: when uptime() regresses, a "ClickHouse restarted" (or "crashed") alert fires with embedded playbook SQL for the 10 min before the restart (exceptions, OOMs, heaviest queries, system.crash_log). Detail page shows a "N restarts in 7d" chip.',
       'DDL migrations removed from Go — schema.sql is the single source of truth.',
     ],
   },

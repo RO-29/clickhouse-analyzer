@@ -529,6 +529,7 @@ func buildCollectors(cfg *config.Config) []collector.Collector {
 	result = append(result, &collector.SlowQueryFingerprintCollector{})
 	result = append(result, &collector.KeeperCollector{})
 	result = append(result, &collector.QuerySamplesCollector{})
+	result = append(result, &collector.RestartCollector{Database: cfg.Storage.Database})
 
 	if cfg.K8s.Enabled {
 		result = append(result, &collector.K8sCollector{
