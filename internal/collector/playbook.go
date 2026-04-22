@@ -257,18 +257,32 @@ func slowQueryByHashPlaybook(hash string) string {
 // Materialized-view playbooks
 // ---------------------------------------------------------------------------
 
-// mvFailuresPlaybook: recent MV exceptions.
+// mvFailuresPlaybook: recent MV exceptions. Window matches the 5-minute
+// alert observation window in collectMVFailures so the SQL returns exactly
+// the rows the alert counted. A second query widens to 1 hour for pattern
+// context (is this a burst or ongoing?).
 func mvFailuresPlaybook(view string) string {
 	return fmt.Sprintf("*Investigate:*\n```\n"+
-		"SELECT view_name, status, exception, event_time\n"+
+		"-- The failures the alert counted (same 5-minute window)\n"+
+		"SELECT event_time, exception, read_rows, written_rows\n"+
 		"FROM system.query_views_log\n"+
 		"WHERE status = 'ExceptionWhileProcessing'\n"+
 		"  AND view_name = '%s'\n"+
-		"  AND event_time > now() - INTERVAL 1 HOUR\n"+
-		"ORDER BY event_time DESC LIMIT 20\n```", view)
+		"  AND event_time >= now() - INTERVAL 5 MINUTE\n"+
+		"ORDER BY event_time DESC;\n\n"+
+		"-- Broader context: is this a new burst or ongoing?\n"+
+		"SELECT toStartOfMinute(event_time) AS minute,\n"+
+		"  count() AS failures, any(exception) AS sample\n"+
+		"FROM system.query_views_log\n"+
+		"WHERE status = 'ExceptionWhileProcessing'\n"+
+		"  AND view_name = '%s'\n"+
+		"  AND event_time >= now() - INTERVAL 1 HOUR\n"+
+		"GROUP BY minute ORDER BY minute DESC\n```", view, view)
 }
 
-// mvSlowPlaybook: per-view duration stats.
+// mvSlowPlaybook: per-view duration stats. Window matches the alert's
+// 5-minute observation window; filter includes status=QueryFinish like
+// the alert (slow-view filter considers successful completions only).
 func mvSlowPlaybook(view string) string {
 	return fmt.Sprintf("*Investigate:*\n```\n"+
 		"SELECT view_name,\n"+
@@ -277,8 +291,9 @@ func mvSlowPlaybook(view string) string {
 		"  quantile(0.95)(view_duration_ms) AS p95_ms,\n"+
 		"  max(view_duration_ms) AS max_ms\n"+
 		"FROM system.query_views_log\n"+
-		"WHERE view_name = '%s'\n"+
-		"  AND event_time > now() - INTERVAL 1 HOUR\n"+
+		"WHERE status = 'QueryFinish'\n"+
+		"  AND view_name = '%s'\n"+
+		"  AND event_time >= now() - INTERVAL 5 MINUTE\n"+
 		"GROUP BY view_name\n```", view)
 }
 
