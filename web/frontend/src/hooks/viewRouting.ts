@@ -3,7 +3,7 @@
  * a React or DOM environment.
  */
 
-export type View = 'overview' | 'detail' | 'alerts' | 'history' | 'explore' | 'compare' | 'advisor' | 'terminal' | 'logs' | 'chlogs' | 'analyzer' | 'scanner' | 'cost' | 'maintenance' | 'runcheck' | 'audit' | 'thresholds'
+export type View = 'overview' | 'detail' | 'alerts' | 'history' | 'explore' | 'compare' | 'advisor' | 'terminal' | 'logs' | 'chlogs' | 'analyzer' | 'scanner' | 'cost' | 'maintenance' | 'runcheck' | 'audit' | 'thresholds' | 'guide'
 
 /** All route names that the app recognises as valid deep-link targets. */
 export const VALID_VIEWS: View[] = [
@@ -24,6 +24,7 @@ export const VALID_VIEWS: View[] = [
   'runcheck',
   'audit',
   'thresholds',
+  'guide',
 ]
 
 /**

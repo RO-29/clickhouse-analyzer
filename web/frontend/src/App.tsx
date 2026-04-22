@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { X } from 'lucide-react'
 import { StoreProvider, useStore } from './hooks/useStore'
 import { Sidebar } from './components/Sidebar'
 import { TopBar } from './components/TopBar'
@@ -21,6 +20,7 @@ import AlertHistory from './views/AlertHistory'
 import RunCheck from './views/RunCheck'
 import AuditLog from './views/AuditLog'
 import ThresholdEditor from './views/ThresholdEditor'
+import FeatureGuide from './views/FeatureGuide'
 import { TableDetail } from './components/TableDetail'
 import { AIAnalysisPanel } from './components/AIAnalysisPanel'
 import { NotificationToasts } from './components/NotificationToasts'
@@ -30,12 +30,11 @@ import { cn } from './lib/utils'
 import { api } from './lib/api'
 
 function Layout() {
-  const { view, refreshInterval, sidebarCollapsed, setInstances, tableDetail, closeTableDetail, selectedInstance, setAuthExpired } = useStore()
+  const { view, refreshInterval, sidebarCollapsed, setInstances, tableDetail, closeTableDetail, selectedInstance, setAuthExpired, setView } = useStore()
   const intervalRef = useRef<number>(0)
   const [tick, setTick] = useState(0)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
-  const [shortcutsOpen, setShortcutsOpen] = useState(false)
   // Mount ChatAnalyzer once on first visit and keep it alive (preserves session state)
   const [analyzerMounted, setAnalyzerMounted] = useState(view === 'analyzer')
   const {
@@ -51,7 +50,7 @@ function Layout() {
   } = useAIAnalysis(selectedInstance)
   const aiSpacerHeight = aiOpen ? PANEL_EXPANDED_HEIGHT : PANEL_COLLAPSED_HEIGHT
 
-  // Cmd+K → open command palette; ? → shortcuts overlay
+  // Cmd+K → open command palette; ? → Feature Guide page
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
@@ -65,19 +64,12 @@ function Layout() {
         !(e.target instanceof HTMLTextAreaElement)
       ) {
         e.preventDefault()
-        setShortcutsOpen(o => !o)
+        setView('guide')
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [])
-
-  // Listen for shortcuts-open event dispatched by TopBar ? button
-  useEffect(() => {
-    const handler = () => setShortcutsOpen(o => !o)
-    window.addEventListener('ch-open-shortcuts', handler)
-    return () => window.removeEventListener('ch-open-shortcuts', handler)
-  }, [])
+  }, [setView])
 
   // Warn before unload/refresh if any analysis is actively streaming
   const hasActiveAnalysis = aiSessions.some(s => s.messages.some(m => m.status === 'streaming'))
@@ -165,6 +157,7 @@ function Layout() {
     terminal: <Terminal />,
     logs: <AppLogs refreshKey={tick} />,
     chlogs: <CHLogs refreshKey={tick} />,
+    guide: <FeatureGuide />,
   }
 
   return (
@@ -212,34 +205,6 @@ function Layout() {
         />
       )}
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
-
-      {/* Keyboard shortcuts overlay */}
-      {shortcutsOpen && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" onClick={() => setShortcutsOpen(false)}>
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
-          <div className="relative z-10 bg-[var(--card)] border border-[var(--border)] rounded-xl p-6 w-full max-w-md shadow-2xl" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-sm font-semibold">Keyboard Shortcuts</h2>
-              <button onClick={() => setShortcutsOpen(false)} className="text-[var(--dim)] hover:text-[var(--fg)] transition-colors"><X size={16} /></button>
-            </div>
-            <div className="space-y-1">
-              {([
-                ['Cmd/Ctrl + K', 'Command palette'],
-                ['j / k', 'Navigate rows in tables'],
-                ['Enter', 'Select focused row'],
-                ['Esc', 'Close modal / panel'],
-                ['?', 'Show this help'],
-              ] as [string, string][]).map(([key, desc]) => (
-                <div key={key} className="flex items-center justify-between py-1.5 border-b border-[var(--border)] last:border-0">
-                  <span className="text-xs text-[var(--dim)]">{desc}</span>
-                  <kbd className="text-[10px] px-2 py-0.5 rounded bg-[var(--surface)] border border-[var(--border)] font-mono">{key}</kbd>
-                </div>
-              ))}
-            </div>
-            <p className="text-[10px] text-[var(--dim)] mt-3">Press <kbd className="font-mono px-1 bg-[var(--surface)] border border-[var(--border)] rounded">?</kbd> to toggle</p>
-          </div>
-        </div>
-      )}
 
       {view !== 'analyzer' && (
         <AIAnalysisPanel

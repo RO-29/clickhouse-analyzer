@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { Sun, Moon, Menu, Lock, LockOpen, X, Loader2, ExternalLink, Copy, Check, ChevronRight, Settings, Keyboard } from 'lucide-react'
+import { Sun, Moon, Menu, Lock, LockOpen, X, Loader2, ExternalLink, Copy, Check, ChevronRight, Settings, HelpCircle } from 'lucide-react'
 import { useStore, type View } from '../hooks/useStore'
 import { cn } from '../lib/utils'
 import { api } from '../lib/api'
@@ -22,6 +22,7 @@ const VIEW_TITLES: Record<View, string> = {
   runcheck: 'Run Checks',
   audit: 'Audit Log',
   thresholds: 'Alert Thresholds',
+  guide: 'Feature Guide',
 }
 
 const PRESETS = ['15m', '1h', '6h', '24h', '7d']
@@ -520,11 +521,16 @@ export function TopBar({ onMobileMenuClick }: TopBarProps) {
             </div>
 
             <button
-              onClick={() => window.dispatchEvent(new Event('ch-open-shortcuts'))}
-              className="p-1.5 rounded-md text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)] transition-colors"
-              title="Keyboard shortcuts (?)"
+              onClick={() => setView('guide')}
+              className={cn(
+                "p-1.5 rounded-md transition-colors",
+                view === 'guide'
+                  ? 'text-[var(--accent)] bg-[var(--surface)]'
+                  : 'text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)]'
+              )}
+              title="Feature guide (?)"
             >
-              <Keyboard size={14} />
+              <HelpCircle size={14} />
             </button>
 
             <button
