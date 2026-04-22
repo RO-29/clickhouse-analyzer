@@ -259,7 +259,22 @@ func (am *AlertManager) ClearCleanChecks(dedupKey string) {
 //
 // Reconcile is idempotent: calling it twice with the same currentAlerts does
 // nothing on the second call beyond maybe one rate-limited touch.
+//
+// Deprecated-in-caller wrapper: see ReconcileWithObservation for the full
+// three-argument form. This version assumes every instance had a complete
+// collection pass; if even one collector failed for an instance, the missing
+// alerts from that collector would wrongly tick their clean-checks and
+// auto-resolve after N cycles.
 func (am *AlertManager) Reconcile(ctx context.Context, currentAlerts []collector.Alert) error {
+	return am.ReconcileWithObservation(ctx, currentAlerts, nil)
+}
+
+// ReconcileWithObservation is Reconcile with an explicit "trusted instances"
+// set. Instances NOT in the set had at least one collector fail this cycle,
+// so we treat their missing alerts as "couldn't observe" instead of "not
+// firing" — clean-check counters don't advance, auto-resolve doesn't trigger.
+// Passing a nil set behaves like Reconcile (trust everything).
+func (am *AlertManager) ReconcileWithObservation(ctx context.Context, currentAlerts []collector.Alert, trustedInstances map[string]bool) error {
 	if am.store == nil {
 		return fmt.Errorf("reconcile: store not configured")
 	}
@@ -366,9 +381,17 @@ func (am *AlertManager) Reconcile(ctx context.Context, currentAlerts []collector
 	}
 
 	// ── Clean-check accounting + resolve candidates ─────────────────────────
+	// For instances where at least one collector failed this cycle
+	// (trustedInstances[inst] == false), we CAN'T distinguish "alert isn't
+	// firing" from "we didn't observe it". Skip clean-check so a flaky
+	// collector doesn't auto-resolve real alerts after N cycles. Passing a
+	// nil trustedInstances means "trust everything" (legacy behaviour).
 	var toResolve []collector.Alert
 	am.mu.Lock()
 	for _, a := range missing {
+		if trustedInstances != nil && !trustedInstances[a.Instance] {
+			continue
+		}
 		am.cleanChecks[a.DedupKey]++
 		if am.cleanChecks[a.DedupKey] >= am.resolveCleanChecks {
 			toResolve = append(toResolve, a)
@@ -376,7 +399,7 @@ func (am *AlertManager) Reconcile(ctx context.Context, currentAlerts []collector
 			dirtyInstances[a.Instance] = true
 		}
 	}
-	// Any alert observed this cycle resets its counter.
+	// Any alert observed this cycle resets its counter regardless of trust.
 	for key := range currentByKey {
 		delete(am.cleanChecks, key)
 	}

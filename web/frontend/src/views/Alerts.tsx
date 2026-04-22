@@ -906,9 +906,14 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
   // previous version used `filtered`, which made "Resolved: 0" show when the
   // filter was 'firing' even though there were 326 resolved alerts in the
   // dataset — confusing at best, "the UI is lying" at worst.
+  //
+  // Note: "firing" counts snoozed alerts INCLUDED. Snoozed = user asked not
+  // to be notified, but the alert is still active. This matches Overview's
+  // top-bar count which uses the same definition. The separate "Snoozed"
+  // StatCard below surfaces how many of the firing total are snoozed.
   const firingAlerts = useMemo(
-    () => allAlerts.filter((a) => !a.resolved && !isStale(a, staleHours) && !isSnoozed(a.dedup_key, snoozed)),
-    [allAlerts, staleHours, snoozed],
+    () => allAlerts.filter((a) => !a.resolved && !isStale(a, staleHours)),
+    [allAlerts, staleHours],
   )
   const firing = firingAlerts.length
   const critFiring = firingAlerts.filter((a) => a.severity === 'critical').length

@@ -1029,6 +1029,10 @@ func (s *Store) BulkTouchAlerts(dedupKeys []string) error {
 	}
 	inClause := strings.Join(quoted, ", ")
 
+	// Touch the LATEST unresolved firing per dedup_key only. Prior code used
+	// LIMIT 1 BY (dedup_key, created_at) which would touch every historical
+	// unresolved ghost row (shouldn't exist post-cleanupDuplicateActiveAlerts,
+	// but defend in depth so a race can't keep a ghost "fresh" forever).
 	sql := fmt.Sprintf(`INSERT INTO %s.alerts
 		(id, instance, severity, category, title, message, resolved, resolved_at, created_at, dedup_key, version, updated_at)
 		SELECT id, instance, severity, category, title, message, resolved, resolved_at, created_at, dedup_key, version+1, now()
@@ -1036,8 +1040,8 @@ func (s *Store) BulkTouchAlerts(dedupKeys []string) error {
 			SELECT id, instance, severity, category, title, message, resolved, resolved_at, created_at, dedup_key, version, updated_at
 			FROM %s.alerts
 			WHERE dedup_key IN (%s)
-			ORDER BY dedup_key, created_at, version DESC
-			LIMIT 1 BY (dedup_key, created_at)
+			ORDER BY dedup_key, created_at DESC, version DESC
+			LIMIT 1 BY dedup_key
 		)
 		WHERE resolved = 0`,
 		s.database, s.database, inClause)

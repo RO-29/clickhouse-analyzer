@@ -267,8 +267,17 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
   const handleResolveDetailAlert = useCallback(async (dedupKey: string) => {
     try {
       await api.alerts.resolve(dedupKey)
-      const ah = await api.alerts.history({ limit: 500 }).catch(() => [] as Alert[])
-      setAlertHistory((ah as Alert[]).filter(a => a.instance === instance))
+      // Re-fetch active + history scoped to this instance, matching the
+      // initial load path. Using the unscoped /history with a global 500
+      // limit could under-report on noisy clusters.
+      const [active, history] = await Promise.all([
+        api.alerts.active(instance!).catch(() => [] as Alert[]),
+        api.alerts.history({ limit: 500, instance: instance! }).catch(() => [] as Alert[]),
+      ])
+      const byId = new Map<number, Alert>()
+      for (const a of history as Alert[]) byId.set(a.id, a)
+      for (const a of active as Alert[]) byId.set(a.id, a)
+      setAlertHistory(Array.from(byId.values()))
     } catch {}
   }, [instance])
 

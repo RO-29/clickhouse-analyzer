@@ -546,6 +546,11 @@ type instanceSnapshot struct {
 	rawMetrics    []collector.Metric
 	healthScore   int
 	hadCollection bool // false if circuit-broken or total collector failure
+	// fullyObserved is true only when *every* collector for this instance
+	// succeeded. If even one failed, reconcile must NOT auto-resolve this
+	// instance's alerts — we can't distinguish "condition cleared" from
+	// "collector blew up".
+	fullyObserved bool
 }
 
 // runReconcile executes one poll cycle across all instances:
@@ -706,6 +711,7 @@ func runReconcile(
 			rawMetrics:    rawMetrics,
 			healthScore:   analysisResult.HealthScore.Score,
 			hadCollection: true,
+			fullyObserved: errorCount == 0,
 		})
 
 		slog.Debug("collection complete",
@@ -717,13 +723,19 @@ func runReconcile(
 		return nil
 	})
 
-	// Union all instance alerts into a single reconcile input.
+	// Union all instance alerts into a single reconcile input. Build the
+	// "fully observed" set so reconcile knows which instances it can trust
+	// when computing the missing-alert set for clean-check accounting.
 	var currentAlerts []collector.Alert
+	trustedInstances := make(map[string]bool, len(snaps))
 	for _, s := range snaps {
 		currentAlerts = append(currentAlerts, s.alerts...)
+		if s.fullyObserved {
+			trustedInstances[s.name] = true
+		}
 	}
 
-	if err := alertMgr.Reconcile(ctx, currentAlerts); err != nil {
+	if err := alertMgr.ReconcileWithObservation(ctx, currentAlerts, trustedInstances); err != nil {
 		slog.Error("reconcile failed", "error", err)
 	}
 
