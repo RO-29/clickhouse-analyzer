@@ -58,7 +58,10 @@ type Store struct {
 	alertSeq atomic.Int64
 }
 
-// New creates a Store. Schema must already exist (see schema.sql).
+// New creates a Store. Schema (including migrations) must already exist —
+// see schema.sql. ch-analyzer no longer runs DDL at startup; operators are
+// expected to run schema.sql whenever they upgrade to a release that added
+// columns or changed TTLs.
 func New(manager *chclient.Manager, database string) (*Store, error) {
 	if database == "" {
 		database = "ch_analyzer"
@@ -69,153 +72,14 @@ func New(manager *chclient.Manager, database string) (*Store, error) {
 		database: database,
 	}
 
-	// Migrate: add updated_at column to existing alerts tables (no-op on new installs).
-	s.migrateAlertUpdatedAt()
-
-	// Migrate: add first_seen_at and fire_count columns (no-op on new installs).
-	s.migrateAlertFireTracking()
-
-	// Migrate: add databases/tables/cpu columns to query_samples (no-op on new installs).
-	s.migrateQuerySamplesExtras()
-
-	// Migrate: bump query_samples retention from the old 30-day default to
-	// 365 days. Safe to apply on every startup — MODIFY TTL is a metadata
-	// change, not a rewrite, and CH enforces the new TTL lazily via merges.
-	s.migrateQuerySamplesRetention()
-
-	// One-shot cleanup: collapse historical duplicate active alerts. Prior
-	// bugs could leave multiple resolved=0 rows for the same dedup_key across
-	// different created_at values; GetActiveAlerts dedups at read time, but
-	// consumers of GetAlertHistory still see ghost firings. This resolves
-	// everything but the latest firing per offender. Idempotent.
+	// One-shot data cleanup: collapse historical duplicate active alerts.
+	// Prior bugs could leave multiple resolved=0 rows for the same dedup_key
+	// across different created_at values. This is DML (not DDL) so it stays
+	// in code — schema.sql only describes shape, not content repair.
 	s.cleanupDuplicateActiveAlerts()
 
 	slog.Info("store initialized", "backend", "clickhouse-distributed", "database", database, "instances", manager.Len())
 	return s, nil
-}
-
-// migrateAlertUpdatedAt adds the updated_at column to existing alerts tables.
-// Safe to call on new installs — ADD COLUMN IF NOT EXISTS is idempotent.
-func (s *Store) migrateAlertUpdatedAt() {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	sql := fmt.Sprintf(
-		"ALTER TABLE %s.alerts ADD COLUMN IF NOT EXISTS updated_at DateTime DEFAULT created_at",
-		s.database,
-	)
-	s.manager.ForEach(func(name string, client *chclient.Client) error {
-		if _, err := client.QuerySingleValue(ctx, sql); err != nil {
-			slog.Warn("alert migration: add updated_at failed", "instance", name, "err", err)
-		}
-		return nil
-	})
-}
-
-// migrateAlertFireTracking adds first_seen_at and fire_count columns to the
-// alerts table. Safe to call on existing installs — ADD COLUMN IF NOT EXISTS
-// is idempotent.
-func (s *Store) migrateAlertFireTracking() {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	sqls := []string{
-		fmt.Sprintf(
-			"ALTER TABLE %s.alerts ADD COLUMN IF NOT EXISTS first_seen_at DateTime DEFAULT created_at",
-			s.database,
-		),
-		fmt.Sprintf(
-			"ALTER TABLE %s.alerts ADD COLUMN IF NOT EXISTS fire_count UInt32 DEFAULT 1",
-			s.database,
-		),
-	}
-	s.manager.ForEach(func(name string, client *chclient.Client) error {
-		for _, sql := range sqls {
-			if _, err := client.QuerySingleValue(ctx, sql); err != nil {
-				slog.Warn("alert migration: fire tracking columns failed", "instance", name, "err", err)
-			}
-		}
-		return nil
-	})
-}
-
-// migrateQuerySamplesExtras adds databases/tables/cpu_user_us/cpu_system_us
-// columns to ch_analyzer.query_samples. Safe to call on new installs —
-// ADD COLUMN IF NOT EXISTS is idempotent. These columns let the dashboard
-// attribute query cost to specific tables and surface CPU-bound patterns.
-func (s *Store) migrateQuerySamplesExtras() {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	sqls := []string{
-		fmt.Sprintf(
-			"ALTER TABLE %s.query_samples ADD COLUMN IF NOT EXISTS databases Array(String) DEFAULT []",
-			s.database,
-		),
-		fmt.Sprintf(
-			"ALTER TABLE %s.query_samples ADD COLUMN IF NOT EXISTS tables Array(String) DEFAULT []",
-			s.database,
-		),
-		fmt.Sprintf(
-			"ALTER TABLE %s.query_samples ADD COLUMN IF NOT EXISTS cpu_user_us UInt64 DEFAULT 0",
-			s.database,
-		),
-		fmt.Sprintf(
-			"ALTER TABLE %s.query_samples ADD COLUMN IF NOT EXISTS cpu_system_us UInt64 DEFAULT 0",
-			s.database,
-		),
-		// Per-client forensics — used by the Connections tab's "Clients in
-		// range" table. Empty defaults keep old rows safe during backfill.
-		fmt.Sprintf(
-			"ALTER TABLE %s.query_samples ADD COLUMN IF NOT EXISTS initial_address String DEFAULT ''",
-			s.database,
-		),
-		fmt.Sprintf(
-			"ALTER TABLE %s.query_samples ADD COLUMN IF NOT EXISTS interface_code UInt8 DEFAULT 0",
-			s.database,
-		),
-		fmt.Sprintf(
-			"ALTER TABLE %s.query_samples ADD COLUMN IF NOT EXISTS http_user_agent String DEFAULT ''",
-			s.database,
-		),
-		fmt.Sprintf(
-			"ALTER TABLE %s.query_samples ADD COLUMN IF NOT EXISTS forwarded_for String DEFAULT ''",
-			s.database,
-		),
-	}
-	s.manager.ForEach(func(name string, client *chclient.Client) error {
-		for _, sql := range sqls {
-			if _, err := client.QuerySingleValue(ctx, sql); err != nil {
-				slog.Warn("query_samples migration: add extras failed", "instance", name, "err", err)
-			}
-		}
-		return nil
-	})
-}
-
-// migrateQuerySamplesRetention sets the TTL on ch_analyzer.query_samples to
-// 365 days. Existing installs originally had 30-day retention; we bump it
-// so long-range query forensics work. MODIFY TTL is metadata-only, applied
-// lazily by background merges — cheap to run every startup.
-//
-// Operators who want shorter retention can override with:
-//
-//	ALTER TABLE ch_analyzer.query_samples
-//	  MODIFY TTL event_time + INTERVAL 90 DAY
-//
-// Re-running this migration will flip it back to 365, so override only if
-// you've patched this function or disabled migrations.
-func (s *Store) migrateQuerySamplesRetention() {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	sql := fmt.Sprintf(
-		"ALTER TABLE %s.query_samples MODIFY TTL event_time + INTERVAL 365 DAY",
-		s.database,
-	)
-	s.manager.ForEach(func(name string, client *chclient.Client) error {
-		if _, err := client.QuerySingleValue(ctx, sql); err != nil {
-			slog.Warn("query_samples migration: modify TTL failed",
-				"instance", name, "err", err)
-		}
-		return nil
-	})
 }
 
 // cleanupDuplicateActiveAlerts collapses any dedup_key with multiple unresolved

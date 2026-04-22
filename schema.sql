@@ -1,8 +1,14 @@
 -- ch-analyzer ClickHouse schema
+--
 -- Run once per instance before starting ch-analyzer:
 --   clickhouse-client --host <host> --port 8443 --secure \
 --     --user admin --password <pass> \
 --     --multiquery < schema.sql
+--
+-- Safe to re-run on existing installs: every CREATE uses IF NOT EXISTS and the
+-- Migrations block at the bottom uses ADD COLUMN IF NOT EXISTS / MODIFY TTL.
+-- ch-analyzer no longer runs DDL at startup — if you upgrade the app, re-run
+-- this file before (or right after) restart.
 
 CREATE DATABASE IF NOT EXISTS ch_analyzer;
 
@@ -114,3 +120,51 @@ PARTITION BY toYYYYMM(event_time)
 ORDER BY (event_time, normalized_query_hash)
 TTL event_time + INTERVAL 365 DAY
 SETTINGS index_granularity = 8192;
+
+-- ---------------------------------------------------------------------------
+-- Migrations (idempotent — safe to re-run on every upgrade)
+--
+-- New installs do not need these (the CREATE TABLE statements above already
+-- include every column). Existing installs created before the corresponding
+-- release need them the first time they upgrade past that release.
+--
+-- Columns are IF NOT EXISTS so re-running is a no-op; the MODIFY TTL is
+-- metadata-only (no rewrite) so re-running is cheap.
+-- ---------------------------------------------------------------------------
+
+-- alerts.updated_at — added so the reconcile loop can rate-limit touches
+-- and so the UI can show "last seen" without walking all versions.
+ALTER TABLE ch_analyzer.alerts
+    ADD COLUMN IF NOT EXISTS updated_at DateTime DEFAULT created_at;
+
+-- alerts.first_seen_at + fire_count — preserved across restarts so an alert
+-- re-firing after a reconcile restart doesn't reset its age/counter.
+ALTER TABLE ch_analyzer.alerts
+    ADD COLUMN IF NOT EXISTS first_seen_at DateTime DEFAULT created_at;
+ALTER TABLE ch_analyzer.alerts
+    ADD COLUMN IF NOT EXISTS fire_count UInt32 DEFAULT 1;
+
+-- query_samples: per-query table/CPU attribution + per-client forensics.
+-- Needed by the Query Log, Tables, Users, and Connections tabs.
+ALTER TABLE ch_analyzer.query_samples
+    ADD COLUMN IF NOT EXISTS databases Array(String) DEFAULT [];
+ALTER TABLE ch_analyzer.query_samples
+    ADD COLUMN IF NOT EXISTS tables Array(String) DEFAULT [];
+ALTER TABLE ch_analyzer.query_samples
+    ADD COLUMN IF NOT EXISTS cpu_user_us UInt64 DEFAULT 0;
+ALTER TABLE ch_analyzer.query_samples
+    ADD COLUMN IF NOT EXISTS cpu_system_us UInt64 DEFAULT 0;
+ALTER TABLE ch_analyzer.query_samples
+    ADD COLUMN IF NOT EXISTS initial_address String DEFAULT '';
+ALTER TABLE ch_analyzer.query_samples
+    ADD COLUMN IF NOT EXISTS interface_code UInt8 DEFAULT 0;
+ALTER TABLE ch_analyzer.query_samples
+    ADD COLUMN IF NOT EXISTS http_user_agent String DEFAULT '';
+ALTER TABLE ch_analyzer.query_samples
+    ADD COLUMN IF NOT EXISTS forwarded_for String DEFAULT '';
+
+-- query_samples retention: bump from the old 30-day default to 365 days so
+-- long-range forensics work. If you need to claw storage back, override with:
+--   ALTER TABLE ch_analyzer.query_samples MODIFY TTL event_time + INTERVAL 90 DAY
+ALTER TABLE ch_analyzer.query_samples
+    MODIFY TTL event_time + INTERVAL 365 DAY;
