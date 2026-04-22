@@ -78,6 +78,11 @@ func New(manager *chclient.Manager, database string) (*Store, error) {
 	// Migrate: add databases/tables/cpu columns to query_samples (no-op on new installs).
 	s.migrateQuerySamplesExtras()
 
+	// Migrate: bump query_samples retention from the old 30-day default to
+	// 365 days. Safe to apply on every startup — MODIFY TTL is a metadata
+	// change, not a rewrite, and CH enforces the new TTL lazily via merges.
+	s.migrateQuerySamplesRetention()
+
 	// One-shot cleanup: collapse historical duplicate active alerts. Prior
 	// bugs could leave multiple resolved=0 rows for the same dedup_key across
 	// different created_at values; GetActiveAlerts dedups at read time, but
@@ -180,6 +185,34 @@ func (s *Store) migrateQuerySamplesExtras() {
 			if _, err := client.QuerySingleValue(ctx, sql); err != nil {
 				slog.Warn("query_samples migration: add extras failed", "instance", name, "err", err)
 			}
+		}
+		return nil
+	})
+}
+
+// migrateQuerySamplesRetention sets the TTL on ch_analyzer.query_samples to
+// 365 days. Existing installs originally had 30-day retention; we bump it
+// so long-range query forensics work. MODIFY TTL is metadata-only, applied
+// lazily by background merges — cheap to run every startup.
+//
+// Operators who want shorter retention can override with:
+//
+//	ALTER TABLE ch_analyzer.query_samples
+//	  MODIFY TTL event_time + INTERVAL 90 DAY
+//
+// Re-running this migration will flip it back to 365, so override only if
+// you've patched this function or disabled migrations.
+func (s *Store) migrateQuerySamplesRetention() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sql := fmt.Sprintf(
+		"ALTER TABLE %s.query_samples MODIFY TTL event_time + INTERVAL 365 DAY",
+		s.database,
+	)
+	s.manager.ForEach(func(name string, client *chclient.Client) error {
+		if _, err := client.QuerySingleValue(ctx, sql); err != nil {
+			slog.Warn("query_samples migration: modify TTL failed",
+				"instance", name, "err", err)
 		}
 		return nil
 	})

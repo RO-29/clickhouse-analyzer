@@ -75,7 +75,13 @@ CREATE TABLE IF NOT EXISTS ch_analyzer.audit_log (
 ORDER BY (ts, instance, action)
 TTL ts + INTERVAL 90 DAY;
 
--- query_samples: rolling 30-day copy of system.query_log
+-- query_samples: rolling 365-day copy of system.query_log. Powers Query
+-- Patterns, Query Log, Samples, Users, Tables, and Connections → "Clients
+-- in range". Retention bumped from the original 30 days so long-range
+-- forensics ("what ran on this table 6 months ago?") work. Disk impact on
+-- busy instances can be significant — shrink via
+--   ALTER TABLE ch_analyzer.query_samples MODIFY TTL event_time + INTERVAL 90 DAY
+-- if you need to claw storage back.
 CREATE TABLE IF NOT EXISTS ch_analyzer.query_samples (
     collected_at          DateTime               DEFAULT now(),
     event_time            DateTime,
@@ -106,5 +112,5 @@ CREATE TABLE IF NOT EXISTS ch_analyzer.query_samples (
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMM(event_time)
 ORDER BY (event_time, normalized_query_hash)
-TTL event_time + INTERVAL 30 DAY
+TTL event_time + INTERVAL 365 DAY
 SETTINGS index_granularity = 8192;
