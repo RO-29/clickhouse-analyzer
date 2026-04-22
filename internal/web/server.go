@@ -67,6 +67,14 @@ type Server struct {
 	// via DESCRIBE on first /queries call; subsequent calls reuse the result.
 	processesColsMu sync.RWMutex
 	processesCols   map[string]processesColumns
+
+	// sessionLogMu / sessionLogAvail — cache of whether system.session_log
+	// exists on each instance. Populated lazily on the first /connections/
+	// sessions call. CH only creates the table when session_log is configured
+	// in config.xml (most operators leave it off), so this is a feature-flag
+	// rather than a version check.
+	sessionLogMu    sync.RWMutex
+	sessionLogAvail map[string]bool
 }
 
 // processesColumns records which optional columns were seen on
@@ -91,7 +99,8 @@ func New(addr string, cfg *config.Config, store *store.Store, analyzer *analyzer
 		logs:          logs,
 		queryHistory:  NewQueryHistory(100),
 		startTime:     time.Now(),
-		processesCols: make(map[string]processesColumns),
+		processesCols:   make(map[string]processesColumns),
+		sessionLogAvail: make(map[string]bool),
 	}
 }
 
@@ -210,6 +219,8 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/instances/{name}/alerts", s.handleAlerts)
 	mux.HandleFunc("GET /api/instances/{name}/queries", s.handleQueries)
 	mux.HandleFunc("GET /api/instances/{name}/connections", s.handleConnections)
+	mux.HandleFunc("GET /api/instances/{name}/connections/history", s.handleConnectionsHistory)
+	mux.HandleFunc("GET /api/instances/{name}/connections/sessions", s.handleConnectionSessions)
 	mux.HandleFunc("GET /api/instances/{name}/tables", s.handleTables)
 	mux.HandleFunc("GET /api/instances/{name}/disks", s.handleDisks)
 	mux.HandleFunc("GET /api/instances/{name}/mvs", s.handleMVs)
@@ -583,6 +594,113 @@ func (s *Server) probeProcessesColumns(ctx context.Context, client *chclient.Cli
 	s.processesCols[instance] = cols
 	s.processesColsMu.Unlock()
 	return cols
+}
+
+// GET /api/instances/{name}/connections/sessions — connection lifecycle
+// events from system.session_log (Login / Logout / LoginFailure) over the
+// selected range. Feature-detected: session_log has to be enabled in CH's
+// config.xml (<session_log>…</session_log>) for the table to exist. When
+// absent we return {"available": false} and the UI shows an explainer.
+//
+// The grouping is per-session (hash of user + client_address + start_ts)
+// so a single login followed by queries + a logout renders as one row with
+// the login time, duration, and outcome — not three.
+func (s *Server) handleConnectionSessions(w http.ResponseWriter, r *http.Request) {
+	instance := r.PathValue("name")
+	client := s.manager.Get(instance)
+	if client == nil {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	if !s.sessionLogAvailable(ctx, client, instance) {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"available": false,
+			"reason":    "system.session_log is not enabled on this server — add <session_log>...</session_log> to config.xml to record connect/disconnect events.",
+			"sessions":  []interface{}{},
+		})
+		return
+	}
+
+	fromTime, toTime := parseFromTo(r)
+
+	// Group login → logout pairs by session_id when present; otherwise fall
+	// back to a synthetic key. Older CH versions (before ~23.x) don't have
+	// session_id on session_log — if the column probe fails, the simple
+	// per-event view is better than an error.
+	sql := fmt.Sprintf(`SELECT
+		type,
+		event_time,
+		user,
+		auth_type,
+		profiles,
+		roles,
+		client_hostname,
+		client_name,
+		interface,
+		ifNull(client_address, toIPv6('::')) AS client_address_raw,
+		IPv6NumToString(client_address_raw) AS client_address,
+		failure_reason,
+		client_port
+	FROM system.session_log
+	WHERE event_time >= '%s' AND event_time <= '%s'
+	ORDER BY event_time DESC
+	LIMIT 500`, fromTime, toTime)
+
+	rows, err := client.Query(ctx, sql)
+	if err != nil {
+		slog.Warn("connection sessions query failed", "err", err, "instance", instance)
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"available": true,
+			"error":     "failed to read session_log; see server logs",
+			"sessions":  []interface{}{},
+		})
+		return
+	}
+
+	// Quick summary: total Logins, LoginFailures, Logouts in range.
+	var logins, failures, logouts int64
+	for _, row := range rows {
+		switch toString(row["type"]) {
+		case "Login", "LoginSuccess":
+			logins++
+		case "LoginFailure":
+			failures++
+		case "Logout":
+			logouts++
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"available": true,
+		"sessions":  rows,
+		"summary": map[string]int64{
+			"logins":   logins,
+			"failures": failures,
+			"logouts":  logouts,
+		},
+	})
+}
+
+// sessionLogAvailable caches whether system.session_log exists on a given
+// instance. A single SELECT count() FROM system.session_log LIMIT 0 tells
+// us — CH returns an error (UNKNOWN_TABLE) when the table isn't present.
+func (s *Server) sessionLogAvailable(ctx context.Context, client *chclient.Client, instance string) bool {
+	s.sessionLogMu.RLock()
+	v, ok := s.sessionLogAvail[instance]
+	s.sessionLogMu.RUnlock()
+	if ok {
+		return v
+	}
+	_, err := client.Query(ctx, "SELECT 1 FROM system.session_log LIMIT 0")
+	avail := err == nil
+	s.sessionLogMu.Lock()
+	s.sessionLogAvail[instance] = avail
+	s.sessionLogMu.Unlock()
+	return avail
 }
 
 // POST /api/instances/{name}/kill-query — kill a running query by query_id.

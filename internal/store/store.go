@@ -156,6 +156,24 @@ func (s *Store) migrateQuerySamplesExtras() {
 			"ALTER TABLE %s.query_samples ADD COLUMN IF NOT EXISTS cpu_system_us UInt64 DEFAULT 0",
 			s.database,
 		),
+		// Per-client forensics — used by the Connections tab's "Clients in
+		// range" table. Empty defaults keep old rows safe during backfill.
+		fmt.Sprintf(
+			"ALTER TABLE %s.query_samples ADD COLUMN IF NOT EXISTS initial_address String DEFAULT ''",
+			s.database,
+		),
+		fmt.Sprintf(
+			"ALTER TABLE %s.query_samples ADD COLUMN IF NOT EXISTS interface_code UInt8 DEFAULT 0",
+			s.database,
+		),
+		fmt.Sprintf(
+			"ALTER TABLE %s.query_samples ADD COLUMN IF NOT EXISTS http_user_agent String DEFAULT ''",
+			s.database,
+		),
+		fmt.Sprintf(
+			"ALTER TABLE %s.query_samples ADD COLUMN IF NOT EXISTS forwarded_for String DEFAULT ''",
+			s.database,
+		),
 	}
 	s.manager.ForEach(func(name string, client *chclient.Client) error {
 		for _, sql := range sqls {

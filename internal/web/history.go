@@ -1388,6 +1388,89 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------------------------------------------------------------------------
+// 13a2. Connections history — per-client aggregation over the range
+// ---------------------------------------------------------------------------
+
+// handleConnectionsHistory aggregates query_samples over the selected range,
+// grouped by (initial_address, user, interface_code), so operators can see
+// who talked to this CH and how much, not just who is talking right now.
+//
+// Response row:
+//
+//	{
+//	  "initial_address": "10.0.1.42:43122",
+//	  "user":            "reporting",
+//	  "interface_name":  "TCP" | "HTTP" | …,
+//	  "interface_code":  0,
+//	  "http_user_agent": "clickhouse-go/2.x",
+//	  "forwarded_for":   "203.0.113.8",
+//	  "query_count":     1234,
+//	  "total_ms":        987000,
+//	  "avg_ms":          800,
+//	  "p95_ms":          3200,
+//	  "total_read_bytes": 123456789,
+//	  "total_memory":     98765432,
+//	  "failures":        3,
+//	  "first_seen":      "2026-04-20 13:02:11",
+//	  "last_seen":       "2026-04-22 01:44:02"
+//	}
+//
+// Rows where initial_address is empty (old rows collected before the column
+// was added) are excluded so the list isn't dominated by a "" bucket.
+func (s *Server) handleConnectionsHistory(w http.ResponseWriter, r *http.Request) {
+	instance := r.PathValue("name")
+	client := s.manager.Get(instance)
+	if client == nil {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	fromTime, toTime := parseFromTo(r)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	sql := fmt.Sprintf(`SELECT
+		initial_address,
+		user,
+		CASE interface_code
+			WHEN 0 THEN 'TCP'
+			WHEN 1 THEN 'HTTP'
+			WHEN 2 THEN 'gRPC'
+			WHEN 3 THEN 'MySQL'
+			WHEN 4 THEN 'PostgreSQL'
+			WHEN 5 THEN 'TCP_Interserver'
+			ELSE 'other'
+		END AS interface_name,
+		interface_code,
+		any(http_user_agent) AS http_user_agent,
+		any(forwarded_for) AS forwarded_for,
+		count() AS query_count,
+		sum(query_duration_ms) AS total_ms,
+		avg(query_duration_ms) AS avg_ms,
+		quantile(0.95)(query_duration_ms) AS p95_ms,
+		sum(read_bytes) AS total_read_bytes,
+		sum(memory_usage) AS total_memory,
+		countIf(is_exception = 1) AS failures,
+		min(event_time) AS first_seen,
+		max(event_time) AS last_seen
+	FROM ch_analyzer.query_samples
+	WHERE event_time >= '%s' AND event_time <= '%s'
+	  AND initial_address != ''
+	GROUP BY initial_address, user, interface_code
+	ORDER BY query_count DESC
+	LIMIT 200`, fromTime, toTime)
+
+	rows, err := client.Query(ctx, sql)
+	if err != nil {
+		slog.Warn("connections history", "err", err, "instance", instance)
+		writeJSON(w, http.StatusOK, []interface{}{})
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
+// ---------------------------------------------------------------------------
 // 13b. Query Tables (per-table aggregation)
 // ---------------------------------------------------------------------------
 

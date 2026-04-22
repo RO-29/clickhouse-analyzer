@@ -16,6 +16,8 @@ import type {
   QueryUser,
   QueryTable,
   ConnectionsResponse,
+  ClientHistoryRow,
+  ConnectionSessionsResponse,
   PatternOverviewResponse,
   HistoryFailure,
   HistoryMerge,
@@ -1131,6 +1133,13 @@ function ConnectionsTab({ instance, from, to, refreshKey, onShowQuery: _onShowQu
   const [history, setHistory] = useState<Array<Record<string, any>>>([])
   const [historyLoading, setHistoryLoading] = useState(false)
 
+  // Per-client history from ch_analyzer.query_samples.
+  const [clientHist, setClientHist] = useState<ClientHistoryRow[]>([])
+  const [clientHistLoading, setClientHistLoading] = useState(false)
+
+  // system.session_log events (feature-detected).
+  const [sessions, setSessions] = useState<ConnectionSessionsResponse | null>(null)
+
   const load = useCallback(() => {
     api.history.connections(instance)
       .then(d => { setData(d); setError(null) })
@@ -1181,6 +1190,29 @@ function ConnectionsTab({ instance, from, to, refreshKey, onShowQuery: _onShowQu
         .map(([ts, vals]) => ({ ts, ...vals }))
       setHistory(merged)
     }).finally(() => { if (!cancelled) setHistoryLoading(false) })
+    return () => { cancelled = true }
+  }, [instance, from, to, refreshKey])
+
+  // Per-client history — depends on the new query_samples columns. On fresh
+  // deploys rows from before the migration have empty initial_address, so
+  // the backend filters those out; the list fills in over the next ~30 days.
+  useEffect(() => {
+    let cancelled = false
+    setClientHistLoading(true)
+    api.history.connectionsHistory(instance, from, to)
+      .then(d => { if (!cancelled) setClientHist(Array.isArray(d) ? d : []) })
+      .catch(() => { if (!cancelled) setClientHist([]) })
+      .finally(() => { if (!cancelled) setClientHistLoading(false) })
+    return () => { cancelled = true }
+  }, [instance, from, to, refreshKey])
+
+  // system.session_log — may not exist on this CH; backend returns
+  // {available:false} in that case.
+  useEffect(() => {
+    let cancelled = false
+    api.history.connectionSessions(instance, from, to)
+      .then(d => { if (!cancelled) setSessions(d) })
+      .catch(() => { if (!cancelled) setSessions(null) })
     return () => { cancelled = true }
   }, [instance, from, to, refreshKey])
 
@@ -1309,6 +1341,148 @@ function ConnectionsTab({ instance, from, to, refreshKey, onShowQuery: _onShowQu
                   </span>
                   <span className="truncate text-[var(--dim)] font-mono text-[11px]" title={agent}>
                     {agent || '—'}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </Card>
+
+      {/* Clients in range — historical per-client view from query_samples */}
+      <Card noPad>
+        <div className="px-3 py-2 flex items-center gap-2 border-b border-[var(--border)] bg-[var(--surface)]">
+          <span className="text-xs font-semibold text-[var(--dim)] uppercase tracking-wider">
+            Clients in range · {clientHist.length}
+          </span>
+          <span className="ml-auto text-[10px] text-[var(--dim)]">
+            aggregated from ch_analyzer.query_samples (30-day TTL)
+          </span>
+        </div>
+        {clientHistLoading && clientHist.length === 0 ? (
+          <div className="text-sm text-[var(--dim)] text-center py-8">Loading…</div>
+        ) : clientHist.length === 0 ? (
+          <div className="text-sm text-[var(--dim)] text-center py-10">
+            No per-client history yet. The new columns (initial_address,
+            interface_code, http_user_agent, forwarded_for) populate as new
+            queries land in query_samples — give it a poll cycle or two.
+          </div>
+        ) : (
+          <div className="divide-y divide-[var(--border)]">
+            <div className="grid gap-2 px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--dim)] bg-[var(--surface)]"
+                 style={{ gridTemplateColumns: '170px 120px 70px 80px 80px 80px 80px 80px 1fr' }}>
+              <span>Address</span>
+              <span>User</span>
+              <span>Iface</span>
+              <span className="text-right">Queries</span>
+              <span className="text-right">Total</span>
+              <span className="text-right">P95</span>
+              <span className="text-right">Read</span>
+              <span className="text-right">Errs</span>
+              <span>Client / UA</span>
+            </div>
+            {clientHist.map((c, i) => {
+              const agent = c.http_user_agent || ''
+              const fwd = c.forwarded_for
+              return (
+                <div
+                  key={i}
+                  className="grid gap-2 px-3 py-2 text-xs hover:bg-[var(--hover)] transition-colors"
+                  style={{ gridTemplateColumns: '170px 120px 70px 80px 80px 80px 80px 80px 1fr' }}
+                  title={`first ${c.first_seen} · last ${c.last_seen}${fwd ? ` · fwd ${fwd}` : ''}`}
+                >
+                  <span className="font-mono text-[var(--fg)] truncate">{c.initial_address}</span>
+                  <span className="truncate text-[var(--dim)]" title={c.user}>{c.user || '—'}</span>
+                  <span>
+                    <span className="inline-flex px-1.5 py-0.5 rounded bg-[var(--hover)] border border-[var(--border)] text-[10px] font-mono">
+                      {c.interface_name}
+                    </span>
+                  </span>
+                  <span className="text-right font-mono tabular-nums text-[var(--fg)]">
+                    {fmtCompact(Number(c.query_count) || 0)}
+                  </span>
+                  <span className="text-right font-mono tabular-nums text-[var(--dim)]">
+                    {fmtDuration(Number(c.total_ms) || 0)}
+                  </span>
+                  <span className="text-right font-mono tabular-nums text-[var(--dim)]">
+                    {fmtDuration(Number(c.p95_ms) || 0)}
+                  </span>
+                  <span className="text-right font-mono tabular-nums text-[var(--dim)]">
+                    {Number(c.total_read_bytes) > 0 ? fmtBytes(Number(c.total_read_bytes)) : '—'}
+                  </span>
+                  <span className={cn('text-right font-mono tabular-nums', Number(c.failures) > 0 ? 'text-red-400' : 'text-[var(--dim)]')}>
+                    {Number(c.failures) || 0}
+                  </span>
+                  <span className="truncate text-[var(--dim)] font-mono text-[11px]" title={agent}>
+                    {agent || '—'}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </Card>
+
+      {/* Session events from system.session_log — feature-detected */}
+      <Card noPad>
+        <div className="px-3 py-2 flex items-center gap-2 border-b border-[var(--border)] bg-[var(--surface)]">
+          <span className="text-xs font-semibold text-[var(--dim)] uppercase tracking-wider">
+            Session Events
+          </span>
+          {sessions?.available && sessions.summary && (
+            <span className="text-[10px] text-[var(--dim)]">
+              {sessions.summary.logins} login{sessions.summary.logins === 1 ? '' : 's'}
+              {' · '}
+              <span className={sessions.summary.failures > 0 ? 'text-red-400' : ''}>
+                {sessions.summary.failures} failure{sessions.summary.failures === 1 ? '' : 's'}
+              </span>
+              {' · '}
+              {sessions.summary.logouts} logout{sessions.summary.logouts === 1 ? '' : 's'}
+            </span>
+          )}
+        </div>
+        {!sessions ? (
+          <div className="text-sm text-[var(--dim)] text-center py-8">Loading…</div>
+        ) : !sessions.available ? (
+          <div className="text-xs text-[var(--dim)] px-4 py-6 leading-relaxed">
+            <div className="font-medium text-[var(--fg)] mb-1">session_log is not enabled on this server</div>
+            {sessions.reason || 'Add a <session_log> block to config.xml to record connect/disconnect/auth-failure events.'}
+          </div>
+        ) : sessions.sessions.length === 0 ? (
+          <div className="text-sm text-[var(--dim)] text-center py-8">No session events in range.</div>
+        ) : (
+          <div className="divide-y divide-[var(--border)] max-h-[480px] overflow-auto">
+            <div className="grid gap-2 px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--dim)] bg-[var(--surface)] sticky top-0"
+                 style={{ gridTemplateColumns: '140px 80px 160px 100px 100px 100px 1fr' }}>
+              <span>Time</span>
+              <span>Type</span>
+              <span>User</span>
+              <span>Auth</span>
+              <span>Iface</span>
+              <span>Address</span>
+              <span>Details</span>
+            </div>
+            {sessions.sessions.map((s, i) => {
+              const type = String(s.type)
+              const typeColor = type === 'LoginFailure' ? 'text-red-400'
+                : type === 'Logout' ? 'text-[var(--dim)]'
+                : 'text-emerald-400'
+              return (
+                <div
+                  key={i}
+                  className="grid gap-2 px-3 py-2 text-xs hover:bg-[var(--hover)] transition-colors"
+                  style={{ gridTemplateColumns: '140px 80px 160px 100px 100px 100px 1fr' }}
+                >
+                  <span className="font-mono text-[var(--dim)] tabular-nums">{String(s.event_time).slice(5, 19)}</span>
+                  <span className={cn('font-mono text-[10px] uppercase', typeColor)}>{type}</span>
+                  <span className="truncate font-mono text-[var(--fg)]" title={s.user}>{s.user || '—'}</span>
+                  <span className="truncate text-[var(--dim)]" title={s.auth_type}>{s.auth_type || '—'}</span>
+                  <span className="truncate text-[var(--dim)]">{s.interface || '—'}</span>
+                  <span className="truncate font-mono text-[var(--dim)]" title={`${s.client_address}:${s.client_port}`}>
+                    {s.client_address || '—'}
+                  </span>
+                  <span className="truncate text-[var(--dim)]" title={s.failure_reason || s.client_hostname}>
+                    {s.failure_reason || s.client_hostname || s.client_name || '—'}
                   </span>
                 </div>
               )

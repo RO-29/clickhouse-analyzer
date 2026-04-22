@@ -155,6 +155,52 @@ export interface QueryTable {
   inserts: number
 }
 
+// ClientHistoryRow — one row per (address, user, interface) tuple seen in
+// ch_analyzer.query_samples over the selected range.
+export interface ClientHistoryRow {
+  initial_address: string
+  user: string
+  interface_name: string
+  interface_code: number
+  http_user_agent: string
+  forwarded_for: string
+  query_count: number
+  total_ms: number
+  avg_ms: number
+  p95_ms: number
+  total_read_bytes: number
+  total_memory: number
+  failures: number
+  first_seen: string
+  last_seen: string
+}
+
+// ConnectionSession — one row from system.session_log (each event is its
+// own row: Login / LoginFailure / Logout). Only available when the CH
+// server has session_log configured.
+export interface ConnectionSession {
+  type: string              // 'Login' | 'LoginFailure' | 'Logout' | …
+  event_time: string
+  user: string
+  auth_type: string
+  profiles: string[] | string
+  roles: string[] | string
+  client_hostname: string
+  client_name: string
+  interface: string
+  client_address: string
+  client_port: number
+  failure_reason: string
+}
+
+export interface ConnectionSessionsResponse {
+  available: boolean
+  reason?: string
+  error?: string
+  sessions: ConnectionSession[]
+  summary?: { logins: number; failures: number; logouts: number }
+}
+
 // ConnectionsResponse captures the /api/instances/:inst/connections payload.
 // by_interface totals include idle connections (system.metrics); active only
 // lists sources with at least one running query (system.processes).

@@ -151,7 +151,11 @@ func (c *QuerySamplesCollector) readQueryLog(ctx context.Context, client *chclie
 			if(indexOf(ProfileEvents.Names, 'SystemTimeMicroseconds') > 0,
 				arrayElement(ProfileEvents.Values,
 					indexOf(ProfileEvents.Names, 'SystemTimeMicroseconds')),
-				toUInt64(0)) AS cpu_system_us
+				toUInt64(0)) AS cpu_system_us,
+			initial_address,
+			toUInt8(interface) AS interface_code,
+			ifNull(http_user_agent, '') AS http_user_agent,
+			ifNull(forwarded_for, '') AS forwarded_for
 		FROM system.query_log
 		WHERE event_time > '%s'
 		  AND is_initial_query = 1
@@ -189,7 +193,8 @@ func (c *QuerySamplesCollector) insertRows(ctx context.Context, client *chclient
 			 query_duration_ms, memory_usage, read_rows, read_bytes,
 			 written_rows, written_bytes, result_rows, result_bytes,
 			 exception_code, is_exception, client_name, interface,
-			 databases, tables, cpu_user_us, cpu_system_us) VALUES `)
+			 databases, tables, cpu_user_us, cpu_system_us,
+			 initial_address, interface_code, http_user_agent, forwarded_for) VALUES `)
 
 		for i, row := range batch {
 			if i > 0 {
@@ -202,7 +207,7 @@ func (c *QuerySamplesCollector) insertRows(ctx context.Context, client *chclient
 				maxTime = t
 			}
 
-			sb.WriteString(fmt.Sprintf("('%s','%s','%s',%s,'%s',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'%s','%s',%s,%s,%s,%s)",
+			sb.WriteString(fmt.Sprintf("('%s','%s','%s',%s,'%s',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'%s','%s',%s,%s,%s,%s,'%s',%s,'%s','%s')",
 				sqlEscape(evtTime),
 				sqlEscape(toString(row["user"])),
 				sqlEscape(toString(row["query_kind"])),
@@ -224,6 +229,10 @@ func (c *QuerySamplesCollector) insertRows(ctx context.Context, client *chclient
 				safeStringArray(row["tables"]),
 				safeUInt64(row["cpu_user_us"]),
 				safeUInt64(row["cpu_system_us"]),
+				sqlEscape(toString(row["initial_address"])),
+				safeUInt8(row["interface_code"]),
+				sqlEscape(toString(row["http_user_agent"])),
+				sqlEscape(toString(row["forwarded_for"])),
 			))
 		}
 

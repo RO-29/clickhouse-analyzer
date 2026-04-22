@@ -98,7 +98,11 @@ CREATE TABLE IF NOT EXISTS ch_analyzer.query_samples (
     databases             Array(String)          DEFAULT [],
     tables                Array(String)          DEFAULT [],
     cpu_user_us           UInt64                 DEFAULT 0,
-    cpu_system_us         UInt64                 DEFAULT 0
+    cpu_system_us         UInt64                 DEFAULT 0,
+    initial_address       String                 DEFAULT '',
+    interface_code        UInt8                  DEFAULT 0,
+    http_user_agent       String                 DEFAULT '',
+    forwarded_for         String                 DEFAULT ''
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMM(event_time)
 ORDER BY (event_time, normalized_query_hash)

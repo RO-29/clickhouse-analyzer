@@ -11,6 +11,8 @@ import type {
   QueryUser,
   QueryTable,
   ConnectionsResponse,
+  ClientHistoryRow,
+  ConnectionSessionsResponse,
   PatternOverviewResponse,
   CompareQueryPatternsResult,
   QueryResult,
@@ -200,6 +202,10 @@ export const api = {
       get<QueryTable[]>(`/api/instances/${inst}/query-tables?from=${from}&to=${to}`),
     connections: (inst: string) =>
       get<ConnectionsResponse>(`/api/instances/${inst}/connections`),
+    connectionsHistory: (inst: string, from: number, to: number) =>
+      get<ClientHistoryRow[]>(`/api/instances/${inst}/connections/history?from=${from}&to=${to}`),
+    connectionSessions: (inst: string, from: number, to: number) =>
+      get<ConnectionSessionsResponse>(`/api/instances/${inst}/connections/sessions?from=${from}&to=${to}`),
   },
   killQuery: (inst: string, queryId: string) =>
     post<{ status: string; query_id: string }>(`/api/instances/${inst}/kill-query`, { query_id: queryId }),
