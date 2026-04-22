@@ -487,7 +487,21 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
 
           <Section title="Live Metrics" defaultOpen>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              <MetricChart instance={instance} title="Memory %" metrics={['system.memory.rss_percent', 'system.memory.used_percent']} yFormat="percent" height={130} />
+              <MetricChart
+                instance={instance}
+                title="Memory %"
+                subtitle="ClickHouse's share of host memory vs the host's overall usage. Alerts fire when either crosses thresholds."
+                metrics={[
+                  { name: 'system.memory.rss_percent', label: 'CH RSS %', color: '#7c3aed' },
+                  { name: 'system.memory.used_percent', label: 'Host Used %', color: '#ef4444' },
+                ]}
+                seriesHelp={{
+                  'CH RSS %': 'ClickHouse RSS as a fraction of host total memory. Governs the "ClickHouse RSS high" alert.',
+                  'Host Used %': '1 − (OS Available / Host Total). What the host as a whole is using — includes CH, page cache, and anything else on the box. Governs the "OS memory high" alert.',
+                }}
+                yFormat="percent"
+                height={130}
+              />
               <MetricChart
                 instance={instance}
                 title="Memory Bytes"

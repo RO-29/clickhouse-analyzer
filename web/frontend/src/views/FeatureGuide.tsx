@@ -22,7 +22,7 @@ const WHATS_NEW: Section[] = [
       'Tables tab in Explore + CPU/load columns in Query Patterns, Samples, and Live Queries.',
       'query_samples retention bumped 30d → 365d so long-range forensics work.',
       'Playbook SQL in alerts audited end-to-end — windows and filters now match the triggering condition.',
-      'Memory chart drops series that have no data (rss_bytes / MemoryTracking on managed CH builds no longer flatline at 0).',
+      'Memory chart now shows Host Total as a 4th line, plain-English labels (CH RSS / OS Available / CH Tracked / Host Total), and per-series hover tooltips. Empty or all-zero series auto-hide on managed CH builds.',
       'DDL migrations removed from Go — schema.sql is the single source of truth.',
     ],
   },
