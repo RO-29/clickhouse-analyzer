@@ -31,18 +31,24 @@ func queryExceptionPlaybook(extraWhere, window string) string {
 
 // insertExceptionPlaybook renders per-row INSERT errors for a specific table,
 // used when one table's INSERTs are failing so operators can see the exact
-// queries and exception strings.
-func insertExceptionPlaybook(database, table string) string {
+// queries and exception strings. windowSec is the alert's detection window
+// (typically the polling interval) so the query surfaces the same failures
+// the alert counted; clamped to at least 300s so operators still get useful
+// context on fast poll intervals.
+func insertExceptionPlaybook(database, table string, windowSec int) string {
+	if windowSec < 300 {
+		windowSec = 300
+	}
 	return fmt.Sprintf("*Investigate:*\n```\n"+
 		"SELECT query, exception, event_time, query_duration_ms\n"+
 		"FROM system.query_log\n"+
 		"WHERE type = 'ExceptionWhileProcessing'\n"+
 		"  AND query_kind = 'Insert'\n"+
-		"  AND databases[1] = '%s'\n"+
-		"  AND tables[1] = '%s'\n"+
-		"  AND event_time > now() - INTERVAL 1 HOUR\n"+
+		"  AND has(databases, '%s')\n"+
+		"  AND has(tables, '%s.%s')\n"+
+		"  AND event_time > now() - INTERVAL %d SECOND\n"+
 		"ORDER BY event_time DESC LIMIT 20\n```",
-		database, table)
+		database, database, table, windowSec)
 }
 
 // processesPlaybook renders the "what's running right now" view against

@@ -339,7 +339,7 @@ func (c *InsertCollector) collectInsertErrors(ctx context.Context, client *chcli
 			fmt.Sprintf("*%.0f INSERT exception(s)* on `%s` in the last %ds (error rate: %.1f%%).\n\n"+
 				"*Last exception:* %s\n\n%s",
 				failed, fqn, intervalSec, errRate, lastExc,
-				insertExceptionPlaybook(db, table)),
+				insertExceptionPlaybook(db, table, intervalSec)),
 			fmt.Sprintf("%s:inserts:errors:%s", client.Name(), fqn))
 	}
 }

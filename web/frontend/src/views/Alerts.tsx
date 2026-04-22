@@ -65,6 +65,11 @@ function persistSavedViews(views: SavedView[]) {
 function isStale(a: Alert, staleHours: number): boolean {
   if (a.resolved) return false
   const updatedAt = a.updated_at ?? a.created_at
+  // Backend can return zero time.Time (unix -62135596800) for rows missing an
+  // updated_at — treat those as fresh (matches Overview's alertAge fallback)
+  // so we don't orphan alerts into the stale bucket on the first reconcile
+  // after a DB migration.
+  if (!(updatedAt > 0)) return false
   return (Date.now() / 1000 - updatedAt) > staleHours * 3600
 }
 
@@ -821,7 +826,10 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
       if (filterType !== 'all' && a.title !== filterType) return false
       if (filterStatus === 'firing') {
         if (a.resolved || isStale(a, staleHours)) return false
-        if (isSnoozed(a.dedup_key, snoozed)) return false // hide snoozed from "firing" view
+        // Snoozed stays in the firing list (the row shows a "Snoozed until…"
+        // badge). Excluding it here would make the list count disagree with
+        // the Firing stat card, which is the inconsistency users complained
+        // about.
       }
       if (filterStatus === 'stale' && !isStale(a, staleHours)) return false
       if (filterStatus === 'resolved' && !a.resolved) return false
