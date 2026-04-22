@@ -10,6 +10,7 @@ import type {
   QuerySample,
   QueryUser,
   QueryTable,
+  ConnectionsResponse,
   PatternOverviewResponse,
   CompareQueryPatternsResult,
   QueryResult,
@@ -197,6 +198,8 @@ export const api = {
       get<QueryUser[]>(`/api/instances/${inst}/query-users?from=${from}&to=${to}`),
     queryTables: (inst: string, from: number, to: number) =>
       get<QueryTable[]>(`/api/instances/${inst}/query-tables?from=${from}&to=${to}`),
+    connections: (inst: string) =>
+      get<ConnectionsResponse>(`/api/instances/${inst}/connections`),
   },
   killQuery: (inst: string, queryId: string) =>
     post<{ status: string; query_id: string }>(`/api/instances/${inst}/kill-query`, { query_id: queryId }),

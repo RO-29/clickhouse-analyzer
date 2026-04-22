@@ -15,6 +15,7 @@ import type {
   QuerySample,
   QueryUser,
   QueryTable,
+  ConnectionsResponse,
   PatternOverviewResponse,
   HistoryFailure,
   HistoryMerge,
@@ -32,6 +33,7 @@ type Tab =
   | 'samples'
   | 'querylog'
   | 'live'
+  | 'connections'
   | 'users'
   | 'tables'
   | 'failures'
@@ -50,6 +52,7 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'samples', label: 'Samples' },
   { key: 'querylog', label: 'Query Log' },
   { key: 'live', label: 'Live Queries' },
+  { key: 'connections', label: 'Connections' },
   { key: 'users', label: 'Users' },
   { key: 'tables', label: 'Tables' },
   { key: 'failures', label: 'Failures' },
@@ -1106,6 +1109,142 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
           />
         )
       })()}
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/*  Connections Tab                                                    */
+/*                                                                     */
+/*  Summarises who is currently talking to this CH. Two data sources:  */
+/*   - system.metrics: total connections per interface (incl. idle)    */
+/*   - system.processes: per-client view (only clients with at least   */
+/*     one running query; CH doesn't expose idle-connection detail).   */
+/* ------------------------------------------------------------------ */
+
+function ConnectionsTab({ instance, onShowQuery: _onShowQuery }: TabProps) {
+  const [data, setData] = useState<ConnectionsResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = useCallback(() => {
+    api.history.connections(instance)
+      .then(d => { setData(d); setError(null) })
+      .catch(e => setError(e.message))
+      .finally(() => setLoading(false))
+  }, [instance])
+
+  useEffect(() => {
+    setLoading(true)
+    load()
+    const id = setInterval(load, 5000) // live refresh
+    return () => clearInterval(id)
+  }, [load])
+
+  if (loading && !data) return <LoadingSkeleton />
+  if (error && !data) return <ErrorBox message={error} />
+  if (!data) return null
+
+  const ifaces: Array<{ key: keyof ConnectionsResponse['by_interface']; label: string; color: string }> = [
+    { key: 'TCPConnection',          label: 'TCP',        color: C.blue },
+    { key: 'HTTPConnection',         label: 'HTTP',       color: C.green },
+    { key: 'MySQLConnection',        label: 'MySQL',      color: C.orange },
+    { key: 'PostgreSQLConnection',   label: 'PostgreSQL', color: C.purple },
+    { key: 'InterserverConnection',  label: 'Interserver', color: C.cyan },
+  ]
+
+  const grandTotal = ifaces.reduce((s, i) => s + (data.by_interface?.[i.key] ?? 0), 0)
+
+  return (
+    <div className="space-y-4">
+      {/* Stat strip */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        <StatCard label="Total connections" value={String(grandTotal)} sub="incl. idle" />
+        {ifaces.map(i => {
+          const v = data.by_interface?.[i.key] ?? 0
+          return (
+            <StatCard
+              key={i.key}
+              label={i.label}
+              value={String(v)}
+              color={v > 0 ? i.color : undefined}
+            />
+          )
+        })}
+      </div>
+
+      {/* Active clients (with running queries) */}
+      <Card noPad>
+        <div className="px-3 py-2 flex items-center gap-2 border-b border-[var(--border)] bg-[var(--surface)]">
+          <span className="text-xs font-semibold text-[var(--dim)] uppercase tracking-wider">
+            Active Clients · {data.active.length}
+          </span>
+          <span className="text-[11px] text-[var(--dim)]">
+            {data.total_active_queries} running quer{data.total_active_queries === 1 ? 'y' : 'ies'}
+          </span>
+          <span className="ml-auto text-[10px] text-[var(--dim)]">
+            only clients with ≥1 running query — idle clients aren&apos;t visible here
+          </span>
+        </div>
+        {data.active.length === 0 ? (
+          <div className="text-sm text-[var(--dim)] text-center py-10">
+            No running queries right now.
+          </div>
+        ) : (
+          <div className="divide-y divide-[var(--border)]">
+            {/* Header */}
+            <div className="grid gap-2 px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--dim)] bg-[var(--surface)]"
+                 style={{ gridTemplateColumns: '170px 120px 70px 80px 90px 90px 1fr' }}>
+              <span>Address</span>
+              <span>User</span>
+              <span>Iface</span>
+              <span className="text-right">Queries</span>
+              <span className="text-right">Oldest</span>
+              <span className="text-right">Memory</span>
+              <span>Client / UA</span>
+            </div>
+            {data.active.map((c, i) => {
+              const addr = c.initial_address || '—'
+              const agent = c.http_user_agent || c.client_name || ''
+              const fwd = c.forwarded_for
+              const oldest = Number(c.oldest_query_sec) || 0
+              const oldestColor = oldest > 300 ? 'text-red-400'
+                : oldest > 60 ? 'text-orange-400'
+                : oldest > 10 ? 'text-yellow-400'
+                : 'text-[var(--dim)]'
+              return (
+                <div
+                  key={i}
+                  className="grid gap-2 px-3 py-2 text-xs hover:bg-[var(--hover)] transition-colors"
+                  style={{ gridTemplateColumns: '170px 120px 70px 80px 90px 90px 1fr' }}
+                >
+                  <span className="font-mono text-[var(--fg)] truncate" title={addr + (fwd ? ` (fwd: ${fwd})` : '')}>
+                    {addr}
+                  </span>
+                  <span className="truncate text-[var(--dim)]" title={c.user}>{c.user || '—'}</span>
+                  <span>
+                    <span className="inline-flex px-1.5 py-0.5 rounded bg-[var(--hover)] border border-[var(--border)] text-[10px] font-mono">
+                      {c.interface_name}
+                    </span>
+                  </span>
+                  <span className="text-right font-mono tabular-nums text-[var(--fg)]">
+                    {c.active_queries}
+                  </span>
+                  <span className={cn('text-right font-mono tabular-nums', oldestColor)}>
+                    {oldest > 0 ? fmtDuration(oldest * 1000) : '—'}
+                  </span>
+                  <span className="text-right font-mono tabular-nums text-[var(--dim)]">
+                    {Number(c.total_memory) > 0 ? fmtBytes(Number(c.total_memory)) : '—'}
+                  </span>
+                  <span className="truncate text-[var(--dim)] font-mono text-[11px]" title={agent}>
+                    {agent || '—'}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </Card>
     </div>
   )
 }
@@ -3587,6 +3726,12 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
           )}
           {tab === 'live' && (
             <LiveTab instance={inst} onShowQuery={handleShowQuery} />
+          )}
+          {tab === 'connections' && (
+            <ConnectionsTab
+              instance={inst} from={from} to={to} refreshKey={effectiveRefreshKey}
+              onAnalyze={handleAnalyze} onShowQuery={handleShowQuery}
+            />
           )}
           {tab === 'users' && (
             <UsersTab

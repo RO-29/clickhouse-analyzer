@@ -209,6 +209,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/instances/{name}/metrics", s.handleMetrics)
 	mux.HandleFunc("GET /api/instances/{name}/alerts", s.handleAlerts)
 	mux.HandleFunc("GET /api/instances/{name}/queries", s.handleQueries)
+	mux.HandleFunc("GET /api/instances/{name}/connections", s.handleConnections)
 	mux.HandleFunc("GET /api/instances/{name}/tables", s.handleTables)
 	mux.HandleFunc("GET /api/instances/{name}/disks", s.handleDisks)
 	mux.HandleFunc("GET /api/instances/{name}/mvs", s.handleMVs)

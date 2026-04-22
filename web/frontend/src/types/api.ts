@@ -155,6 +155,30 @@ export interface QueryTable {
   inserts: number
 }
 
+// ConnectionsResponse captures the /api/instances/:inst/connections payload.
+// by_interface totals include idle connections (system.metrics); active only
+// lists sources with at least one running query (system.processes).
+export interface ConnectionsResponse {
+  by_interface: Partial<Record<
+    'TCPConnection' | 'HTTPConnection' | 'MySQLConnection' | 'PostgreSQLConnection' | 'InterserverConnection',
+    number
+  >>
+  active: Array<{
+    initial_address: string
+    user: string
+    interface_name: string   // 'TCP' | 'HTTP' | 'MySQL' | …
+    interface_code: number
+    http_user_agent: string
+    forwarded_for: string
+    client_name: string
+    active_queries: number
+    oldest_query_sec: number
+    total_memory: number
+    total_read_rows: number
+  }>
+  total_active_queries: number
+}
+
 export interface PatternOverviewResponse {
   patterns: Array<{
     normalized_query_hash: string

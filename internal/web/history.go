@@ -1301,6 +1301,93 @@ func (s *Server) handleQueryUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------------------------------------------------------------------------
+// 13a. Connections — live view of clients talking to this CH
+// ---------------------------------------------------------------------------
+
+// handleConnections returns two shapes: interface-level connection counts
+// from system.metrics (TCP / HTTP / MySQL / Postgres / Interserver — total
+// connected clients, including idle ones), and a per-client breakdown from
+// system.processes (user, initial_address, interface, http_user_agent, and
+// how many queries that client is running). The latter only covers clients
+// with at least one running query — idle connections don't show up there
+// because CH doesn't expose per-connection state, only aggregate counts.
+//
+// Interface codes from system.processes.interface (ClickHouse enum):
+//   0 = TCP, 1 = HTTP, 2 = gRPC, 3 = MySQL, 4 = PostgreSQL, 5 = TCP_Interserver
+func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
+	instance := r.PathValue("name")
+	client := s.manager.Get(instance)
+	if client == nil {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	// 1) interface-level totals from system.metrics.
+	metricsSQL := `SELECT metric, value FROM system.metrics
+		WHERE metric IN (
+			'TCPConnection', 'HTTPConnection', 'MySQLConnection',
+			'PostgreSQLConnection', 'InterserverConnection'
+		)`
+	metricRows, _ := client.Query(ctx, metricsSQL)
+	byInterface := make(map[string]int64, 5)
+	for _, mr := range metricRows {
+		m := toString(mr["metric"])
+		v := int64(toFloat64(mr["value"]))
+		byInterface[m] = v
+	}
+
+	// 2) per-client view from system.processes (only shows clients with at
+	// least one running query). initial_address is the TCP peer; http_user
+	// _agent is set for HTTP. Group by the source so we don't show the same
+	// IP+user as dozens of separate rows.
+	procSQL := `SELECT
+		initial_address,
+		initial_user AS user,
+		CASE interface
+			WHEN 0 THEN 'TCP'
+			WHEN 1 THEN 'HTTP'
+			WHEN 2 THEN 'gRPC'
+			WHEN 3 THEN 'MySQL'
+			WHEN 4 THEN 'PostgreSQL'
+			WHEN 5 THEN 'TCP_Interserver'
+			ELSE 'other'
+		END AS interface_name,
+		toUInt8(interface) AS interface_code,
+		any(http_user_agent) AS http_user_agent,
+		any(forwarded_for) AS forwarded_for,
+		any(client_name) AS client_name,
+		count() AS active_queries,
+		max(elapsed) AS oldest_query_sec,
+		sum(memory_usage) AS total_memory,
+		sum(read_rows) AS total_read_rows
+	FROM system.processes
+	WHERE is_initial_query = 1
+	GROUP BY initial_address, initial_user, interface
+	ORDER BY active_queries DESC, oldest_query_sec DESC
+	LIMIT 200`
+	procRows, err := client.Query(ctx, procSQL)
+	if err != nil {
+		slog.Warn("connections: processes query failed", "err", err, "instance", instance)
+		procRows = []map[string]interface{}{}
+	}
+
+	// Derive a single "total active queries" counter the UI can surface.
+	var totalActive int64
+	for _, p := range procRows {
+		totalActive += int64(toFloat64(p["active_queries"]))
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"by_interface":         byInterface,
+		"active":               procRows,
+		"total_active_queries": totalActive,
+	})
+}
+
+// ---------------------------------------------------------------------------
 // 13b. Query Tables (per-table aggregation)
 // ---------------------------------------------------------------------------
 
