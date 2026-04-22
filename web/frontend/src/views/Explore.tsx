@@ -1122,10 +1122,14 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
 /*     one running query; CH doesn't expose idle-connection detail).   */
 /* ------------------------------------------------------------------ */
 
-function ConnectionsTab({ instance, onShowQuery: _onShowQuery }: TabProps) {
+function ConnectionsTab({ instance, from, to, refreshKey, onShowQuery: _onShowQuery }: TabProps) {
   const [data, setData] = useState<ConnectionsResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+
+  // Historical chart state: merged time-series across the 5 interfaces.
+  const [history, setHistory] = useState<Array<Record<string, any>>>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
 
   const load = useCallback(() => {
     api.history.connections(instance)
@@ -1140,6 +1144,45 @@ function ConnectionsTab({ instance, onShowQuery: _onShowQuery }: TabProps) {
     const id = setInterval(load, 5000) // live refresh
     return () => clearInterval(id)
   }, [load])
+
+  // Fetch history for each interface metric in parallel, then merge into a
+  // single {ts, tcp, http, mysql, postgres, interserver} timeline that
+  // HistoryChart can render as multi-line. Re-runs when the range changes.
+  useEffect(() => {
+    let cancelled = false
+    setHistoryLoading(true)
+    const fetchOne = (name: string) =>
+      api.metrics(instance, name, from, to, 120).catch(() => ({ points: [] as Array<{ ts: number; value: number }> }))
+    Promise.all([
+      fetchOne('connections.tcp'),
+      fetchOne('connections.http'),
+      fetchOne('connections.mysql'),
+      fetchOne('connections.postgresql'),
+      fetchOne('connections.interserver'),
+    ]).then(([tcp, http, mysql, postgres, interserver]) => {
+      if (cancelled) return
+      // Merge on ts — every point from any series contributes a row; missing
+      // values fall through as undefined and Recharts skips them gracefully.
+      const byTs = new Map<number, Record<string, number>>()
+      const put = (points: Array<{ ts: number; value: number }>, key: string) => {
+        for (const p of points ?? []) {
+          const row = byTs.get(p.ts) ?? {}
+          row[key] = Number(p.value) || 0
+          byTs.set(p.ts, row)
+        }
+      }
+      put(tcp.points, 'tcp')
+      put(http.points, 'http')
+      put(mysql.points, 'mysql')
+      put(postgres.points, 'postgres')
+      put(interserver.points, 'interserver')
+      const merged = Array.from(byTs.entries())
+        .sort((a, b) => a[0] - b[0])
+        .map(([ts, vals]) => ({ ts, ...vals }))
+      setHistory(merged)
+    }).finally(() => { if (!cancelled) setHistoryLoading(false) })
+    return () => { cancelled = true }
+  }, [instance, from, to, refreshKey])
 
   if (loading && !data) return <LoadingSkeleton />
   if (error && !data) return <ErrorBox message={error} />
@@ -1172,6 +1215,34 @@ function ConnectionsTab({ instance, onShowQuery: _onShowQuery }: TabProps) {
           )
         })}
       </div>
+
+      {/* Historical chart — backed by the ConnectionsCollector's time-series
+          (`connections.tcp` etc). Range follows the global picker. */}
+      {historyLoading && history.length === 0 ? (
+        <div className="text-[11px] text-[var(--dim)] text-center py-6 border border-[var(--border)] rounded-lg">
+          Loading connection history…
+        </div>
+      ) : history.length === 0 ? (
+        <div className="text-[11px] text-[var(--dim)] text-center py-6 border border-[var(--border)] rounded-lg">
+          No connection history in this range yet. The ConnectionsCollector
+          populates it once per poll — if this is a fresh deploy, give it a
+          cycle or two.
+        </div>
+      ) : (
+        <HistoryChart
+          title="Connections over range"
+          data={history}
+          series={[
+            { key: 'tcp',         label: 'TCP',         color: C.blue },
+            { key: 'http',        label: 'HTTP',        color: C.green },
+            { key: 'mysql',       label: 'MySQL',       color: C.orange },
+            { key: 'postgres',    label: 'PostgreSQL',  color: C.purple },
+            { key: 'interserver', label: 'Interserver', color: C.cyan },
+          ]}
+          height={160}
+          onAnalyze={() => {}}
+        />
+      )}
 
       {/* Active clients (with running queries) */}
       <Card noPad>

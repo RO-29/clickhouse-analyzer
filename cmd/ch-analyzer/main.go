@@ -518,6 +518,7 @@ func buildCollectors(cfg *config.Config) []collector.Collector {
 
 	result = append(result, &collector.BackgroundPoolCollector{})
 	result = append(result, &collector.CacheHealthCollector{})
+	result = append(result, &collector.ConnectionsCollector{})
 	result = append(result, &collector.QueryLatencyCollector{})
 	result = append(result, &collector.FreshnessCollector{})
 	result = append(result, &collector.SchemaDriftCollector{})

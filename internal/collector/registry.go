@@ -186,6 +186,19 @@ WHERE type = 'QueryFinish'
 			},
 		},
 		{
+			Name:        "connections",
+			DisplayName: "Connections",
+			Description: "Samples per-interface connection counts (TCP / HTTP / MySQL / PostgreSQL / Interserver) so the Connections tab can chart history.",
+			Category:    "system",
+			Queries: []string{
+				`SELECT metric, value FROM system.metrics
+WHERE metric IN (
+  'TCPConnection', 'HTTPConnection', 'MySQLConnection',
+  'PostgreSQLConnection', 'InterserverConnection'
+)`,
+			},
+		},
+		{
 			Name:        "query_latency",
 			DisplayName: "Query Latency",
 			Description: "Detects P95 query latency spikes compared to a rolling 24h baseline.",
@@ -393,6 +406,8 @@ func BuildCollectorFromConfig(name string, cfg *config.Config) (Collector, bool)
 		return &BackgroundPoolCollector{}, true
 	case "cache_health":
 		return &CacheHealthCollector{}, true
+	case "connections":
+		return &ConnectionsCollector{}, true
 	case "query_latency":
 		return &QueryLatencyCollector{}, true
 	case "freshness":
@@ -442,6 +457,8 @@ func BuildCollector(name string) (Collector, bool) {
 		return &BackgroundPoolCollector{}, true
 	case "cache_health":
 		return &CacheHealthCollector{}, true
+	case "connections":
+		return &ConnectionsCollector{}, true
 	case "query_latency":
 		return &QueryLatencyCollector{}, true
 	case "freshness":
