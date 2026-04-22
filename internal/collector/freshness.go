@@ -138,22 +138,55 @@ func (c *FreshnessCollector) Collect(ctx context.Context, client *chclient.Clien
 			lines = append(lines, fmt.Sprintf("  - %s.%s — no inserts for %.0f min (%.0f inserts in last 24h)",
 				st.db, st.table, st.minutesAgo, st.inserts24h))
 		}
+		// Playbook mirrors the collector's modern-schema query (array-form
+		// databases[]/tables[], type=QueryFinish, 24h window, HAVING gap>20m)
+		// so counts tie out with what the alert flagged.
 		msg := fmt.Sprintf("*%d tables* have stopped receiving inserts (last 20+ min gap, active in last 24h):\n%s\n\n"+
-			"*Investigate:*\n```\nSELECT database, table, max(event_time) AS last_insert\n"+
+			"*Investigate:*\n```\nSELECT databases[1] AS database, tables[1] AS table,\n"+
+			"  max(event_time) AS last_insert,\n"+
+			"  count() AS inserts_24h\n"+
 			"FROM system.query_log\n"+
-			"WHERE query_kind = 'Insert' AND event_time > now() - INTERVAL 24 HOUR\n"+
-			"GROUP BY database, table ORDER BY last_insert ASC\n```",
+			"WHERE type = 'QueryFinish'\n"+
+			"  AND query_kind = 'Insert'\n"+
+			"  AND event_time > now() - INTERVAL 24 HOUR\n"+
+			"  AND length(databases) > 0\n"+
+			"  AND databases[1] NOT IN ('system','information_schema','INFORMATION_SCHEMA')\n"+
+			"GROUP BY database, table\n"+
+			"HAVING inserts_24h > 5\n"+
+			"   AND last_insert < now() - INTERVAL 20 MINUTE\n"+
+			"ORDER BY last_insert ASC\n```",
 			len(staleTables), strings.Join(lines, "\n"))
 		result.AddAlert(client.Name(), SeverityWarn, "tables",
 			fmt.Sprintf("Insert gap detected: %d tables stale", len(staleTables)),
 			msg,
 			fmt.Sprintf("%s:freshness:multiple_tables_stale", client.Name()))
 	} else {
-		// Individual alert per stale table.
+		// Individual alert per stale table. Playbook mirrors the alert's
+		// query (array-form databases[]/tables[], type=QueryFinish, 24h window)
+		// and additionally shows the per-hour distribution so operators can
+		// see WHEN the inserts stopped rather than just that they stopped.
 		for _, st := range staleTables {
 			investigateSQL := fmt.Sprintf(
-				"SELECT max(event_time) FROM system.query_log WHERE query_kind='Insert' AND database='%s' AND table='%s'",
-				st.db, st.table)
+				"-- Confirm last insert time\n"+
+					"SELECT max(event_time) AS last_insert\n"+
+					"FROM system.query_log\n"+
+					"WHERE type = 'QueryFinish'\n"+
+					"  AND query_kind = 'Insert'\n"+
+					"  AND databases[1] = '%s'\n"+
+					"  AND tables[1] = '%s'\n"+
+					"  AND event_time > now() - INTERVAL 24 HOUR;\n\n"+
+					"-- Hourly insert distribution — shows when the pipeline went quiet\n"+
+					"SELECT toStartOfHour(event_time) AS hour,\n"+
+					"  count() AS inserts,\n"+
+					"  sum(written_rows) AS rows\n"+
+					"FROM system.query_log\n"+
+					"WHERE type = 'QueryFinish'\n"+
+					"  AND query_kind = 'Insert'\n"+
+					"  AND databases[1] = '%s'\n"+
+					"  AND tables[1] = '%s'\n"+
+					"  AND event_time > now() - INTERVAL 24 HOUR\n"+
+					"GROUP BY hour ORDER BY hour",
+				st.db, st.table, st.db, st.table)
 			msg := fmt.Sprintf("Insert gap detected: %s.%s — no inserts for %.0f minutes (had %.0f in last 24h).\n\n"+
 				"*Investigate:*\n```\n%s\n```",
 				st.db, st.table, st.minutesAgo, st.inserts24h, investigateSQL)

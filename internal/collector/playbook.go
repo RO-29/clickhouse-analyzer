@@ -156,14 +156,16 @@ const s3SlowRequestsPlaybook = "*Investigate:*\n```\n" +
 	"ORDER BY read_ms_total DESC\n" +
 	"LIMIT 20\n```"
 
-// partMovesPlaybook: recent cross-tier part moves. Matches storage.tier_moves.
+// partMovesPlaybook: recent cross-tier part moves. Window matches the
+// 10-minute alert observation window in collectTierMovement so the SQL
+// shows the same moves the alert counted.
 const partMovesPlaybook = "*Investigate:*\n```\n" +
 	"SELECT event_time, database, table, part_name,\n" +
 	"  merge_reason, disk_name, path_on_disk\n" +
 	"FROM system.part_log\n" +
 	"WHERE event_type = 'MovePart'\n" +
-	"  AND event_time > now() - INTERVAL 30 MINUTE\n" +
-	"ORDER BY event_time DESC LIMIT 30\n```"
+	"  AND event_time > now() - INTERVAL 10 MINUTE\n" +
+	"ORDER BY event_time DESC LIMIT 100\n```"
 
 // ---------------------------------------------------------------------------
 // Table / merges / mutations playbooks
@@ -215,12 +217,14 @@ const fullScansPlaybook = "*Investigate:*\n```\n" +
 	"ORDER BY read_rows DESC\n```"
 
 // zombieQueriesPlaybook: HTTP queries whose client has likely disconnected.
+// elapsed > 600s (10 min) matches the collectZombieQueries alert threshold
+// so the playbook returns exactly the rows the alert flagged.
 const zombieQueriesPlaybook = "*Investigate:*\n```\n" +
 	"SELECT query_id, user, elapsed, http_user_agent,\n" +
 	"  formatReadableSize(memory_usage) AS mem,\n" +
 	"  substring(query, 1, 200) AS q\n" +
 	"FROM system.processes\n" +
-	"WHERE http_user_agent != '' AND elapsed > 60\n" +
+	"WHERE http_user_agent != '' AND elapsed > 600\n" +
 	"ORDER BY elapsed DESC\n```"
 
 // querySlowInWindowPlaybook: top slow queries in the recent window, for
@@ -364,6 +368,21 @@ const dictionariesStatusPlaybook = "*Investigate:*\n```\n" +
 	"  loading_duration, last_exception\n" +
 	"FROM system.dictionaries\n" +
 	"ORDER BY status != 'LOADED' DESC, last_exception != '' DESC\n```"
+
+// repeatedPatternsPlaybook: aggregated view of duplicate query patterns.
+// Matches collectRepeatedPatterns — 5-minute window, HAVING cnt > 50, top 20.
+const repeatedPatternsPlaybook = "*Investigate:*\n```\n" +
+	"SELECT normalized_query_hash, any(user) AS user,\n" +
+	"  count() AS cnt, avg(query_duration_ms) AS avg_ms,\n" +
+	"  sum(read_rows) AS total_read_rows,\n" +
+	"  substring(any(query), 1, 200) AS sample\n" +
+	"FROM system.query_log\n" +
+	"WHERE type = 'QueryFinish'\n" +
+	"  AND event_time > now() - INTERVAL 5 MINUTE\n" +
+	"GROUP BY normalized_query_hash\n" +
+	"HAVING cnt > 50\n" +
+	"ORDER BY cnt DESC\n" +
+	"LIMIT 20\n```"
 
 const cacheHitRatePlaybook = "*Investigate:*\n```\n" +
 	"-- Current cache sizes + hit-rate metrics\n" +

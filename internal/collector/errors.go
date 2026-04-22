@@ -116,22 +116,53 @@ func (c *ErrorsCollector) collectSystemErrors(ctx context.Context, client *chcli
 
 	result.AddMetric(client.Name(), "errors.system.total_recent", totalErrorCount, nil)
 
+	// Build a CH array literal of serious error names so the playbook can
+	// filter exactly what the alert filtered on. COALESCE(value, times) lets
+	// the SQL run on both modern (22+) and older CH without a fork.
+	seriousArr := "[" + strings.Join(func() []string {
+		q := make([]string, 0, len(seriousErrors))
+		for _, e := range seriousErrors {
+			q = append(q, "'"+e+"'")
+		}
+		return q
+	}(), ",") + "]"
+
 	if len(criticalErrors) > 0 {
 		sort.Strings(criticalErrors)
+		// Playbook matches the critical filter: name ∈ seriousErrors AND
+		// occurrence ≥ 5, in the last hour (same window as alert).
 		msg := fmt.Sprintf("*%d serious ClickHouse error type(s)* detected in the last hour:\n%s\n\n"+
-			"*Investigate:*\n```\nSELECT name, times, last_error_time, last_error_message\n"+
-			"FROM system.errors WHERE times > 0\n"+
-			"ORDER BY times DESC\n```",
-			len(criticalErrors), strings.Join(criticalErrors, "\n"))
+			"*Investigate:*\n```\n-- Serious errors flagged by the alert\n"+
+			"SELECT name, coalesce(value, times) AS occurrences,\n"+
+			"  last_error_time, last_error_message\n"+
+			"FROM system.errors\n"+
+			"WHERE name IN %s\n"+
+			"  AND coalesce(value, times) >= 5\n"+
+			"  AND last_error_time > now() - INTERVAL 1 HOUR\n"+
+			"ORDER BY occurrences DESC;\n\n"+
+			"-- Broader context: all errors in the last hour\n"+
+			"SELECT name, coalesce(value, times) AS occurrences,\n"+
+			"  last_error_time, last_error_message\n"+
+			"FROM system.errors\n"+
+			"WHERE last_error_time > now() - INTERVAL 1 HOUR\n"+
+			"ORDER BY occurrences DESC LIMIT 20\n```",
+			len(criticalErrors), strings.Join(criticalErrors, "\n"), seriousArr)
 		result.AddAlert(client.Name(), SeverityCritical, "errors",
 			fmt.Sprintf("Serious ClickHouse errors: %d types", len(criticalErrors)),
 			msg,
 			fmt.Sprintf("%s:errors:system:critical", client.Name()))
 	} else if len(warnErrors) > 0 {
 		sort.Strings(warnErrors)
+		// Warn fires when occurrences ≥ 10 OR name ∈ seriousErrors. Playbook
+		// surfaces the same union.
 		msg := fmt.Sprintf("*%d ClickHouse error type(s)* have elevated occurrence in the last hour:\n%s\n\n"+
-			"*Investigate:*\n```\nSELECT name, times, last_error_message\nFROM system.errors ORDER BY times DESC\n```",
-			len(warnErrors), strings.Join(warnErrors, "\n"))
+			"*Investigate:*\n```\nSELECT name, coalesce(value, times) AS occurrences,\n"+
+			"  last_error_time, last_error_message\n"+
+			"FROM system.errors\n"+
+			"WHERE last_error_time > now() - INTERVAL 1 HOUR\n"+
+			"  AND (coalesce(value, times) >= 10 OR name IN %s)\n"+
+			"ORDER BY occurrences DESC\n```",
+			len(warnErrors), strings.Join(warnErrors, "\n"), seriousArr)
 		result.AddAlert(client.Name(), SeverityWarn, "errors",
 			fmt.Sprintf("Repeated ClickHouse errors: %d types", len(warnErrors)),
 			msg,
@@ -191,10 +222,13 @@ func (c *ErrorsCollector) collectTextLog(ctx context.Context, client *chclient.C
 		}
 	}
 
+	// Playbook window matches the alert's 10-minute observation window so the
+	// SQL returns the same rows the alert counted, not a superset from the
+	// last hour.
 	alertMsg := fmt.Sprintf("*%d %s log entr(ies)* in the last 10 minutes:\n%s\n\n"+
 		"*Investigate:*\n```\nSELECT event_time, level, logger_name, message\n"+
 		"FROM system.text_log\nWHERE level IN ('Fatal', 'Critical')\n"+
-		"AND event_time > now() - INTERVAL 1 HOUR\nORDER BY event_time DESC\n```",
+		"  AND event_time > now() - INTERVAL 10 MINUTE\nORDER BY event_time DESC\n```",
 		len(entries), "Fatal/Critical", strings.Join(entries, "\n"))
 
 	result.AddAlert(client.Name(), severity, "errors",
@@ -274,10 +308,16 @@ func (c *ErrorsCollector) collectDetachedParts(ctx context.Context, client *chcl
 		severity = SeverityCritical
 	}
 
+	// Playbook mirrors the collector's exact filter (reason NOT IN ('', 'ignored')
+	// AND database NOT IN (system/information_schema)) so the SQL returns the
+	// same set the alert counted.
 	msg := fmt.Sprintf("*%d detached part(s)* found across %d table(s). "+
 		"These parts are excluded from queries and may indicate data integrity issues:\n%s\n\n"+
-		"*Investigate:*\n```\nSELECT database, table, name, reason, disk\nFROM system.detached_parts\n"+
-		"WHERE reason NOT IN ('', 'ignored')\nORDER BY database, table\n```\n"+
+		"*Investigate:*\n```\nSELECT database, table, name, reason, disk\n"+
+		"FROM system.detached_parts\n"+
+		"WHERE reason NOT IN ('', 'ignored')\n"+
+		"  AND database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA')\n"+
+		"ORDER BY database, table\n```\n"+
 		"*Suggestions:*\n"+
 		"- `ATTACH PART '<name>' TO TABLE <db>.<table>` to re-attach if safe\n"+
 		"- Or remove with: `ALTER TABLE <db>.<table> DROP DETACHED PART '<name>'`\n"+

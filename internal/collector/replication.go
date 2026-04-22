@@ -187,7 +187,9 @@ func (c *ReplicationCollector) collectReplicas(ctx context.Context, client *chcl
 			fmt.Sprintf("%s:replication:lag:critical", client.Name()))
 	} else if len(warnLagTables) > 0 {
 		sort.Strings(warnLagTables)
-		msg := fmt.Sprintf("*%d table(s)* have elevated replication lag (threshold: %s):\n%s",
+		msg := fmt.Sprintf("*%d table(s)* have elevated replication lag (threshold: %s):\n%s\n\n"+
+			"*Investigate:*\n```\nSELECT database, table, absolute_delay, queue_size, last_exception\n"+
+			"FROM system.replicas ORDER BY absolute_delay DESC\n```",
 			len(warnLagTables), lagWarn, strings.Join(warnLagTables, "\n"))
 		result.AddAlert(client.Name(), SeverityWarn, "replication",
 			fmt.Sprintf("Elevated replication lag: %d tables", len(warnLagTables)),

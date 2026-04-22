@@ -101,8 +101,21 @@ func (c *ProjectionCollector) collectMissingProjectionParts(ctx context.Context,
 			fmt.Sprintf("Projection %s on %s.%s: %.0f parts missing projection data", projName, db, table, missingParts),
 			fmt.Sprintf("Projection `%s` on `%s.%s` has %.0f / %.0f active parts missing projection data. "+
 				"Queries using this projection may fall back to full table scans.\n\n"+
-				"*Fix:*\n```\nALTER TABLE %s.%s MATERIALIZE PROJECTION %s\n```",
-				projName, db, table, missingParts, totalParts, db, table, projName),
+				"*Investigate:*\n```\n-- Which active parts are missing the projection\n"+
+				"SELECT name, rows, formatReadableSize(bytes_on_disk) AS size,\n"+
+				"  modification_time\n"+
+				"FROM system.parts\n"+
+				"WHERE database = '%s' AND table = '%s' AND active\n"+
+				"  AND name NOT IN (\n"+
+				"    SELECT name FROM system.projection_parts\n"+
+				"    WHERE database = '%s' AND table = '%s' AND projection_name = '%s'\n"+
+				"      AND active\n"+
+				"  )\n"+
+				"ORDER BY modification_time DESC\n```\n"+
+				"*Fix (rebuilds projection data for all parts):*\n```\nALTER TABLE %s.%s MATERIALIZE PROJECTION %s\n```",
+				projName, db, table, missingParts, totalParts,
+				db, table, db, table, projName,
+				db, table, projName),
 			fmt.Sprintf("%s:projections:%s.%s:%s", client.Name(), db, table, projName))
 	}
 }

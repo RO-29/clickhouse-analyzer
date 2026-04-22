@@ -309,9 +309,12 @@ func (c *QueryCollector) collectTimeouts(ctx context.Context, client *chclient.C
 		sev = SeverityCritical
 	}
 
+	// Playbook window matches the 5-minute alert observation window so the
+	// counts tie out — operators were confused by a 1h window returning many
+	// more rows than the alert flagged.
 	msg := fmt.Sprintf("*%d query timeouts/cancellations* in last 5 minutes:\n%s\n\n%s",
 		totalCount, strings.Join(lines, "\n"),
-		queryExceptionPlaybook(" AND exception_code IN (159,160,394)", "INTERVAL 1 HOUR"))
+		queryExceptionPlaybook(" AND exception_code IN (159,160,394)", "INTERVAL 5 MINUTE"))
 
 	result.AddAlert(client.Name(), sev, "queries",
 		fmt.Sprintf("Query timeouts: %d in 5m", totalCount),
@@ -442,9 +445,9 @@ func (c *QueryCollector) collectRepeatedPatterns(ctx context.Context, client *ch
 			lines = append(lines, fmt.Sprintf("  - %.0fx avg=%.0fms user=%s: `%s`", cnt, avgDur, user, sample))
 		}
 
-		msg := fmt.Sprintf("*%d repeated query patterns* (>50x in 5m):\n%s\n\n"+
+		msg := fmt.Sprintf("*%d repeated query patterns* (>50x in 5m):\n%s\n\n%s\n\n"+
 			"*Consider:* caching results, materialized views, or query dedup",
-			len(rows), strings.Join(lines, "\n"))
+			len(rows), strings.Join(lines, "\n"), repeatedPatternsPlaybook)
 		result.AddAlert(client.Name(), SeverityInfo, "queries",
 			fmt.Sprintf("Repeated query patterns: %d", len(rows)),
 			msg,
