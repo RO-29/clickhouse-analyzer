@@ -93,10 +93,23 @@ func (c *SystemCollector) collectAsyncMetrics(ctx context.Context, client *chcli
 	memTotal := values["OSMemoryTotal"]
 	memAvail := values["OSMemoryAvailable"]
 
-	// RSS: try MemoryResident first (Altinity), fall back to OSProcessRSSMemory (OSS)
+	// RSS: try MemoryResident first (Altinity), fall back to OSProcessRSSMemory
+	// (OSS). Some cloud builds expose neither in system.asynchronous_metrics,
+	// so if both are zero we fall back to MemoryTracking from system.metrics
+	// (ClickHouse's own memory accounting — always present on a running
+	// server). This keeps the rss_bytes series populated on managed deployments
+	// that don't expose the OS-level metric.
 	rss := values["MemoryResident"]
 	if rss == 0 {
 		rss = values["OSProcessRSSMemory"]
+	}
+	if rss == 0 {
+		if v, err := client.QuerySingleValue(ctx,
+			"SELECT value FROM system.metrics WHERE metric = 'MemoryTracking'"); err == nil {
+			if f, perr := toFloat64(v); perr == nil {
+				rss = f
+			}
+		}
 	}
 
 	if memTotal == 0 && values["CGroupMemoryTotal"] > 0 {
@@ -121,7 +134,13 @@ func (c *SystemCollector) collectAsyncMetrics(ctx context.Context, client *chcli
 		result.AddMetric(client.Name(), "system.memory.used_percent", usedPct, nil)
 		result.AddMetric(client.Name(), "system.memory.total_bytes", memTotal, nil)
 		result.AddMetric(client.Name(), "system.memory.available_bytes", memAvail, nil)
-		result.AddMetric(client.Name(), "system.memory.rss_bytes", rss, nil)
+		// Only record rss_bytes when we actually measured it — writing 0 on
+		// builds that hide MemoryResident/OSProcessRSSMemory paints a flat
+		// zero line on the Memory chart that looks like the node is idle.
+		// The rss-based alerts below are already gated on `rss > 0`.
+		if rss > 0 {
+			result.AddMetric(client.Name(), "system.memory.rss_bytes", rss, nil)
+		}
 
 		if usedPct >= c.MemoryThresholds.CriticalPercent {
 			result.AddAlert(client.Name(), SeverityCritical, "memory",

@@ -99,11 +99,19 @@ export function MetricChart({ instance, instances, title, metrics, height = 160,
             defs.map(d => api.metrics(inst, d.name, from, to))
           )
           if (!cancelled) {
-            const seriesData = results.map((r, i) => ({
-              label: defs[i].label,
-              color: defs[i].color,
-              points: r.points,
-            }))
+            // Drop series that have no data or are flat-zero across the entire
+            // window. On cloud/managed CH deployments that hide some memory
+            // metrics (e.g. MemoryResident), plotting them flat at 0 next to
+            // a real 240 GB line looks like the node is broken.
+            const seriesData = results
+              .map((r, i) => ({
+                label: defs[i].label,
+                color: defs[i].color,
+                points: r.points,
+              }))
+              .filter(s =>
+                s.points.length > 0 && s.points.some(p => (p.value ?? 0) !== 0)
+              )
             setSeries(seriesData)
             const points0 = seriesData[0]?.points ?? []
             const data = points0.map((p, idx) => {
