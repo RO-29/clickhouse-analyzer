@@ -488,7 +488,25 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
           <Section title="Live Metrics" defaultOpen>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
               <MetricChart instance={instance} title="Memory %" metrics={['system.memory.rss_percent', 'system.memory.used_percent']} yFormat="percent" height={130} />
-              <MetricChart instance={instance} title="Memory Bytes" metrics={['system.memory.rss_bytes', 'system.memory.available_bytes', 'system.metrics.MemoryTracking']} yFormat="bytes" height={130} />
+              <MetricChart
+                instance={instance}
+                title="Memory Bytes"
+                subtitle="Host total vs OS available, ClickHouse process RSS, and CH's own memory accounting."
+                metrics={[
+                  { name: 'system.memory.total_bytes', label: 'Host Total', color: '#64748b' },
+                  { name: 'system.memory.available_bytes', label: 'OS Available', color: '#22c55e' },
+                  { name: 'system.memory.rss_bytes', label: 'CH RSS', color: '#7c3aed' },
+                  { name: 'system.metrics.MemoryTracking', label: 'CH Tracked', color: '#eab308' },
+                ]}
+                seriesHelp={{
+                  'Host Total': 'Total physical RAM on the host (or cgroup limit on cloud CH).',
+                  'OS Available': 'Memory the OS reports as free for new allocations. Host Total minus OS Available = what the host is actually using.',
+                  'CH RSS': 'Resident Set Size of the ClickHouse process — what the kernel sees it using, including caches. Tracks memory pressure owed to CH itself.',
+                  'CH Tracked': 'MemoryTracking from system.metrics — ClickHouse\'s internal accounting (query memory, mark cache, uncompressed cache, dictionaries). Usually close to RSS; divergence = kernel-level overhead not accounted by CH.',
+                }}
+                yFormat="bytes"
+                height={130}
+              />
               <MetricChart instance={instance} title="CPU %" metrics={['system.cpu.busy_percent']} yFormat="percent" height={130} />
               <MetricChart instance={instance} title="Load Average" metrics={['system.async.LoadAverage1', 'system.async.LoadAverage5', 'system.async.LoadAverage15']} height={130} />
               <MetricChart instance={instance} title="Queries" metrics={['system.metrics.Query', 'queries.failed_5m']} height={130} />

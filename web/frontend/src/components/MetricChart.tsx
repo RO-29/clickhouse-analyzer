@@ -4,7 +4,7 @@ import {
 } from 'recharts'
 import { api } from '../lib/api'
 import { useStore } from '../hooks/useStore'
-import { fmtBytes, fmtPercent, fmtNum } from '../lib/utils'
+import { fmtBytes, fmtPercent, fmtNum, cn } from '../lib/utils'
 import type { MetricPoint } from '../types/api'
 
 const DEFAULT_COLORS = [
@@ -23,6 +23,10 @@ interface MetricChartProps {
   instances?: string[]  // multi-instance mode: one series per instance
   metrics: MetricDef[] | string[]
   title: string
+  /** One-liner under the title — explains what the chart shows. */
+  subtitle?: string
+  /** Tooltip text per series label; shown as a `title` attr on the legend chip. */
+  seriesHelp?: Record<string, string>
   height?: number
   yFormat?: 'bytes' | 'percent' | 'number' | 'ms'
 }
@@ -49,7 +53,7 @@ function ChartTooltip({ active, payload, label, formatValue }: any) {
   )
 }
 
-export function MetricChart({ instance, instances, title, metrics, height = 160, yFormat = 'number' }: MetricChartProps) {
+export function MetricChart({ instance, instances, title, subtitle, seriesHelp, metrics, height = 160, yFormat = 'number' }: MetricChartProps) {
   const { getTimeRange } = useStore()
   const { from, to } = getTimeRange()
   const [series, setSeries] = useState<{ label: string; color: string; points?: MetricPoint[] }[]>([])
@@ -177,6 +181,11 @@ export function MetricChart({ instance, instances, title, metrics, height = 160,
       <div className="px-4 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-widest text-[var(--dim)]">
         {title}
       </div>
+      {subtitle && (
+        <div className="px-4 pb-2 text-[10px] text-[var(--dim)] leading-snug">
+          {subtitle}
+        </div>
+      )}
       <div className="px-2 pb-3">
         {loading ? (
           <div style={{ height }} className="flex items-center justify-center text-[var(--dim)] text-xs">
@@ -237,12 +246,22 @@ export function MetricChart({ instance, instances, title, metrics, height = 160,
       </div>
       {showLegend && !empty && !loading && (
         <div className="flex flex-wrap gap-3 px-4 pb-3">
-          {series.map(s => (
-            <div key={s.label} className="flex items-center gap-1.5 text-[10px] text-[var(--dim)]">
-              <span className="w-2 h-px block" style={{ backgroundColor: s.color, height: '2px' }} />
-              {s.label}
-            </div>
-          ))}
+          {series.map(s => {
+            const help = seriesHelp?.[s.label]
+            return (
+              <div
+                key={s.label}
+                className={cn(
+                  'flex items-center gap-1.5 text-[10px] text-[var(--dim)]',
+                  help && 'cursor-help border-b border-dotted border-[var(--border)]'
+                )}
+                title={help}
+              >
+                <span className="w-2 h-px block" style={{ backgroundColor: s.color, height: '2px' }} />
+                {s.label}
+              </div>
+            )
+          })}
         </div>
       )}
     </div>
