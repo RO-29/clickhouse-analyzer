@@ -29,8 +29,9 @@ func (c *TableCollector) Collect(ctx context.Context, client *chclient.Client) (
 	start := time.Now()
 	result := &CollectResult{}
 
-	c.collectParts(ctx, client, result)
-	c.collectMerges(ctx, client, result)
+	clusterParts := c.collectParts(ctx, client, result)
+	c.collectPartitionPressure(ctx, client, result)
+	c.collectMerges(ctx, client, result, clusterParts)
 	c.collectMutations(ctx, client, result)
 	c.collectDiskBalance(ctx, client, result)
 
@@ -39,7 +40,9 @@ func (c *TableCollector) Collect(ctx context.Context, client *chclient.Client) (
 }
 
 // collectParts queries system.parts for per-table part counts and sizes.
-func (c *TableCollector) collectParts(ctx context.Context, client *chclient.Client, result *CollectResult) {
+// Returns the total active parts across the cluster so collectMerges can use
+// it as a "is there backlog?" signal for the merges-stalled check.
+func (c *TableCollector) collectParts(ctx context.Context, client *chclient.Client, result *CollectResult) float64 {
 	sql := `
 		SELECT
 			database,
@@ -57,12 +60,13 @@ func (c *TableCollector) collectParts(ctx context.Context, client *chclient.Clie
 	rows, err := client.Query(ctx, sql)
 	if err != nil {
 		c.logger().Warn("failed to query system.parts", slog.String("error", err.Error()))
-		return
+		return 0
 	}
 
 	// Aggregate parts across disks per table for threshold checks.
 	type tableKey struct{ db, table string }
 	tableParts := make(map[tableKey]float64)
+	var clusterTotal float64
 
 	for _, row := range rows {
 		db := getString(row, "database")
@@ -85,6 +89,26 @@ func (c *TableCollector) collectParts(ctx context.Context, client *chclient.Clie
 
 		key := tableKey{db, table}
 		tableParts[key] += partCount
+		clusterTotal += partCount
+	}
+
+	// Cluster-wide active parts metric + alert. CH starts throttling at the
+	// `parts_to_delay_insert` and outright rejects at `parts_to_throw_insert`
+	// system limits — being above MaxClusterParts means we're in the danger
+	// zone before either kicks in.
+	result.AddMetric(client.Name(), "tables.parts.cluster_total", clusterTotal, nil)
+	if c.PartsThresholds.MaxClusterParts > 0 && clusterTotal >= float64(c.PartsThresholds.MaxClusterParts) {
+		result.AddAlert(client.Name(), SeverityCritical, "tables",
+			"Active parts at cluster ceiling",
+			fmt.Sprintf("Instance has *%.0f active parts* across all tables (limit: %d).\n"+
+				"CH throttles inserts (DelayedInserts) once parts pile up and rejects them at "+
+				"`parts_to_throw_insert` (default 3000 per partition). Reduce the part count by "+
+				"raising `merge_max_block_size`, batching larger inserts, or running OPTIMIZE on the worst offenders.\n\n"+
+				"*Investigate:*\n```\nSELECT database, table, count() AS parts, sum(rows) AS rows\n"+
+				"FROM system.parts WHERE active\n"+
+				"GROUP BY database, table ORDER BY parts DESC LIMIT 20\n```",
+				clusterTotal, c.PartsThresholds.MaxClusterParts),
+			fmt.Sprintf("%s:tables:cluster_parts", client.Name()))
 	}
 
 	// Group tables exceeding thresholds into a SINGLE alert per severity per instance.
@@ -126,10 +150,130 @@ func (c *TableCollector) collectParts(ctx context.Context, client *chclient.Clie
 			msg,
 			fmt.Sprintf("%s:tables:parts:warn", client.Name()))
 	}
+
+	return clusterTotal
+}
+
+// collectPartitionPressure flags tables with too many partitions (metadata
+// overhead) or any single partition with too many parts (the immediate
+// trigger for `parts_to_throw_insert` rejections).
+func (c *TableCollector) collectPartitionPressure(ctx context.Context, client *chclient.Client, result *CollectResult) {
+	maxPartitions := c.PartsThresholds.MaxPartitionsPerTable
+	maxPartsPerPartition := c.PartsThresholds.MaxPartsPerPartition
+	if maxPartitions <= 0 && maxPartsPerPartition <= 0 {
+		return
+	}
+
+	// One scan, two roll-ups: per-table partition count + per-partition part
+	// count. Filtering out system DBs keeps the result small enough to inline
+	// the worst offenders in the alert message.
+	sql := `
+		SELECT
+			database,
+			table,
+			partition,
+			count() AS parts_in_partition
+		FROM system.parts
+		WHERE active
+		  AND database NOT IN ('system','information_schema','INFORMATION_SCHEMA','ch_analyzer')
+		GROUP BY database, table, partition`
+
+	rows, err := client.Query(ctx, sql)
+	if err != nil {
+		c.logger().Warn("failed to query partition pressure", slog.String("error", err.Error()))
+		return
+	}
+
+	type partKey struct{ db, table string }
+	partitionsPerTable := make(map[partKey]int)
+	type partitionRow struct {
+		fqn        string
+		partition  string
+		partsCount float64
+	}
+	var hottestPartitions []partitionRow
+
+	for _, row := range rows {
+		db := getString(row, "database")
+		table := getString(row, "table")
+		partition := getString(row, "partition")
+		parts := getFloat(row, "parts_in_partition")
+
+		partitionsPerTable[partKey{db, table}]++
+		if maxPartsPerPartition > 0 && parts >= float64(maxPartsPerPartition) {
+			hottestPartitions = append(hottestPartitions, partitionRow{
+				fqn:        db + "." + table,
+				partition:  partition,
+				partsCount: parts,
+			})
+		}
+	}
+
+	// Per-table partition-count alert.
+	if maxPartitions > 0 {
+		var offenders []string
+		var maxObserved int
+		for k, n := range partitionsPerTable {
+			result.AddMetric(client.Name(), "tables.partitions.count", float64(n),
+				map[string]string{"database": k.db, "table": k.table})
+			if n >= maxPartitions {
+				offenders = append(offenders, fmt.Sprintf("  - %s.%s: %d partitions", k.db, k.table, n))
+			}
+			if n > maxObserved {
+				maxObserved = n
+			}
+		}
+		result.AddMetric(client.Name(), "tables.partitions.max", float64(maxObserved), nil)
+		if len(offenders) > 0 {
+			sort.Strings(offenders)
+			result.AddAlert(client.Name(), SeverityWarn, "tables",
+				fmt.Sprintf("Over-partitioned tables: %d", len(offenders)),
+				fmt.Sprintf("Tables with more than *%d active partitions* — every partition costs metadata, slows merges, and inflates `system.parts` scans:\n%s\n\n"+
+					"*Investigate:*\n```\nSELECT database, table, count(DISTINCT partition) AS partitions\n"+
+					"FROM system.parts WHERE active\n"+
+					"GROUP BY database, table HAVING partitions > %d ORDER BY partitions DESC\n```\n"+
+					"*Fix:* widen the PARTITION BY expression (e.g. monthly instead of daily) or drop old partitions.",
+					maxPartitions, strings.Join(offenders, "\n"), maxPartitions),
+				fmt.Sprintf("%s:tables:partitions:over", client.Name()))
+		}
+	}
+
+	// Hottest single-partition alert (any partition with too many parts).
+	if maxPartsPerPartition > 0 && len(hottestPartitions) > 0 {
+		sort.Slice(hottestPartitions, func(i, j int) bool {
+			return hottestPartitions[i].partsCount > hottestPartitions[j].partsCount
+		})
+		// Top 10 in the message; metric records the global max for charting.
+		var maxObserved float64
+		var lines []string
+		for i, p := range hottestPartitions {
+			if p.partsCount > maxObserved {
+				maxObserved = p.partsCount
+			}
+			if i < 10 {
+				lines = append(lines, fmt.Sprintf("  - %s partition `%s`: %.0f parts",
+					p.fqn, p.partition, p.partsCount))
+			}
+		}
+		result.AddMetric(client.Name(), "tables.parts.max_in_partition", maxObserved, nil)
+		result.AddAlert(client.Name(), SeverityCritical, "tables",
+			fmt.Sprintf("Partition near parts_to_throw_insert (%d offenders)", len(hottestPartitions)),
+			fmt.Sprintf("These partitions have *≥%d active parts*. CH's `parts_to_throw_insert` (default 3000) will reject inserts to that partition once crossed:\n%s\n\n"+
+				"*Investigate:*\n```\nSELECT database, table, partition, count() AS parts, sum(rows) AS rows\n"+
+				"FROM system.parts WHERE active\n"+
+				"GROUP BY database, table, partition\n"+
+				"HAVING parts >= %d ORDER BY parts DESC LIMIT 50\n```\n"+
+				"*Fix:* `OPTIMIZE TABLE <db>.<table> PARTITION '<partition>'` to force-merge, or back off insert frequency.",
+				maxPartsPerPartition, strings.Join(lines, "\n"), maxPartsPerPartition),
+			fmt.Sprintf("%s:tables:max_parts_per_partition", client.Name()))
+	}
 }
 
 // collectMerges queries system.merges for currently active merge operations.
-func (c *TableCollector) collectMerges(ctx context.Context, client *chclient.Client, result *CollectResult) {
+// clusterParts is the cluster-wide active part count from collectParts; we use
+// it to gate the "merges stalled" alert so a quiet cluster (0 merges, 0 parts)
+// doesn't false-fire.
+func (c *TableCollector) collectMerges(ctx context.Context, client *chclient.Client, result *CollectResult, clusterParts float64) {
 	sql := `
 		SELECT
 			database,
@@ -189,6 +333,35 @@ func (c *TableCollector) collectMerges(ctx context.Context, client *chclient.Cli
 			fmt.Sprintf("%d active merges (warn: %d)\n\n%s",
 				mergeCount, c.MergesThresholds.WarnActive, activeMergesPlaybook),
 			fmt.Sprintf("%s:tables:merges:warn", client.Name()))
+	}
+
+	// Merges-stalled alert: low merge concurrency *while* parts are piling up.
+	// Both conditions must hold so a quiet cluster (0 merges, 0 backlog) stays
+	// silent. Crossing this is the prelude to TooManyParts — pool is starved
+	// (background_pool_size too low, disk saturated, or deadlocked).
+	minActive := c.MergesThresholds.MinActiveWhenBacklog
+	backlogFloor := c.MergesThresholds.BacklogPartCount
+	if minActive > 0 && backlogFloor > 0 &&
+		mergeCount < minActive && clusterParts >= float64(backlogFloor) {
+		result.AddAlert(client.Name(), SeverityCritical, "tables",
+			"Merges stalled while parts pile up",
+			fmt.Sprintf("Active merges: *%d* (expected ≥%d) while cluster has *%.0f active parts* (backlog floor: %d).\n"+
+				"The merge pool isn't keeping up — inserts will start hitting DelayedInserts → TooManyParts.\n\n"+
+				"*Investigate:*\n```\n"+
+				"-- Pool occupancy\n"+
+				"SELECT metric, value FROM system.metrics\n"+
+				"WHERE metric IN ('BackgroundMergesAndMutationsPoolTask',\n"+
+				"  'BackgroundFetchesPoolTask','BackgroundCommonPoolTask');\n\n"+
+				"-- What's currently merging\n"+
+				"SELECT database, table, elapsed, progress, num_parts, total_size_bytes_compressed\n"+
+				"FROM system.merges WHERE is_mutation = 0 ORDER BY elapsed DESC;\n\n"+
+				"-- Tables hoarding parts\n"+
+				"SELECT database, table, count() AS parts\n"+
+				"FROM system.parts WHERE active\n"+
+				"GROUP BY database, table HAVING parts > 50 ORDER BY parts DESC LIMIT 20\n```\n"+
+				"*Fix:* raise `background_pool_size` / `background_merges_mutations_concurrency_ratio`, check disk saturation, or reduce ingest rate.",
+				mergeCount, minActive, clusterParts, backlogFloor),
+			fmt.Sprintf("%s:tables:merges:stalled", client.Name()))
 	}
 }
 

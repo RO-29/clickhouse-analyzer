@@ -39,21 +39,31 @@ type ThresholdsJSON struct {
 		WarnConcurrent               int     `json:"warn_concurrent"`
 	} `json:"queries"`
 	Parts struct {
-		WarnCount        int `json:"warn_count"`
-		CriticalCount    int `json:"critical_count"`
-		WarnPerPartition int `json:"warn_per_partition"`
+		WarnCount             int `json:"warn_count"`
+		CriticalCount         int `json:"critical_count"`
+		WarnPerPartition      int `json:"warn_per_partition"`
+		MaxClusterParts       int `json:"max_cluster_parts"`
+		MaxPartitionsPerTable int `json:"max_partitions_per_table"`
+		MaxPartsPerPartition  int `json:"max_parts_per_partition"`
 	} `json:"parts"`
 	Merges struct {
-		MaxActive  int `json:"max_active"`
-		WarnActive int `json:"warn_active"`
+		MaxActive            int `json:"max_active"`
+		WarnActive           int `json:"warn_active"`
+		MinActiveWhenBacklog int `json:"min_active_when_backlog"`
+		BacklogPartCount     int `json:"backlog_part_count"`
 	} `json:"merges"`
 	Mutations struct {
 		StuckThresholdSecs float64 `json:"stuck_threshold_secs"`
 	} `json:"mutations"`
 	Inserts struct {
-		ThroughputDropPercent float64 `json:"throughput_drop_percent"`
-		SmallInsertThreshold  int     `json:"small_insert_threshold"`
-		SmallInsertWarnCount  int     `json:"small_insert_warn_count"`
+		ThroughputDropPercent       float64 `json:"throughput_drop_percent"`
+		SmallInsertThreshold        int     `json:"small_insert_threshold"`
+		SmallInsertWarnCount        int     `json:"small_insert_warn_count"`
+		DelayedInsertsWarn          int     `json:"delayed_inserts_warn"`
+		DelayedInsertsCritical      int     `json:"delayed_inserts_critical"`
+		PendingAsyncInsertsWarn     int     `json:"pending_async_inserts_warn"`
+		PendingAsyncInsertsCritical int     `json:"pending_async_inserts_critical"`
+		RejectedInsertsRateWarn     float64 `json:"rejected_inserts_rate_warn"`
 	} `json:"inserts"`
 	Disk struct {
 		WarnPercent     float64 `json:"warn_percent"`
@@ -115,15 +125,25 @@ func thresholdsToJSON(t config.ThresholdsConfig) ThresholdsJSON {
 	j.Parts.WarnCount = t.Parts.WarnCount
 	j.Parts.CriticalCount = t.Parts.CriticalCount
 	j.Parts.WarnPerPartition = t.Parts.WarnPerPartition
+	j.Parts.MaxClusterParts = t.Parts.MaxClusterParts
+	j.Parts.MaxPartitionsPerTable = t.Parts.MaxPartitionsPerTable
+	j.Parts.MaxPartsPerPartition = t.Parts.MaxPartsPerPartition
 
 	j.Merges.MaxActive = t.Merges.MaxActive
 	j.Merges.WarnActive = t.Merges.WarnActive
+	j.Merges.MinActiveWhenBacklog = t.Merges.MinActiveWhenBacklog
+	j.Merges.BacklogPartCount = t.Merges.BacklogPartCount
 
 	j.Mutations.StuckThresholdSecs = t.Mutations.StuckThreshold.Seconds()
 
 	j.Inserts.ThroughputDropPercent = t.Inserts.ThroughputDropPercent
 	j.Inserts.SmallInsertThreshold = t.Inserts.SmallInsertThreshold
 	j.Inserts.SmallInsertWarnCount = t.Inserts.SmallInsertWarnCount
+	j.Inserts.DelayedInsertsWarn = t.Inserts.DelayedInsertsWarn
+	j.Inserts.DelayedInsertsCritical = t.Inserts.DelayedInsertsCritical
+	j.Inserts.PendingAsyncInsertsWarn = t.Inserts.PendingAsyncInsertsWarn
+	j.Inserts.PendingAsyncInsertsCritical = t.Inserts.PendingAsyncInsertsCritical
+	j.Inserts.RejectedInsertsRateWarn = t.Inserts.RejectedInsertsRateWarn
 
 	j.Disk.WarnPercent = t.Disk.WarnPercent
 	j.Disk.CriticalPercent = t.Disk.CriticalPercent
@@ -181,21 +201,31 @@ func jsonToThresholds(j ThresholdsJSON) config.ThresholdsConfig {
 			WarnConcurrent:           j.Queries.WarnConcurrent,
 		},
 		Parts: config.PartsThresholds{
-			WarnCount:        j.Parts.WarnCount,
-			CriticalCount:    j.Parts.CriticalCount,
-			WarnPerPartition: j.Parts.WarnPerPartition,
+			WarnCount:             j.Parts.WarnCount,
+			CriticalCount:         j.Parts.CriticalCount,
+			WarnPerPartition:      j.Parts.WarnPerPartition,
+			MaxClusterParts:       j.Parts.MaxClusterParts,
+			MaxPartitionsPerTable: j.Parts.MaxPartitionsPerTable,
+			MaxPartsPerPartition:  j.Parts.MaxPartsPerPartition,
 		},
 		Merges: config.MergesThresholds{
-			MaxActive:  j.Merges.MaxActive,
-			WarnActive: j.Merges.WarnActive,
+			MaxActive:            j.Merges.MaxActive,
+			WarnActive:           j.Merges.WarnActive,
+			MinActiveWhenBacklog: j.Merges.MinActiveWhenBacklog,
+			BacklogPartCount:     j.Merges.BacklogPartCount,
 		},
 		Mutations: config.MutationsThresholds{
 			StuckThreshold: dur(j.Mutations.StuckThresholdSecs),
 		},
 		Inserts: config.InsertsThresholds{
-			ThroughputDropPercent: j.Inserts.ThroughputDropPercent,
-			SmallInsertThreshold:  j.Inserts.SmallInsertThreshold,
-			SmallInsertWarnCount:  j.Inserts.SmallInsertWarnCount,
+			ThroughputDropPercent:       j.Inserts.ThroughputDropPercent,
+			SmallInsertThreshold:        j.Inserts.SmallInsertThreshold,
+			SmallInsertWarnCount:        j.Inserts.SmallInsertWarnCount,
+			DelayedInsertsWarn:          j.Inserts.DelayedInsertsWarn,
+			DelayedInsertsCritical:      j.Inserts.DelayedInsertsCritical,
+			PendingAsyncInsertsWarn:     j.Inserts.PendingAsyncInsertsWarn,
+			PendingAsyncInsertsCritical: j.Inserts.PendingAsyncInsertsCritical,
+			RejectedInsertsRateWarn:     j.Inserts.RejectedInsertsRateWarn,
 		},
 		Disk: config.DiskThresholds{
 			WarnPercent:     j.Disk.WarnPercent,

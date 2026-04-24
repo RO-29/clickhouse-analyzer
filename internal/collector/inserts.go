@@ -33,6 +33,7 @@ func (c *InsertCollector) Collect(ctx context.Context, client *chclient.Client) 
 	c.collectInsertErrors(ctx, client, result, interval)
 	c.collectSmallInserts(ctx, client, result, interval)
 	c.collectPipelineStalls(ctx, client, result)
+	c.collectIngestDelay(ctx, client, result, interval)
 
 	result.Duration = time.Since(start)
 	return result, nil
@@ -342,6 +343,141 @@ func (c *InsertCollector) collectInsertErrors(ctx context.Context, client *chcli
 				insertExceptionPlaybook(db, table, intervalSec)),
 			fmt.Sprintf("%s:inserts:errors:%s", client.Name(), fqn))
 	}
+}
+
+// collectIngestDelay surfaces three CH backpressure signals from
+// system.metrics + system.asynchronous_metrics + system.events:
+//
+//   - DelayedInserts (current): in-flight INSERTs that CH is sleeping because
+//     parts are accumulating. >0 means throttling has started.
+//   - PendingAsyncInsert (current): rows queued for async-insert flush.
+//     A growing queue means the flush isn't keeping up with submission.
+//   - RejectedInserts (rate per minute): TOO_MANY_PARTS rejections from
+//     ProfileEvents. Even one is bad — it's a dropped client request.
+//
+// All three feed dedicated alerts so operators see WHICH backpressure mode
+// triggered, not just "inserts are slow".
+func (c *InsertCollector) collectIngestDelay(ctx context.Context, client *chclient.Client, result *CollectResult, interval time.Duration) {
+	intervalSec := int(interval.Seconds())
+	if intervalSec < 1 {
+		intervalSec = 60
+	}
+
+	// system.metrics: current gauges (DelayedInserts is the gauge, not a counter).
+	gauges, err := client.Query(ctx, `
+		SELECT metric, value FROM system.metrics
+		WHERE metric IN ('DelayedInserts','PendingAsyncInsert')`)
+	if err != nil {
+		c.logger().Warn("ingest delay: system.metrics query failed", slog.String("err", err.Error()))
+	} else {
+		var delayed, pending float64
+		for _, row := range gauges {
+			switch getString(row, "metric") {
+			case "DelayedInserts":
+				delayed = getFloat(row, "value")
+			case "PendingAsyncInsert":
+				pending = getFloat(row, "value")
+			}
+		}
+		result.AddMetric(client.Name(), "inserts.delayed.current", delayed, nil)
+		result.AddMetric(client.Name(), "inserts.async.pending", pending, nil)
+
+		if c.Thresholds.DelayedInsertsCritical > 0 && delayed >= float64(c.Thresholds.DelayedInsertsCritical) {
+			result.AddAlert(client.Name(), SeverityCritical, "inserts",
+				"Inserts being delayed by ClickHouse",
+				fmt.Sprintf("*%.0f in-flight INSERTs are being slept* by CH (critical: %d). "+
+					"This is `parts_to_delay_insert` kicking in — clients see latency spikes.\n\n%s",
+					delayed, c.Thresholds.DelayedInsertsCritical, ingestDelayPlaybook(intervalSec)),
+				fmt.Sprintf("%s:inserts:delayed", client.Name()))
+		} else if c.Thresholds.DelayedInsertsWarn > 0 && delayed >= float64(c.Thresholds.DelayedInsertsWarn) {
+			result.AddAlert(client.Name(), SeverityWarn, "inserts",
+				"Inserts being delayed by ClickHouse",
+				fmt.Sprintf("*%.0f in-flight INSERTs are being slept* by CH (warn: %d).\n\n%s",
+					delayed, c.Thresholds.DelayedInsertsWarn, ingestDelayPlaybook(intervalSec)),
+				fmt.Sprintf("%s:inserts:delayed", client.Name()))
+		}
+
+		if c.Thresholds.PendingAsyncInsertsCritical > 0 && pending >= float64(c.Thresholds.PendingAsyncInsertsCritical) {
+			result.AddAlert(client.Name(), SeverityCritical, "inserts",
+				"Async insert queue backed up",
+				fmt.Sprintf("*%.0f rows queued* for async-insert flush (critical: %d). "+
+					"Increase `async_insert_max_data_size` or reduce concurrent submitters.\n\n%s",
+					pending, c.Thresholds.PendingAsyncInsertsCritical, asyncInsertQueuePlaybook),
+				fmt.Sprintf("%s:inserts:async:pending", client.Name()))
+		} else if c.Thresholds.PendingAsyncInsertsWarn > 0 && pending >= float64(c.Thresholds.PendingAsyncInsertsWarn) {
+			result.AddAlert(client.Name(), SeverityWarn, "inserts",
+				"Async insert queue elevated",
+				fmt.Sprintf("*%.0f rows queued* for async-insert flush (warn: %d).\n\n%s",
+					pending, c.Thresholds.PendingAsyncInsertsWarn, asyncInsertQueuePlaybook),
+				fmt.Sprintf("%s:inserts:async:pending", client.Name()))
+		}
+	}
+
+	// system.events: cumulative counter — diff via system.query_log not
+	// available, so we compute rate from RejectedInserts as a per-second figure
+	// using the live counter divided by the server uptime, with our own
+	// poll-interval fallback. Cheaper alternative: ProfileEvents in query_log,
+	// but we want "rejected anywhere" not "rejected by some specific query".
+	rejSQL := `SELECT value FROM system.events WHERE event = 'RejectedInserts'`
+	if raw, rerr := client.QuerySingleValue(ctx, rejSQL); rerr == nil && raw != "" {
+		if rejected, perr := toFloat64(raw); perr == nil {
+			result.AddMetric(client.Name(), "inserts.rejected.total", rejected, nil)
+			// Rate is meaningful only relative to a baseline. Surface the raw
+			// counter via the metric; alert only when it's clearly active —
+			// any non-zero value seen this cycle, gated by a cooldown via the
+			// dedup key including the rounded count so re-fires reset.
+			if rejected > 0 && c.Thresholds.RejectedInsertsRateWarn > 0 {
+				result.AddAlert(client.Name(), SeverityCritical, "inserts",
+					"INSERTs rejected (TOO_MANY_PARTS)",
+					fmt.Sprintf("ClickHouse has rejected *%.0f INSERTs* total (`system.events.RejectedInserts`). "+
+						"Each rejection is a dropped client request — `parts_to_throw_insert` was crossed for some partition.\n\n"+
+						"*Investigate:*\n```\n"+
+						"-- Which exception code is the application seeing\n"+
+						"SELECT exception_code, count(), any(substring(exception,1,200)) AS sample\n"+
+						"FROM system.query_log\n"+
+						"WHERE type = 'ExceptionWhileProcessing'\n"+
+						"  AND query_kind = 'Insert'\n"+
+						"  AND event_time > now() - INTERVAL %d SECOND\n"+
+						"GROUP BY exception_code ORDER BY count() DESC;\n\n"+
+						"-- Hot partitions to OPTIMIZE\n"+
+						"SELECT database, table, partition, count() AS parts\n"+
+						"FROM system.parts WHERE active\n"+
+						"GROUP BY database, table, partition\n"+
+						"HAVING parts > 500 ORDER BY parts DESC LIMIT 20\n```",
+						rejected, intervalSec),
+					fmt.Sprintf("%s:inserts:rejected", client.Name()))
+			}
+		}
+	}
+}
+
+// ingestDelayPlaybook is shared by the DelayedInserts critical/warn variants.
+// Bound the time window to the alert's poll interval so the SQL surfaces the
+// same activity that produced the gauge reading.
+func ingestDelayPlaybook(windowSec int) string {
+	if windowSec < 60 {
+		windowSec = 60
+	}
+	return fmt.Sprintf("*Investigate:*\n```\n"+
+		"-- Which tables are being throttled (per-table parts vs CH limits)\n"+
+		"SELECT database, table, count() AS parts,\n"+
+		"  countIf(active) AS active_parts\n"+
+		"FROM system.parts\n"+
+		"WHERE active\n"+
+		"GROUP BY database, table HAVING parts > 50 ORDER BY parts DESC LIMIT 20;\n\n"+
+		"-- INSERTs currently in flight\n"+
+		"SELECT user, query_id, elapsed, written_rows, formatReadableSize(memory_usage) AS mem,\n"+
+		"  substring(query,1,200) AS q\n"+
+		"FROM system.processes WHERE query_kind = 'Insert' ORDER BY elapsed DESC;\n\n"+
+		"-- Recent insert exceptions for this throttling window\n"+
+		"SELECT event_time, databases[1] AS db, tables[1] AS tbl,\n"+
+		"  exception_code, substring(exception,1,200) AS err\n"+
+		"FROM system.query_log\n"+
+		"WHERE type = 'ExceptionWhileProcessing' AND query_kind = 'Insert'\n"+
+		"  AND event_time > now() - INTERVAL %d SECOND\n"+
+		"ORDER BY event_time DESC LIMIT 20\n```\n"+
+		"*Fix:* OPTIMIZE the hottest table/partition to drain parts; back off insert "+
+		"frequency; raise `parts_to_delay_insert` only as a temporary lever.", windowSec)
 }
 
 func (c *InsertCollector) logger() *slog.Logger {

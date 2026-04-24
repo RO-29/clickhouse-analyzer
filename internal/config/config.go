@@ -140,14 +140,31 @@ type QueriesThresholds struct {
 }
 
 type PartsThresholds struct {
-	WarnCount       int `yaml:"warn_count"`
-	CriticalCount   int `yaml:"critical_count"`
-	WarnPerPartition int `yaml:"warn_per_partition"`
+	WarnCount             int `yaml:"warn_count"`
+	CriticalCount         int `yaml:"critical_count"`
+	WarnPerPartition      int `yaml:"warn_per_partition"`
+	// MaxClusterParts: instance-wide active part count ceiling. Once you cross
+	// this CH starts throttling new INSERTs (DelayedInserts / TooManyParts).
+	// Default 30000 keeps headroom under CH's hard limit.
+	MaxClusterParts       int `yaml:"max_cluster_parts"`
+	// MaxPartitionsPerTable: per-table partition count. CH allows ~hundreds of
+	// thousands but every partition costs metadata overhead and slows merges.
+	MaxPartitionsPerTable int `yaml:"max_partitions_per_table"`
+	// MaxPartsPerPartition: parts in a single partition. Default 1000 — CH's
+	// internal `parts_to_throw_insert` lives near here; crossing it kills
+	// inserts to that table.
+	MaxPartsPerPartition  int `yaml:"max_parts_per_partition"`
 }
 
 type MergesThresholds struct {
 	MaxActive  int `yaml:"max_active"`
 	WarnActive int `yaml:"warn_active"`
+	// MinActiveWhenBacklog: alert when active merges drop below this count
+	// AND the cluster has more than `BacklogPartCount` active parts. Detects
+	// "merge pool stalled while parts are piling up" — the prelude to a
+	// TooManyParts incident. Set to 0 to disable.
+	MinActiveWhenBacklog int `yaml:"min_active_when_backlog"`
+	BacklogPartCount     int `yaml:"backlog_part_count"`
 }
 
 type MutationsThresholds struct {
@@ -158,6 +175,16 @@ type InsertsThresholds struct {
 	ThroughputDropPercent float64 `yaml:"throughput_drop_percent"`
 	SmallInsertThreshold  int     `yaml:"small_insert_threshold"`
 	SmallInsertWarnCount  int     `yaml:"small_insert_warn_count"`
+	// Ingest-delay alerts driven from system.metrics + system.asynchronous_metrics.
+	// DelayedInsertsWarn: current count of in-flight INSERTs being slept by CH
+	//   (CH adds artificial sleep when parts pile up). >0 = throttling started.
+	// PendingAsyncInsertsWarn: queued async inserts awaiting flush.
+	// RejectedInsertsRateWarn: rate of TOO_MANY_PARTS rejections per minute.
+	DelayedInsertsWarn          int     `yaml:"delayed_inserts_warn"`
+	DelayedInsertsCritical      int     `yaml:"delayed_inserts_critical"`
+	PendingAsyncInsertsWarn     int     `yaml:"pending_async_inserts_warn"`
+	PendingAsyncInsertsCritical int     `yaml:"pending_async_inserts_critical"`
+	RejectedInsertsRateWarn     float64 `yaml:"rejected_inserts_rate_warn"`
 }
 
 type DiskThresholds struct {
@@ -313,21 +340,31 @@ func Defaults() *Config {
 				WarnConcurrent:           50,
 			},
 			Parts: PartsThresholds{
-				WarnCount:        1000,
-				CriticalCount:    3000,
-				WarnPerPartition: 300,
+				WarnCount:             1000,
+				CriticalCount:         3000,
+				WarnPerPartition:      300,
+				MaxClusterParts:       30000,
+				MaxPartitionsPerTable: 1200,
+				MaxPartsPerPartition:  1000,
 			},
 			Merges: MergesThresholds{
-				MaxActive:  20,
-				WarnActive: 10,
+				MaxActive:            20,
+				WarnActive:           10,
+				MinActiveWhenBacklog: 30,
+				BacklogPartCount:     1000,
 			},
 			Mutations: MutationsThresholds{
 				StuckThreshold: Duration{30 * time.Minute},
 			},
 			Inserts: InsertsThresholds{
-				ThroughputDropPercent: 50,
-				SmallInsertThreshold:  100,
-				SmallInsertWarnCount:  10,
+				ThroughputDropPercent:       50,
+				SmallInsertThreshold:        100,
+				SmallInsertWarnCount:        10,
+				DelayedInsertsWarn:          1,
+				DelayedInsertsCritical:      50,
+				PendingAsyncInsertsWarn:     100,
+				PendingAsyncInsertsCritical: 1000,
+				RejectedInsertsRateWarn:     1.0,
 			},
 			Disk: DiskThresholds{
 				WarnPercent:     80,
