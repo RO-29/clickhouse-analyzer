@@ -622,6 +622,19 @@ func (s *Server) handleS3Stats(w http.ResponseWriter, r *http.Request) {
 		// Inactive parts on S3 disks — count separately so the UI can show
 		// "live" vs "tracked but inactive" without conflating them.
 		InactiveBytes      float64 `json:"inactive_bytes"`
+		// Detached parts on S3 disks (system.detached_parts). DETACH PARTITION
+		// is a frequent source of orphans — the data stays in S3 forever until
+		// you `DROP DETACHED PARTITION` or remove it manually.
+		DetachedCount      int     `json:"detached_count"`
+		DetachedBytes      float64 `json:"detached_bytes"`
+		// Recent part-log REMOVAL events on S3 disks. If lots of parts have
+		// been removed recently but the bucket still has them, the storage
+		// policy isn't propagating deletes (zero-copy retention, lifecycle
+		// disabled, etc.).
+		RecentRemovals     []map[string]interface{} `json:"recent_removals"`
+		// Recently DROPped tables that lived on S3 — a classic orphan source.
+		// Exposed from system.dropped_tables (CH 22.3+) when available.
+		DroppedTables      []map[string]interface{} `json:"dropped_tables"`
 	}
 
 	var resp s3StatsResponse
@@ -697,6 +710,68 @@ func (s *Server) handleS3Stats(w http.ResponseWriter, r *http.Request) {
 	if rRows, err := client.Query(ctx, remoteSQL); err == nil && len(rRows) > 0 {
 		resp.RemoteTrackedCount = int(float64Val(rRows[0]["cnt"]))
 		resp.RemoteTrackedBytes = float64Val(rRows[0]["bytes"])
+	}
+
+	// Detached parts on S3 disks. system.detached_parts has `disk` (CH 22+)
+	// and `bytes_on_disk` (some versions). Some clusters lack the bytes column,
+	// so query count separately and tolerate failure on the bytes column.
+	detSQL := `SELECT count() AS cnt FROM system.detached_parts WHERE 1=1`
+	if len(resp.S3Disks) > 0 {
+		quoted := make([]string, 0, len(resp.S3Disks))
+		for _, n := range resp.S3Disks {
+			quoted = append(quoted, "'"+sqlSafeStr(n)+"'")
+		}
+		detSQL += " AND disk IN (" + strings.Join(quoted, ", ") + ")"
+	}
+	if dRows, err := client.Query(ctx, detSQL); err == nil && len(dRows) > 0 {
+		resp.DetachedCount = int(float64Val(dRows[0]["cnt"]))
+	}
+	// Try to fetch bytes_on_disk too; not all CH versions expose it on
+	// system.detached_parts. Failure here is silent.
+	if resp.DetachedCount > 0 {
+		detBytesSQL := strings.Replace(detSQL, "count() AS cnt", "sum(bytes_on_disk) AS bytes", 1)
+		if dRows, err := client.Query(ctx, detBytesSQL); err == nil && len(dRows) > 0 {
+			resp.DetachedBytes = float64Val(dRows[0]["bytes"])
+		}
+	}
+
+	// Recent part removals on S3 disks. Useful to confirm CH is actively
+	// dropping parts (which should propagate to S3 via the storage policy).
+	// system.part_log: event_type=2 is RemovePart in CH; check by string for
+	// portability.
+	if len(resp.S3Disks) > 0 {
+		quoted := make([]string, 0, len(resp.S3Disks))
+		for _, n := range resp.S3Disks {
+			quoted = append(quoted, "'"+sqlSafeStr(n)+"'")
+		}
+		remSQL := `
+			SELECT toDate(event_time) AS day, count() AS removals,
+			       formatReadableSize(sum(bytes)) AS bytes_readable, sum(bytes) AS bytes
+			FROM system.part_log
+			WHERE event_type = 'RemovePart'
+			  AND disk_name IN (` + strings.Join(quoted, ", ") + `)
+			  AND event_date >= today() - 14
+			GROUP BY day ORDER BY day DESC LIMIT 14`
+		if rows, err := client.Query(ctx, remSQL); err == nil {
+			resp.RecentRemovals = rows
+		}
+	}
+	if resp.RecentRemovals == nil {
+		resp.RecentRemovals = []map[string]interface{}{}
+	}
+
+	// Tables marked for deletion but data may still be on disk.
+	// system.dropped_tables exists CH 22.3+; query failures are silent so
+	// older versions just don't see this row.
+	dropSQL := `
+		SELECT database, table, engine, metadata_dropped_path,
+		       table_dropped_time
+		FROM system.dropped_tables ORDER BY table_dropped_time DESC LIMIT 20`
+	if rows, err := client.Query(ctx, dropSQL); err == nil {
+		resp.DroppedTables = rows
+	}
+	if resp.DroppedTables == nil {
+		resp.DroppedTables = []map[string]interface{}{}
 	}
 
 	// S3 latency by normalized query hash (last 1h).

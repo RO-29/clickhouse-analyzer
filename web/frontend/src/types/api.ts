@@ -316,6 +316,10 @@ export interface S3Stats {
   remote_tracked_bytes?: number
   remote_tracked_count?: number
   inactive_bytes?: number
+  detached_count?: number
+  detached_bytes?: number
+  recent_removals?: Record<string, any>[]
+  dropped_tables?: Record<string, any>[]
 }
 
 export interface S3LatencyByTableRow {

@@ -811,16 +811,128 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
                   </div>
                 )}
 
-                {orphanLikely && (
-                  <div className="mb-3 px-3 py-2 rounded-md border border-yellow-500/30 bg-yellow-500/10 text-[12px] text-yellow-400">
-                    <div className="font-semibold mb-0.5">Likely orphan objects in S3 bucket</div>
-                    <div className="opacity-80 leading-relaxed">
-                      CH-tracked remote (<span className="font-mono">{fmtBytes(remoteTracked)}</span>) exceeds active + inactive parts (<span className="font-mono">{fmtBytes(chTotal)}</span>) by{' '}
-                      <span className="font-mono">{fmtBytes(Math.max(0, orphanDelta))}</span>. The bucket itself may be even larger — CH only counts paths it still references.
-                      {' '}Run <code className="font-mono text-[10px] px-1 bg-[var(--surface)] rounded">SYSTEM SYNC FILE CACHE</code> or check the storage policy's GC config.
-                    </div>
-                  </div>
-                )}
+                {(orphanLikely || (s3Stats.detached_count ?? 0) > 0 || (s3Stats.dropped_tables?.length ?? 0) > 0) && (() => {
+                  const detachedCount = s3Stats.detached_count ?? 0
+                  const detachedBytes = s3Stats.detached_bytes ?? 0
+                  const droppedTables = s3Stats.dropped_tables ?? []
+                  const recentRemovals = s3Stats.recent_removals ?? []
+                  const totalRemoved = recentRemovals.reduce((s: number, r: any) => s + (r.bytes ?? 0), 0)
+                  return (
+                    <details className="mb-3 rounded-md border border-yellow-500/30 bg-yellow-500/10">
+                      <summary className="cursor-pointer px-3 py-2 text-[12px] text-yellow-400 font-semibold list-none flex items-center justify-between">
+                        <span>Diagnose S3 orphans</span>
+                        <span className="text-[11px] opacity-70">click to expand</span>
+                      </summary>
+                      <div className="px-3 pb-3 space-y-3 text-[12px] text-[var(--text)]">
+                        <div className="leading-relaxed">
+                          The S3 bucket can be larger than what CH reports for three reasons. Walk through the checks below to find which one applies.
+                        </div>
+
+                        {/* 1. CH-known breakdown */}
+                        <div className="rounded border border-[var(--border)] bg-[var(--card)] p-2.5">
+                          <div className="text-[10px] uppercase tracking-widest text-[var(--dim)] mb-1.5">1. What CH itself reports</div>
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
+                            <div><div className="text-[var(--dim)]">Active</div><div className="font-mono">{fmtBytes(activeS3Bytes)}</div></div>
+                            <div><div className="text-[var(--dim)]">Inactive</div><div className="font-mono">{fmtBytes(inactiveBytes)}</div></div>
+                            <div><div className="text-[var(--dim)]">Detached</div><div className="font-mono">{detachedCount > 0 ? `${detachedCount} parts · ${fmtBytes(detachedBytes)}` : '—'}</div></div>
+                            <div><div className="text-[var(--dim)]">CH-tracked remote</div><div className="font-mono">{remoteTracked > 0 ? fmtBytes(remoteTracked) : '—'}</div></div>
+                          </div>
+                          {detachedCount > 0 && (
+                            <div className="mt-2 text-[11px] text-yellow-400">
+                              {detachedCount} detached part{detachedCount === 1 ? '' : 's'} are sitting on S3. Detached parts are kept forever until you remove them. Run:
+                              <pre className="mt-1 text-[10px] font-mono whitespace-pre-wrap p-2 bg-[var(--surface)] rounded">SELECT database, table, partition_id, disk, count() AS parts
+FROM system.detached_parts
+GROUP BY database, table, partition_id, disk
+ORDER BY parts DESC LIMIT 50;</pre>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* 2. Recently dropped tables — common orphan source */}
+                        {droppedTables.length > 0 && (
+                          <div className="rounded border border-[var(--border)] bg-[var(--card)] p-2.5">
+                            <div className="text-[10px] uppercase tracking-widest text-[var(--dim)] mb-1.5">2. Recently dropped tables</div>
+                            <div className="text-[11px] text-yellow-400 mb-1.5">
+                              {droppedTables.length} table{droppedTables.length === 1 ? '' : 's'} marked for drop. Their S3 data should be GC'd by CH but if your storage policy has zero-copy retention or lifecycle rules disabled, the bucket-side objects linger.
+                            </div>
+                            <div className="max-h-40 overflow-y-auto text-[10px] font-mono space-y-0.5">
+                              {droppedTables.slice(0, 8).map((t: any, i: number) => (
+                                <div key={i} className="flex items-center gap-2">
+                                  <span className="text-[var(--dim)]">{t.table_dropped_time ?? ''}</span>
+                                  <span>{t.database}.{t.table}</span>
+                                  <span className="text-[var(--dim)]">({t.engine})</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* 3. Recent removals — confirms CH is dropping parts */}
+                        {recentRemovals.length > 0 && (
+                          <div className="rounded border border-[var(--border)] bg-[var(--card)] p-2.5">
+                            <div className="text-[10px] uppercase tracking-widest text-[var(--dim)] mb-1.5">3. Recent part removals (last 14 days)</div>
+                            <div className="text-[11px] text-[var(--dim)] mb-1.5">
+                              CH removed {fmtBytes(totalRemoved)} of parts on S3 disks. If the bucket size hasn't dropped by a similar amount, the storage policy isn't propagating deletes.
+                            </div>
+                            <div className="max-h-40 overflow-y-auto text-[10px] font-mono space-y-0.5">
+                              {recentRemovals.map((r: any, i: number) => (
+                                <div key={i} className="flex items-center gap-3">
+                                  <span className="text-[var(--dim)] w-20">{r.day}</span>
+                                  <span className="w-24">{fmtNum(r.removals ?? 0)} removals</span>
+                                  <span>{r.bytes_readable}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* 4. Bucket diff via s3() table function */}
+                        <div className="rounded border border-[var(--border)] bg-[var(--card)] p-2.5">
+                          <div className="text-[10px] uppercase tracking-widest text-[var(--dim)] mb-1.5">4. Find the actual orphan objects</div>
+                          <div className="text-[11px] mb-2">
+                            CH can scan its own bucket via the <code className="font-mono">s3()</code> table function and diff against <code className="font-mono">system.remote_data_paths</code>. Replace placeholders with your bucket URL + AWS credentials and run in the Terminal tab:
+                          </div>
+                          <pre className="text-[10px] font-mono whitespace-pre-wrap p-2 bg-[var(--surface)] rounded leading-snug">{`-- Bucket-side total (sanity-check the number AWS shows you)
+SELECT count(), formatReadableSize(sum(_size)) AS total
+FROM s3('https://<BUCKET>.s3.<REGION>.amazonaws.com/${instance}/**',
+        '<AWS_KEY>', '<AWS_SECRET>');
+
+-- Orphan keys: present in S3 but not referenced by any CH table.
+-- Match the suffix part of the path (everything after the disk root prefix).
+WITH tracked AS (
+  SELECT DISTINCT remote_path FROM system.remote_data_paths
+)
+SELECT _path, _size, _last_modified
+FROM s3('https://<BUCKET>.s3.<REGION>.amazonaws.com/${instance}/**',
+        '<AWS_KEY>', '<AWS_SECRET>')
+WHERE _path NOT IN (SELECT remote_path FROM tracked)
+ORDER BY _last_modified ASC
+LIMIT 200;
+
+-- Group orphans by date prefix to see if they cluster around a specific
+-- migration / drop event:
+SELECT toDate(_last_modified) AS day,
+       count() AS objects, formatReadableSize(sum(_size)) AS bytes
+FROM s3('https://<BUCKET>.s3.<REGION>.amazonaws.com/${instance}/**',
+        '<AWS_KEY>', '<AWS_SECRET>')
+WHERE _path NOT IN (SELECT remote_path FROM system.remote_data_paths)
+GROUP BY day ORDER BY day;`}</pre>
+                        </div>
+
+                        {/* 5. Cleanup levers */}
+                        <div className="rounded border border-[var(--border)] bg-[var(--card)] p-2.5">
+                          <div className="text-[10px] uppercase tracking-widest text-[var(--dim)] mb-1.5">5. Cleanup levers</div>
+                          <ul className="space-y-1 text-[11px] list-disc pl-4">
+                            <li><b>Detached parts</b>: <code className="font-mono">ALTER TABLE … DROP DETACHED PARTITION '…'</code> per partition.</li>
+                            <li><b>Dropped-table data</b>: lower <code className="font-mono">database_atomic_delay_before_drop_table_sec</code> or run <code className="font-mono">SYSTEM DROP DATABASE REPLICA</code>.</li>
+                            <li><b>Zero-copy orphans</b>: set <code className="font-mono">allow_remote_fs_zero_copy_replication=0</code> for new tables; for old, use <code className="font-mono">SYSTEM UNFREEZE</code> + part removal.</li>
+                            <li><b>True bucket-side orphans</b> (not in remote_data_paths): script the SQL above and <code className="font-mono">aws s3 rm</code> the matching keys, OR add an S3 lifecycle rule to expire old prefixes.</li>
+                          </ul>
+                        </div>
+                      </div>
+                    </details>
+                  )
+                })()}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
                   <Card title="S3 Volume by Table" noPad>
                     <DataTable columns={s3VolCols} data={volTable} maxHeight="250px" />
