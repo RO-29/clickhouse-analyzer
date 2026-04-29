@@ -746,17 +746,40 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
 
           {s3Stats && s3Stats.volume_by_table && Array.isArray(s3Stats.volume_by_table) && s3Stats.volume_by_table.length > 0 && (() => {
             const volTable = s3Stats.volume_by_table as any[]
-            const totalS3Bytes = volTable.reduce((sum: number, r: any) => sum + (r.bytes ?? 0), 0)
+            const activeS3Bytes = volTable.reduce((sum: number, r: any) => sum + (r.bytes ?? 0), 0)
+            const inactiveBytes = s3Stats.inactive_bytes ?? 0
+            const remoteTracked = s3Stats.remote_tracked_bytes ?? 0
+            const remoteCount = s3Stats.remote_tracked_count ?? 0
+            const s3Disks = s3Stats.s3_disks ?? []
             const fsBytes = cacheStats?.filesystem_cache_bytes ?? 0
             const fsLimit = cacheStats?.filesystem_cache_limit ?? 0
             const fsPct = fsLimit > 0 ? Math.min(100, (fsBytes / fsLimit) * 100) : 0
+
+            // Headline number is what CH itself tracks across active + inactive
+            // parts (the largest CH-known footprint). Bucket size in AWS may be
+            // larger if the storage policy hasn't GC'd orphans — surfaced below.
+            const chTotal = activeS3Bytes + inactiveBytes
+            // Divergence heuristic: if remote_data_paths sum is materially
+            // larger than active+inactive, those extra paths are "tracked but
+            // not in any current part" — orphans waiting for cleanup.
+            const orphanLikely = remoteTracked > 0 && remoteTracked > chTotal * 1.10
+            const orphanDelta = remoteTracked - chTotal
+
             return (
               <Section title="S3 Storage" defaultOpen>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3">
                   <Card>
-                    <div className="text-lg font-bold">{fmtBytes(totalS3Bytes)}</div>
-                    <div className="text-[10px] text-[var(--dim)] mt-1 uppercase tracking-widest">Total S3 Data</div>
+                    <div
+                      className="text-lg font-bold cursor-help"
+                      title="sum(bytes_on_disk) of active parts on S3-type disks. This is what's currently 'live' from CH's POV — does NOT include inactive parts within old_parts_lifetime, parts CH has marked for deletion, or orphaned objects in the S3 bucket."
+                    >
+                      {fmtBytes(activeS3Bytes)}
+                    </div>
+                    <div className="text-[10px] text-[var(--dim)] mt-1 uppercase tracking-widest">Active S3 Data</div>
                     <div className="text-[11px] text-[var(--dim)]">{volTable.length} tables</div>
+                    {inactiveBytes > 0 && (
+                      <div className="text-[11px] text-[var(--dim)] mt-1">+ {fmtBytes(inactiveBytes)} inactive</div>
+                    )}
                   </Card>
                   <Card>
                     <div className="text-lg font-bold">{fsLimit > 0 ? fsPct.toFixed(1) + '%' : '--'}</div>
@@ -769,10 +792,35 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
                     )}
                   </Card>
                   <Card>
-                    <div className="text-lg font-bold">{fmtNum(cacheStats?.filesystem_cache_elements ?? 0)}</div>
-                    <div className="text-[10px] text-[var(--dim)] mt-1 uppercase tracking-widest">Cached Elements</div>
+                    <div
+                      className="text-lg font-bold cursor-help"
+                      title="sum(size) from system.remote_data_paths — every object CH's storage layer believes it owns on remote disks, including ones not attached to any active part. If your AWS S3 bucket size is bigger than this number, the difference is orphaned objects that CH no longer references (deleted parts not yet cleaned up, or other tenants in the same prefix)."
+                    >
+                      {remoteTracked > 0 ? fmtBytes(remoteTracked) : '—'}
+                    </div>
+                    <div className="text-[10px] text-[var(--dim)] mt-1 uppercase tracking-widest">CH-tracked Remote</div>
+                    <div className="text-[11px] text-[var(--dim)]">
+                      {remoteCount > 0 ? `${fmtNum(remoteCount)} paths` : 'system.remote_data_paths unavailable'}
+                    </div>
                   </Card>
                 </div>
+
+                {s3Disks.length > 0 && (
+                  <div className="text-[11px] text-[var(--dim)] mb-2">
+                    S3 disks detected: <span className="font-mono text-[var(--text)]">{s3Disks.join(', ')}</span>
+                  </div>
+                )}
+
+                {orphanLikely && (
+                  <div className="mb-3 px-3 py-2 rounded-md border border-yellow-500/30 bg-yellow-500/10 text-[12px] text-yellow-400">
+                    <div className="font-semibold mb-0.5">Likely orphan objects in S3 bucket</div>
+                    <div className="opacity-80 leading-relaxed">
+                      CH-tracked remote (<span className="font-mono">{fmtBytes(remoteTracked)}</span>) exceeds active + inactive parts (<span className="font-mono">{fmtBytes(chTotal)}</span>) by{' '}
+                      <span className="font-mono">{fmtBytes(Math.max(0, orphanDelta))}</span>. The bucket itself may be even larger — CH only counts paths it still references.
+                      {' '}Run <code className="font-mono text-[10px] px-1 bg-[var(--surface)] rounded">SYSTEM SYNC FILE CACHE</code> or check the storage policy's GC config.
+                    </div>
+                  </div>
+                )}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
                   <Card title="S3 Volume by Table" noPad>
                     <DataTable columns={s3VolCols} data={volTable} maxHeight="250px" />

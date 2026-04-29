@@ -607,28 +607,100 @@ func (s *Server) handleS3Stats(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	type s3StatsResponse struct {
-		VolumeByTable  []map[string]interface{} `json:"volume_by_table"`
-		LatencyByQuery []map[string]interface{} `json:"latency_by_query"`
-		LatencyByTable []map[string]interface{} `json:"latency_by_table"`
+		VolumeByTable     []map[string]interface{} `json:"volume_by_table"`
+		LatencyByQuery    []map[string]interface{} `json:"latency_by_query"`
+		LatencyByTable    []map[string]interface{} `json:"latency_by_table"`
+		// S3-type disk names CH knows about, for transparency in the UI.
+		S3Disks           []string                 `json:"s3_disks"`
+		// CH-tracked remote storage size from system.remote_data_paths.
+		// This is the authoritative "what CH thinks it has on remote disks"
+		// number. Diverges from the actual S3 bucket size when orphaned
+		// objects exist (deleted parts not yet GC'd by the storage policy,
+		// other tenants in the same bucket prefix, etc.).
+		RemoteTrackedBytes float64 `json:"remote_tracked_bytes"`
+		RemoteTrackedCount int     `json:"remote_tracked_count"`
+		// Inactive parts on S3 disks — count separately so the UI can show
+		// "live" vs "tracked but inactive" without conflating them.
+		InactiveBytes      float64 `json:"inactive_bytes"`
 	}
 
 	var resp s3StatsResponse
+	resp.VolumeByTable = []map[string]interface{}{}
+	resp.LatencyByQuery = []map[string]interface{}{}
+	resp.LatencyByTable = []map[string]interface{}{}
+	resp.S3Disks = []string{}
 
-	// S3 data volume by table.
-	rows, err := client.Query(ctx, `
+	// Discover S3-type disks via system.disks instead of a brittle
+	// `disk_name LIKE '%s3%'`. CH 23.7+ exposes `object_storage_type`;
+	// older versions only have `type`. Match either signal.
+	s3DiskFilter := "" // SQL fragment scoping further queries to S3 disks
+	disksSQL := `
+		SELECT name, type,
+		  multiIf(
+		    has(['s3','S3','ObjectStorage','object_storage'], type), 1,
+		    0
+		  ) AS is_s3_type
+		FROM system.disks`
+	if dRows, err := client.Query(ctx, disksSQL); err == nil {
+		for _, row := range dRows {
+			if float64Val(row["is_s3_type"]) > 0 || strings.Contains(strings.ToLower(strVal(row["name"])), "s3") {
+				resp.S3Disks = append(resp.S3Disks, strVal(row["name"]))
+			}
+		}
+	}
+
+	if len(resp.S3Disks) > 0 {
+		quoted := make([]string, 0, len(resp.S3Disks))
+		for _, n := range resp.S3Disks {
+			quoted = append(quoted, "'"+sqlSafeStr(n)+"'")
+		}
+		s3DiskFilter = " disk_name IN (" + strings.Join(quoted, ", ") + ")"
+	} else {
+		// Fall back to the legacy LIKE match if disk-type detection failed.
+		s3DiskFilter = " disk_name LIKE '%s3%'"
+	}
+
+	// S3 data volume by table — active parts only (the headline number).
+	volSQL := `
 		SELECT database, table, disk_name, count() as parts,
 			sum(bytes_on_disk) as bytes, formatReadableSize(sum(bytes_on_disk)) as size
-		FROM system.parts WHERE active AND disk_name LIKE '%s3%'
-		GROUP BY database, table, disk_name ORDER BY bytes DESC LIMIT 30`)
-	if err != nil {
+		FROM system.parts WHERE active AND` + s3DiskFilter + `
+		GROUP BY database, table, disk_name ORDER BY bytes DESC LIMIT 30`
+	if rows, err := client.Query(ctx, volSQL); err != nil {
 		slog.Warn("s3 stats: volume query failed", "instance", instance, "err", err)
-		resp.VolumeByTable = []map[string]interface{}{}
 	} else {
 		resp.VolumeByTable = rows
 	}
 
+	// Inactive parts size — within `old_parts_lifetime` they still exist on
+	// disk and in S3. The UI should surface this so the "Total" number
+	// reconciles with what CH itself reports across active+inactive.
+	inactSQL := `SELECT sum(bytes_on_disk) AS bytes FROM system.parts WHERE active = 0 AND` + s3DiskFilter
+	if iRows, err := client.Query(ctx, inactSQL); err == nil && len(iRows) > 0 {
+		resp.InactiveBytes = float64Val(iRows[0]["bytes"])
+	}
+
+	// system.remote_data_paths: the authoritative list of objects CH's
+	// storage layer believes it owns on remote disks. Comparing this sum to
+	// the actual S3 bucket size reveals orphans. Available CH 22.6+; missing
+	// on older versions, in which case we silently skip.
+	remoteSQL := `
+		SELECT count() AS cnt, sum(size) AS bytes
+		FROM system.remote_data_paths`
+	if len(resp.S3Disks) > 0 {
+		quoted := make([]string, 0, len(resp.S3Disks))
+		for _, n := range resp.S3Disks {
+			quoted = append(quoted, "'"+sqlSafeStr(n)+"'")
+		}
+		remoteSQL += " WHERE disk_name IN (" + strings.Join(quoted, ", ") + ")"
+	}
+	if rRows, err := client.Query(ctx, remoteSQL); err == nil && len(rRows) > 0 {
+		resp.RemoteTrackedCount = int(float64Val(rRows[0]["cnt"]))
+		resp.RemoteTrackedBytes = float64Val(rRows[0]["bytes"])
+	}
+
 	// S3 latency by normalized query hash (last 1h).
-	rows, err = client.Query(ctx, `
+	if rows, err := client.Query(ctx, `
 		SELECT normalized_query_hash, count() as cnt,
 			avg(ProfileEvents['S3ReadMicroseconds']/nullIf(ProfileEvents['S3ReadRequestsCount'],0))/1000 as avg_latency_ms,
 			max(ProfileEvents['S3ReadMicroseconds']/nullIf(ProfileEvents['S3ReadRequestsCount'],0))/1000 as max_latency_ms,
@@ -639,26 +711,22 @@ func (s *Server) handleS3Stats(w http.ResponseWriter, r *http.Request) {
 		WHERE type='QueryFinish' AND ProfileEvents['S3ReadRequestsCount'] > 0
 		  AND event_time >= now() - INTERVAL 1 HOUR
 		GROUP BY normalized_query_hash
-		ORDER BY avg_latency_ms DESC LIMIT 20`)
-	if err != nil {
+		ORDER BY avg_latency_ms DESC LIMIT 20`); err != nil {
 		slog.Warn("s3 stats: latency by query failed", "instance", instance, "err", err)
-		resp.LatencyByQuery = []map[string]interface{}{}
 	} else {
 		resp.LatencyByQuery = rows
 	}
 
 	// S3 latency by table.
-	rows, err = client.Query(ctx, `
+	if rows, err := client.Query(ctx, `
 		SELECT tables[1] as table_name, count() as queries,
 			avg(ProfileEvents['S3ReadMicroseconds']/nullIf(ProfileEvents['S3ReadRequestsCount'],0))/1000 as avg_latency_ms,
 			sum(ProfileEvents['S3ReadRequestsCount']) as total_requests
 		FROM system.query_log
 		WHERE type='QueryFinish' AND ProfileEvents['S3ReadRequestsCount'] > 0
 		  AND length(tables) >= 1 AND event_time >= now() - INTERVAL 1 HOUR
-		GROUP BY table_name ORDER BY avg_latency_ms DESC LIMIT 20`)
-	if err != nil {
+		GROUP BY table_name ORDER BY avg_latency_ms DESC LIMIT 20`); err != nil {
 		slog.Warn("s3 stats: latency by table failed", "instance", instance, "err", err)
-		resp.LatencyByTable = []map[string]interface{}{}
 	} else {
 		resp.LatencyByTable = rows
 	}

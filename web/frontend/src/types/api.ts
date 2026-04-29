@@ -312,6 +312,10 @@ export interface S3Stats {
   volume_by_table: { database: string; table: string; disk_name: string; parts: number; bytes: number; size: string }[]
   latency_by_query: Record<string, any>[]
   latency_by_table: Record<string, any>[]
+  s3_disks?: string[]
+  remote_tracked_bytes?: number
+  remote_tracked_count?: number
+  inactive_bytes?: number
 }
 
 export interface S3LatencyByTableRow {
