@@ -315,6 +315,7 @@ export interface S3Stats {
   s3_disks?: string[]
   remote_tracked_bytes?: number
   remote_tracked_count?: number
+  remote_tracked_available?: boolean
   inactive_bytes?: number
   detached_count?: number
   detached_bytes?: number

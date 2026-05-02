@@ -617,8 +617,13 @@ func (s *Server) handleS3Stats(w http.ResponseWriter, r *http.Request) {
 		// number. Diverges from the actual S3 bucket size when orphaned
 		// objects exist (deleted parts not yet GC'd by the storage policy,
 		// other tenants in the same bucket prefix, etc.).
-		RemoteTrackedBytes float64 `json:"remote_tracked_bytes"`
-		RemoteTrackedCount int     `json:"remote_tracked_count"`
+		RemoteTrackedBytes     float64 `json:"remote_tracked_bytes"`
+		RemoteTrackedCount     int     `json:"remote_tracked_count"`
+		// Distinguish "we couldn't query this table" from "the table returned
+		// zero rows" — both look the same in the response otherwise. CH
+		// versions older than 22.6 lack `system.remote_data_paths` entirely,
+		// in which case the UI should say so instead of implying "0".
+		RemoteTrackedAvailable bool    `json:"remote_tracked_available"`
 		// Inactive parts on S3 disks — count separately so the UI can show
 		// "live" vs "tracked but inactive" without conflating them.
 		InactiveBytes      float64 `json:"inactive_bytes"`
@@ -644,20 +649,28 @@ func (s *Server) handleS3Stats(w http.ResponseWriter, r *http.Request) {
 	resp.S3Disks = []string{}
 
 	// Discover S3-type disks via system.disks instead of a brittle
-	// `disk_name LIKE '%s3%'`. CH 23.7+ exposes `object_storage_type`;
-	// older versions only have `type`. Match either signal.
+	// `disk_name LIKE '%s3%'`. Different CH builds expose different signals:
+	//   - CH 22.6+:  `is_remote BOOLEAN` — true for any object-storage disk
+	//   - CH 23.7+:  `object_storage_type` String enum
+	//   - all:       `type` (often 's3'/'ObjectStorage'/'object_storage')
+	//   - fallback:  the disk name happens to contain 's3'
+	// Pick everything `system.disks` shows and classify in Go so a single
+	// brittle SQL doesn't lose us the disk on a CH version we didn't expect.
 	s3DiskFilter := "" // SQL fragment scoping further queries to S3 disks
-	disksSQL := `
-		SELECT name, type,
-		  multiIf(
-		    has(['s3','S3','ObjectStorage','object_storage'], type), 1,
-		    0
-		  ) AS is_s3_type
-		FROM system.disks`
+	disksSQL := `SELECT * FROM system.disks`
 	if dRows, err := client.Query(ctx, disksSQL); err == nil {
 		for _, row := range dRows {
-			if float64Val(row["is_s3_type"]) > 0 || strings.Contains(strings.ToLower(strVal(row["name"])), "s3") {
-				resp.S3Disks = append(resp.S3Disks, strVal(row["name"]))
+			name := strVal(row["name"])
+			typeStr := strings.ToLower(strVal(row["type"]))
+			objStorageType := strings.ToLower(strVal(row["object_storage_type"]))
+			isRemote := float64Val(row["is_remote"]) > 0
+			isObjectStorage :=
+				typeStr == "s3" || typeStr == "objectstorage" || typeStr == "object_storage" ||
+					objStorageType != "" && objStorageType != "none" ||
+					isRemote ||
+					strings.Contains(strings.ToLower(name), "s3")
+			if isObjectStorage {
+				resp.S3Disks = append(resp.S3Disks, name)
 			}
 		}
 	}
@@ -707,9 +720,17 @@ func (s *Server) handleS3Stats(w http.ResponseWriter, r *http.Request) {
 		}
 		remoteSQL += " WHERE disk_name IN (" + strings.Join(quoted, ", ") + ")"
 	}
-	if rRows, err := client.Query(ctx, remoteSQL); err == nil && len(rRows) > 0 {
-		resp.RemoteTrackedCount = int(float64Val(rRows[0]["cnt"]))
-		resp.RemoteTrackedBytes = float64Val(rRows[0]["bytes"])
+	if rRows, err := client.Query(ctx, remoteSQL); err == nil {
+		resp.RemoteTrackedAvailable = true
+		if len(rRows) > 0 {
+			resp.RemoteTrackedCount = int(float64Val(rRows[0]["cnt"]))
+			resp.RemoteTrackedBytes = float64Val(rRows[0]["bytes"])
+		}
+	} else {
+		// Most common failure: CH < 22.6 doesn't have system.remote_data_paths.
+		// Log at debug — operators on old CH see this every poll.
+		slog.Debug("s3 stats: system.remote_data_paths unavailable",
+			"instance", instance, "err", err)
 	}
 
 	// Detached parts on S3 disks. system.detached_parts has `disk` (CH 22+)

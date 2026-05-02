@@ -153,6 +153,35 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
   const [queryAP, setQueryAP] = useState<any[] | null>(null)
   const [tableAP, setTableAP] = useState<any[] | null>(null)
 
+  // When the user clicks into a different instance, immediately drop the
+  // previous instance's data instead of leaving it on screen until the new
+  // fetch resolves. Without this, navigating from a slow-loading instance to
+  // another one feels like the new instance shows the *previous* instance's
+  // alerts/queries/tables for a few seconds — confusing and dangerous when
+  // operators act on what they see.
+  useEffect(() => {
+    isFirstLoad.current = true
+    setAlertHistory([])
+    setQueries([])
+    setTables([])
+    setDisks([])
+    setMvs([])
+    setS3Stats(null)
+    setCacheStats(null)
+    setTableMemory([])
+    setReplicas([])
+    setQueryPatterns([])
+    setQueryFailures([])
+    setMergeHistory([])
+    setSlo(null)
+    setQueryAP(null)
+    setTableAP(null)
+    setApLoaded(false)
+    setActiveWindow(null)
+    setSelectedAlert(null)
+    setLoadedAt(null)
+  }, [instance])
+
   useEffect(() => {
     if (!instance) return
     let cancelled = false
@@ -744,8 +773,27 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
             </Section>
           )}
 
-          {s3Stats && s3Stats.volume_by_table && Array.isArray(s3Stats.volume_by_table) && s3Stats.volume_by_table.length > 0 && (() => {
-            const volTable = s3Stats.volume_by_table as any[]
+          {s3Stats && (() => {
+            // Render the S3 Storage section if ANY S3 signal is present:
+            // - volume_by_table rows (active parts on S3 disks)
+            // - s3_disks detected via system.disks
+            // - remote_tracked_bytes > 0 (system.remote_data_paths)
+            // - cache_stats.filesystem_cache_limit > 0 (a cache is configured,
+            //   strong indicator of an object-storage disk)
+            // The previous gating only checked volume_by_table.length, so
+            // instances whose S3 disk had been renamed past our heuristic
+            // (e.g. 'remote_object_storage' instead of '*s3*') vanished from
+            // the Storage tab entirely.
+            const volTable = (s3Stats.volume_by_table ?? []) as any[]
+            const s3DisksList = s3Stats.s3_disks ?? []
+            const remoteTrackedBytesAny = s3Stats.remote_tracked_bytes ?? 0
+            const fsCacheConfigured = (cacheStats?.filesystem_cache_limit ?? 0) > 0
+            const hasAnyS3Signal =
+              volTable.length > 0 ||
+              s3DisksList.length > 0 ||
+              remoteTrackedBytesAny > 0 ||
+              fsCacheConfigured
+            if (!hasAnyS3Signal) return null
             const activeS3Bytes = volTable.reduce((sum: number, r: any) => sum + (r.bytes ?? 0), 0)
             const inactiveBytes = s3Stats.inactive_bytes ?? 0
             const remoteTracked = s3Stats.remote_tracked_bytes ?? 0
@@ -800,7 +848,12 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
                     </div>
                     <div className="text-[10px] text-[var(--dim)] mt-1 uppercase tracking-widest">CH-tracked Remote</div>
                     <div className="text-[11px] text-[var(--dim)]">
-                      {remoteCount > 0 ? `${fmtNum(remoteCount)} paths` : 'system.remote_data_paths unavailable'}
+                      {(() => {
+                        const avail = s3Stats.remote_tracked_available
+                        if (avail === false) return 'system.remote_data_paths not available (CH < 22.6 or restricted user)'
+                        if (remoteCount > 0) return `${fmtNum(remoteCount)} paths`
+                        return 'no remote paths tracked'
+                      })()}
                     </div>
                   </Card>
                 </div>
@@ -934,9 +987,23 @@ GROUP BY day ORDER BY day;`}</pre>
                   )
                 })()}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                  <Card title="S3 Volume by Table" noPad>
-                    <DataTable columns={s3VolCols} data={volTable} maxHeight="250px" />
-                  </Card>
+                  {volTable.length > 0 ? (
+                    <Card title="S3 Volume by Table" noPad>
+                      <DataTable columns={s3VolCols} data={volTable} maxHeight="250px" />
+                    </Card>
+                  ) : (
+                    <Card title="S3 Volume by Table">
+                      <div className="text-[12px] text-[var(--dim)] py-3 leading-relaxed">
+                        No active parts found on S3-type disks for this instance.
+                        {s3Disks.length === 0 && (
+                          <> No disks classified as S3 by <code className="font-mono">system.disks</code>; if you expect S3 here, the disk may be using a non-standard <code className="font-mono">type</code> — verify with <code className="font-mono">SELECT name, type, is_remote FROM system.disks</code>.</>
+                        )}
+                        {remoteTracked > 0 && (
+                          <> CH still tracks <span className="font-mono">{fmtBytes(remoteTracked)}</span> on remote disks (see card above) — the storage layer knows about objects but no active parts reference them.</>
+                        )}
+                      </div>
+                    </Card>
+                  )}
                   {s3Stats.latency_by_table && Array.isArray(s3Stats.latency_by_table) && s3Stats.latency_by_table.length > 0 && (
                     <Card title="S3 Latency by Table" noPad>
                       <DataTable columns={s3LatCols} data={s3Stats.latency_by_table} maxHeight="250px" />
