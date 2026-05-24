@@ -3,6 +3,7 @@ import { Sparkles, X, Copy, Play, Maximize2, Minimize2, Skull, RefreshCw, Chevro
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, Cell, PieChart, Pie, Legend } from 'recharts'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
+import { useDebouncedValue } from '../hooks/useDebouncedValue'
 import { api } from '../lib/api'
 import { fmtBytes, fmtNum, fmtDuration, fmtCompact, cn, latencyBg, kindBg, tokenizeSql } from '../lib/utils'
 import { Card } from '../components/Card'
@@ -628,27 +629,19 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
   const [tlLoading, setTlLoading] = useState(false)
   const [sortBy, setSortBy] = useState<string>('total_ms')
   const [overview, setOverview] = useState<PatternOverviewResponse | null>(null)
-  // Filters — sent to backend as ?database=&table=&kind=
+  // Filters — sent to backend as ?database=&table=&kind=. Text inputs are
+  // debounced via useDebouncedValue so typing doesn't fire one API call per
+  // keystroke (and we don't blank the table between strokes).
   const [databaseRaw, setDatabaseRaw] = useState('')
-  const [databaseFilter, setDatabaseFilter] = useState('')
   const [tableRaw, setTableRaw] = useState('')
-  const [tableFilter, setTableFilter] = useState('')
   const [kindFilter, setKindFilter] = useState('')
+  const databaseFilter = useDebouncedValue(databaseRaw.trim(), 250)
+  const tableFilter = useDebouncedValue(tableRaw.trim(), 250)
   // Failure detail panel
   const [failHash, setFailHash] = useState<string | null>(null)
   const [failData, setFailData] = useState<{ byCode: Record<string, any>[]; byTs: Record<string, any>[] } | null>(null)
   const [failLoading, setFailLoading] = useState(false)
   const [failTimeline, setFailTimeline] = useState<Record<string, any>[]>([])
-
-  // Debounce text inputs — fire the API 300ms after typing stops.
-  useEffect(() => {
-    const id = setTimeout(() => setDatabaseFilter(databaseRaw.trim()), 300)
-    return () => clearTimeout(id)
-  }, [databaseRaw])
-  useEffect(() => {
-    const id = setTimeout(() => setTableFilter(tableRaw.trim()), 300)
-    return () => clearTimeout(id)
-  }, [tableRaw])
 
   useEffect(() => {
     let c = false
@@ -744,8 +737,11 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
     return { bars, maxTotal, hashColors }
   }, [overview])
 
-  if (loading) return <LoadingSkeleton />
-  if (error) return <ErrorBox message={error} />
+  // Only blank the page on the very first fetch. Subsequent refetches (filter
+  // changes, sort changes, refresh) keep the previous table rendered so the
+  // user doesn't see a skeleton flash on every keystroke.
+  if (loading && patterns.length === 0) return <LoadingSkeleton />
+  if (error && patterns.length === 0) return <ErrorBox message={error} />
 
   // ── derived stats ──────────────────────────────────────────────────────────
   const totalExecs = patterns.reduce((s, p) => s + (p.cnt || 0), 0)
@@ -979,6 +975,9 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
             <span className="text-[11px] text-[var(--dim)]">
               Showing 1–{Math.min(patterns.length, 50)} of {patterns.length}
             </span>
+            {loading && (
+              <span className="text-[10px] text-[var(--dim)] italic">refreshing…</span>
+            )}
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <input
@@ -1575,25 +1574,18 @@ function QueryLogTab({ instance, from, to, refreshKey, onShowQuery }: TabProps) 
   const [error, setError] = useState<string | null>(null)
   const [exhausted, setExhausted] = useState(false)
 
-  // Filters
+  // Filters — all text inputs go through useDebouncedValue so typing doesn't
+  // fire one API call per keystroke. Selects (kind/status) update immediately.
   const [searchRaw, setSearchRaw] = useState('')
-  const [searchQuery, setSearchQuery] = useState('')
-  const [userFilter, setUserFilter] = useState('')
+  const [userRaw, setUserRaw] = useState('')
   const [kindFilter, setKindFilter] = useState<'' | 'Select' | 'Insert' | 'Alter' | 'System' | 'Create' | 'Drop'>('')
   const [statusFilter, setStatusFilter] = useState<'all' | 'success' | 'error'>('all')
   const [tableRaw, setTableRaw] = useState('')
-  const [tableQuery, setTableQuery] = useState('')
-  const [minMs, setMinMs] = useState<string>('')
-
-  // Debounce search + table inputs so we don't fire a CH query per keystroke.
-  useEffect(() => {
-    const id = setTimeout(() => setSearchQuery(searchRaw.trim()), 300)
-    return () => clearTimeout(id)
-  }, [searchRaw])
-  useEffect(() => {
-    const id = setTimeout(() => setTableQuery(tableRaw.trim()), 300)
-    return () => clearTimeout(id)
-  }, [tableRaw])
+  const [minMsRaw, setMinMsRaw] = useState<string>('')
+  const searchQuery = useDebouncedValue(searchRaw.trim(), 250)
+  const userFilter = useDebouncedValue(userRaw.trim(), 250)
+  const tableQuery = useDebouncedValue(tableRaw.trim(), 250)
+  const minMs = useDebouncedValue(minMsRaw.trim(), 250)
 
   const filterKey = `${instance}|${from}|${to}|${searchQuery}|${userFilter}|${kindFilter}|${statusFilter}|${tableQuery}|${minMs}|${refreshKey ?? 0}`
 
@@ -1653,11 +1645,11 @@ function QueryLogTab({ instance, from, to, refreshKey, onShowQuery }: TabProps) 
 
   const resetFilters = () => {
     setSearchRaw('')
-    setUserFilter('')
+    setUserRaw('')
     setKindFilter('')
     setStatusFilter('all')
     setTableRaw('')
-    setMinMs('')
+    setMinMsRaw('')
   }
 
   const totalShown = rows.length
@@ -1686,8 +1678,8 @@ function QueryLogTab({ instance, from, to, refreshKey, onShowQuery }: TabProps) 
           />
           <input
             type="text"
-            value={userFilter}
-            onChange={e => setUserFilter(e.target.value)}
+            value={userRaw}
+            onChange={e => setUserRaw(e.target.value)}
             placeholder="User"
             className="w-28 bg-[var(--surface)] border border-[var(--border)] rounded-md px-3 py-1.5 text-sm text-[var(--fg)] focus:outline-none focus:border-[var(--accent)]"
           />
@@ -1722,8 +1714,8 @@ function QueryLogTab({ instance, from, to, refreshKey, onShowQuery }: TabProps) 
           />
           <input
             type="number"
-            value={minMs}
-            onChange={e => setMinMs(e.target.value)}
+            value={minMsRaw}
+            onChange={e => setMinMsRaw(e.target.value)}
             placeholder="Min ms"
             min={0}
             className="w-24 bg-[var(--surface)] border border-[var(--border)] rounded-md px-3 py-1.5 text-sm text-[var(--fg)] focus:outline-none focus:border-[var(--accent)]"
@@ -1859,13 +1851,16 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [hashFilter, setHashFilter] = useState(initialHash ?? '')
-  const [userFilter, setUserFilter] = useState(initialUser ?? '')
+  const [userRaw, setUserRaw] = useState(initialUser ?? '')
   const [kindFilter, setKindFilter] = useState('')
-  const [minMs, setMinMs] = useState('')
+  const [minMsRaw, setMinMsRaw] = useState('')
   const [errorsOnly, setErrorsOnly] = useState(initialErrorsOnly ?? false)
   const [tableFilter, setTableFilter] = useState(initialTable ?? '')
-  // Debounced copy actually sent to the API — avoids firing on every keystroke.
-  const [tableFilterQuery, setTableFilterQuery] = useState(initialTable ?? '')
+  // Debounced copies — driven via useDebouncedValue so typing doesn't fire
+  // an API call per keystroke, and the list doesn't flash an empty state.
+  const tableFilterQuery = useDebouncedValue(tableFilter.trim(), 250)
+  const userFilter = useDebouncedValue(userRaw.trim(), 250)
+  const minMs = useDebouncedValue(minMsRaw.trim(), 250)
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
 
   // Charts shown when drilling into failures for a specific hash
@@ -1874,18 +1869,11 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
 
   // When initial drill context changes, update filters.
   useEffect(() => { setHashFilter(initialHash ?? '') }, [initialHash])
-  useEffect(() => { setUserFilter(initialUser ?? '') }, [initialUser])
+  useEffect(() => { setUserRaw(initialUser ?? '') }, [initialUser])
   useEffect(() => { setErrorsOnly(initialErrorsOnly ?? false) }, [initialErrorsOnly])
   useEffect(() => {
     setTableFilter(initialTable ?? '')
-    setTableFilterQuery(initialTable ?? '')
   }, [initialTable])
-
-  // Debounce text input → actual query param by 300ms.
-  useEffect(() => {
-    const id = setTimeout(() => setTableFilterQuery(tableFilter.trim()), 300)
-    return () => clearTimeout(id)
-  }, [tableFilter])
 
   // Load charts when we have a hash + errorsOnly drill (came from FAILS click)
   useEffect(() => {
@@ -2050,7 +2038,7 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
               {tableFilter && <span>table: {tableFilter}</span>}
               {errorsOnly && <span className="text-red-400">errors only</span>}
               <button
-                onClick={() => { setHashFilter(''); setUserFilter(''); setErrorsOnly(false); setTableFilter(''); setTableFilterQuery(''); onClearDrill?.() }}
+                onClick={() => { setHashFilter(''); setUserRaw(''); setErrorsOnly(false); setTableFilter(''); onClearDrill?.() }}
                 className="ml-1 hover:text-[var(--fg)]"
               >
                 <X size={10} />
@@ -2070,8 +2058,8 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
           <div className="flex items-center gap-1">
             <label className="text-xs text-[var(--dim)]">User</label>
             <input
-              value={userFilter}
-              onChange={e => setUserFilter(e.target.value)}
+              value={userRaw}
+              onChange={e => setUserRaw(e.target.value)}
               className="rounded border border-[var(--border)] bg-[var(--card)] px-2 py-1 text-xs w-28 focus:outline-none"
               placeholder="filter user…"
             />
@@ -2091,8 +2079,8 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
           <div className="flex items-center gap-1">
             <label className="text-xs text-[var(--dim)]">Min ms</label>
             <input
-              value={minMs}
-              onChange={e => setMinMs(e.target.value.replace(/\D/g, ''))}
+              value={minMsRaw}
+              onChange={e => setMinMsRaw(e.target.value.replace(/\D/g, ''))}
               className="rounded border border-[var(--border)] bg-[var(--card)] px-2 py-1 text-xs w-20 focus:outline-none"
               placeholder="0"
             />
@@ -2108,15 +2096,17 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
           >
             Errors only
           </button>
-          <span className="ml-auto text-xs text-[var(--dim)]">{samples.length} rows</span>
+          <span className="ml-auto text-xs text-[var(--dim)]">
+            {samples.length} rows{loading && samples.length > 0 ? <span className="ml-2 italic">refreshing…</span> : null}
+          </span>
         </div>
       </Card>
 
-      {loading && <LoadingSkeleton />}
+      {loading && samples.length === 0 && <LoadingSkeleton />}
       {!loading && error && <ErrorBox message={error} />}
-      {!loading && !error && (
-        <div className="space-y-1">
-          {samples.length === 0 && (
+      {(samples.length > 0 || !loading) && !error && (
+        <div className={cn('space-y-1', loading && 'opacity-60 transition-opacity')}>
+          {samples.length === 0 && !loading && (
             <div className="text-sm text-[var(--dim)] text-center py-10">No samples found</div>
           )}
           {samples.map((s, i) => {
@@ -2157,8 +2147,9 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
                       onSelect={(t) => {
                         const dotted = String(t)
                         const bare = dotted.includes('.') ? dotted.slice(dotted.indexOf('.') + 1) : dotted
+                        // setTableFilter triggers the debounced tableFilterQuery
+                        // ~250ms later, which drives the API call.
                         setTableFilter(bare)
-                        setTableFilterQuery(bare)
                       }}
                     />
                   </span>
