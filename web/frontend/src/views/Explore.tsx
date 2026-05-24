@@ -541,10 +541,12 @@ function QueryDetailPanel({ pattern, timeline, tlLoading, instance, onClose, onD
 
           {panelTab === 'query' && (
             <div className="p-4 space-y-3">
-              {/* Full SQL */}
+              {/* Full SQL — no truncation, scrolls inside the panel */}
               <div className="rounded-lg border border-[var(--border)] overflow-hidden">
                 <div className="flex items-center justify-between px-3 py-2 bg-[var(--surface)] border-b border-[var(--border)]">
-                  <span className="text-[10px] font-semibold uppercase tracking-widest text-[var(--dim)]">SQL</span>
+                  <span className="text-[10px] font-semibold uppercase tracking-widest text-[var(--dim)]">
+                    SQL <span className="text-[var(--dim)] font-normal normal-case ml-1">({(pattern.sample_query ?? '').length.toLocaleString()} chars)</span>
+                  </span>
                   <div className="flex items-center gap-2">
                     <button
                       onClick={handleCopySql}
@@ -555,12 +557,13 @@ function QueryDetailPanel({ pattern, timeline, tlLoading, instance, onClose, onD
                     <button
                       onClick={() => onShowQuery(pattern.sample_query)}
                       className="flex items-center gap-1 text-[10px] text-[var(--accent)] hover:underline"
+                      title="Open full-screen modal"
                     >
                       <Maximize2 size={10} /> Expand
                     </button>
                   </div>
                 </div>
-                <div className="p-3 bg-[var(--bg)] max-h-[400px] overflow-auto">
+                <div className="p-3 bg-[var(--bg)]">
                   <pre className="font-mono text-[11px] leading-[1.7] whitespace-pre-wrap break-all text-[var(--text)]">
                     {pattern.sample_query}
                   </pre>
@@ -625,11 +628,27 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
   const [tlLoading, setTlLoading] = useState(false)
   const [sortBy, setSortBy] = useState<string>('total_ms')
   const [overview, setOverview] = useState<PatternOverviewResponse | null>(null)
+  // Filters — sent to backend as ?database=&table=&kind=
+  const [databaseRaw, setDatabaseRaw] = useState('')
+  const [databaseFilter, setDatabaseFilter] = useState('')
+  const [tableRaw, setTableRaw] = useState('')
+  const [tableFilter, setTableFilter] = useState('')
+  const [kindFilter, setKindFilter] = useState('')
   // Failure detail panel
   const [failHash, setFailHash] = useState<string | null>(null)
   const [failData, setFailData] = useState<{ byCode: Record<string, any>[]; byTs: Record<string, any>[] } | null>(null)
   const [failLoading, setFailLoading] = useState(false)
   const [failTimeline, setFailTimeline] = useState<Record<string, any>[]>([])
+
+  // Debounce text inputs — fire the API 300ms after typing stops.
+  useEffect(() => {
+    const id = setTimeout(() => setDatabaseFilter(databaseRaw.trim()), 300)
+    return () => clearTimeout(id)
+  }, [databaseRaw])
+  useEffect(() => {
+    const id = setTimeout(() => setTableFilter(tableRaw.trim()), 300)
+    return () => clearTimeout(id)
+  }, [tableRaw])
 
   useEffect(() => {
     let c = false
@@ -637,7 +656,11 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
     setError(null)
     setSelectedHash(null)
     Promise.all([
-      api.history.queryPatternsV2(instance, from, to, 50, sortBy),
+      api.history.queryPatternsV2(instance, from, to, 50, sortBy, {
+        database: databaseFilter || undefined,
+        table: tableFilter || undefined,
+        kind: kindFilter || undefined,
+      }),
       api.history.queryPatternOverview(instance, from, to, 8).catch(() => null),
     ])
       .then(([d, ov]) => {
@@ -649,7 +672,7 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
       .catch(e => { if (!c) setError(e.message) })
       .finally(() => { if (!c) { setLoading(false); onFetched?.() } })
     return () => { c = true }
-  }, [instance, from, to, refreshKey, sortBy, onFetched])
+  }, [instance, from, to, refreshKey, sortBy, databaseFilter, tableFilter, kindFilter, onFetched])
 
   useEffect(() => {
     if (!selectedHash) return
@@ -950,14 +973,52 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
 
       {/* ── Queries section ── */}
       <div className="bg-[var(--card)] border border-[var(--border)] rounded-lg overflow-hidden">
-        <div className="flex items-center justify-between px-4 py-2.5 border-b border-[var(--border)]">
+        <div className="flex items-center justify-between px-4 py-2.5 border-b border-[var(--border)] gap-3 flex-wrap">
           <div className="flex items-center gap-3">
             <span className="text-[11px] font-semibold uppercase tracking-widest text-[var(--dim)]">% Queries</span>
             <span className="text-[11px] text-[var(--dim)]">
               Showing 1–{Math.min(patterns.length, 50)} of {patterns.length}
             </span>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <input
+              value={databaseRaw}
+              onChange={e => setDatabaseRaw(e.target.value)}
+              placeholder="Database"
+              className="rounded border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-[11px] text-[var(--text)] w-28 focus:outline-none focus:border-[var(--accent)]"
+              title="Filter to patterns that touch this database. Debounced 300ms."
+            />
+            <input
+              value={tableRaw}
+              onChange={e => setTableRaw(e.target.value)}
+              placeholder="Table (db.table or bare)"
+              className="rounded border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-[11px] text-[var(--text)] w-44 focus:outline-none focus:border-[var(--accent)]"
+              title="Filter to patterns that touch this table. Accepts db.table or bare name."
+            />
+            <select
+              value={kindFilter}
+              onChange={e => setKindFilter(e.target.value)}
+              className="rounded border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-[11px] text-[var(--text)] focus:outline-none focus:border-[var(--accent)]"
+              title="Filter by query kind"
+            >
+              <option value="">All kinds</option>
+              <option value="Select">Select</option>
+              <option value="Insert">Insert</option>
+              <option value="Alter">Alter</option>
+              <option value="Create">Create</option>
+              <option value="Drop">Drop</option>
+              <option value="System">System</option>
+            </select>
+            {(databaseFilter || tableFilter || kindFilter) && (
+              <button
+                onClick={() => { setDatabaseRaw(''); setTableRaw(''); setKindFilter('') }}
+                className="text-[11px] text-[var(--dim)] hover:text-[var(--fg)] px-2 py-1 rounded border border-[var(--border)] transition-colors"
+                title="Clear filters"
+              >
+                Reset
+              </button>
+            )}
+            <span className="w-px h-5 bg-[var(--border)]" />
             <label className="text-[11px] text-[var(--dim)]">Sort</label>
             <select
               value={sortBy}
@@ -2148,15 +2209,15 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
                         </pre>
                       </div>
                     )}
-                    {/* Query text */}
+                    {/* Query text — full, no height cap (use the expand button for the modal if needed) */}
                     <div className="relative">
-                      <pre className="text-xs font-mono text-[var(--fg)] whitespace-pre-wrap break-all leading-relaxed max-h-48 overflow-y-auto bg-[var(--card)] border border-[var(--border)] rounded p-2">
+                      <pre className="text-xs font-mono text-[var(--fg)] whitespace-pre-wrap break-all leading-relaxed bg-[var(--card)] border border-[var(--border)] rounded p-2">
                         {s.query_text}
                       </pre>
                       <button
                         onClick={() => onShowQuery(s.query_text)}
                         className="absolute top-1.5 right-1.5 p-1 rounded text-[var(--dim)] hover:text-[var(--accent)] bg-[var(--card)]"
-                        title="Full query"
+                        title="Open in full-screen modal"
                       >
                         <Maximize2 size={11} />
                       </button>

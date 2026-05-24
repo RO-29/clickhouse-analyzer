@@ -562,9 +562,9 @@ func (s *Server) handleQueryPatternTimeline(w http.ResponseWriter, r *http.Reque
 		countIf(is_exception = 1) as failures,
 		avg(read_bytes) as avg_read_bytes
 	FROM ch_analyzer.query_samples
-	WHERE normalized_query_hash = %s
+	WHERE %s
 	  AND event_time >= '%s' AND event_time <= '%s'
-	GROUP BY ts ORDER BY ts`, bucket, sqlSafeUInt(hash), fromTime, toTime)
+	GROUP BY ts ORDER BY ts`, bucket, hashEqExpr("normalized_query_hash", hash), fromTime, toTime)
 
 	rows, err := client.Query(ctx, samplesSQL)
 	if err != nil || len(rows) == 0 {
@@ -580,10 +580,10 @@ func (s *Server) handleQueryPatternTimeline(w http.ResponseWriter, r *http.Reque
 			countIf(type = 'ExceptionWhileProcessing') as failures,
 			avg(read_bytes) as avg_read_bytes
 		FROM system.query_log
-		WHERE normalized_query_hash = %s
+		WHERE %s
 		  AND event_time >= '%s' AND event_time <= '%s'
 		  AND type IN ('QueryFinish', 'ExceptionWhileProcessing')
-		GROUP BY ts ORDER BY ts`, bucket, sqlSafeUInt(hash), fromTime, toTime))
+		GROUP BY ts ORDER BY ts`, bucket, hashEqExpr("normalized_query_hash", hash), fromTime, toTime))
 		if err != nil {
 			slog.Error("query pattern timeline", "err", err, "instance", instance)
 			writeErr(w, http.StatusInternalServerError, "failed to query pattern timeline")
@@ -607,10 +607,10 @@ func (s *Server) handleQueryPatternTimeline(w http.ResponseWriter, r *http.Reque
 			ProfileEvents['S3ReadRequestsCount'] > 0
 		) as avg_s3_latency_ms
 	FROM system.query_log
-	WHERE normalized_query_hash = %s
+	WHERE %s
 	  AND event_time >= '%s' AND event_time <= '%s'
 	  AND type IN ('QueryFinish', 'ExceptionWhileProcessing')
-	GROUP BY ts ORDER BY ts`, bucket, sqlSafeUInt(hash), fromTime, toTime)
+	GROUP BY ts ORDER BY ts`, bucket, hashEqExpr("normalized_query_hash", hash), fromTime, toTime)
 
 	profileRows, profileErr := client.Query(ctx, profileSQL)
 	if profileErr == nil && len(profileRows) > 0 {
@@ -659,8 +659,8 @@ func (s *Server) handleHistoryFailures(w http.ResponseWriter, r *http.Request) {
 
 	hashFilter := ""
 	if hash != "" {
-		// normalized_query_hash is UInt64 — use numeric literal, not a quoted string.
-		hashFilter = fmt.Sprintf(" AND normalized_query_hash = %s", sqlSafeUInt(hash))
+		// Accept decimal or hex hash; built-in expression handles both.
+		hashFilter = " AND " + hashEqExpr("normalized_query_hash", hash)
 	}
 
 	// Time-series bucketed failures (for chart)
@@ -1020,7 +1020,7 @@ func (s *Server) queryFromSamples(ctx context.Context, client *chclient.Client,
 	filters = append(filters,
 		fmt.Sprintf("event_time >= '%s' AND event_time <= '%s'", fromTime, toTime))
 	if hash != "" {
-		filters = append(filters, fmt.Sprintf("normalized_query_hash = %s", sqlSafeUInt(hash)))
+		filters = append(filters, hashEqExpr("normalized_query_hash", hash))
 	}
 	if user != "" {
 		filters = append(filters, fmt.Sprintf("user = '%s'", sqlSafeStr(user)))
@@ -1032,7 +1032,15 @@ func (s *Server) queryFromSamples(ctx context.Context, client *chclient.Client,
 		filters = append(filters, fmt.Sprintf("query_duration_ms >= %s", sqlSafeUInt(minMs)))
 	}
 	if table != "" {
-		filters = append(filters, fmt.Sprintf("has(tables, '%s')", sqlSafeStr(table)))
+		// Accept "db.table" or bare "table" — match either form.
+		bare := table
+		if i := strings.IndexByte(bare, '.'); i >= 0 {
+			bare = bare[i+1:]
+		}
+		filters = append(filters, fmt.Sprintf(
+			"(has(tables, '%s') OR has(tables, '%s'))",
+			sqlSafeStr(table), sqlSafeStr(bare),
+		))
 	}
 	if textSearch != "" {
 		// ILIKE + % wildcards for simple case-insensitive substring.
@@ -1047,7 +1055,7 @@ func (s *Server) queryFromSamples(ctx context.Context, client *chclient.Client,
 		user,
 		query_kind,
 		normalized_query_hash,
-		substring(query_text, 1, 500) AS query_text,
+		query_text,
 		query_duration_ms,
 		read_rows,
 		read_bytes,
@@ -1084,7 +1092,7 @@ func (s *Server) queryFromQueryLog(ctx context.Context, client *chclient.Client,
 		filters = append(filters, "type IN ('QueryFinish', 'ExceptionWhileProcessing')")
 	}
 	if hash != "" {
-		filters = append(filters, fmt.Sprintf("normalized_query_hash = %s", sqlSafeUInt(hash)))
+		filters = append(filters, hashEqExpr("normalized_query_hash", hash))
 	}
 	if user != "" {
 		filters = append(filters, fmt.Sprintf("user = '%s'", sqlSafeStr(user)))
@@ -1096,7 +1104,14 @@ func (s *Server) queryFromQueryLog(ctx context.Context, client *chclient.Client,
 		filters = append(filters, fmt.Sprintf("query_duration_ms >= %s", sqlSafeUInt(minMs)))
 	}
 	if table != "" {
-		filters = append(filters, fmt.Sprintf("has(tables, '%s')", sqlSafeStr(table)))
+		bare := table
+		if i := strings.IndexByte(bare, '.'); i >= 0 {
+			bare = bare[i+1:]
+		}
+		filters = append(filters, fmt.Sprintf(
+			"(has(tables, '%s') OR has(tables, '%s'))",
+			sqlSafeStr(table), sqlSafeStr(bare),
+		))
 	}
 	if textSearch != "" {
 		filters = append(filters, fmt.Sprintf("query ILIKE '%%%s%%'", sqlSafeStr(textSearch)))
@@ -1107,7 +1122,7 @@ func (s *Server) queryFromQueryLog(ctx context.Context, client *chclient.Client,
 		user,
 		query_kind,
 		normalized_query_hash,
-		substring(query, 1, 500) AS query_text,
+		query AS query_text,
 		query_duration_ms,
 		read_rows,
 		read_bytes,
@@ -1576,6 +1591,9 @@ func (s *Server) handleQueryPatternsV2(w http.ResponseWriter, r *http.Request) {
 	fromTime, toTime := parseFromTo(r)
 	limit := parseIntParam(r, "limit", 50)
 	sortBy := r.URL.Query().Get("sort_by") // total_ms | cnt | avg_ms | max_ms | p95_ms | failures
+	database := r.URL.Query().Get("database")
+	table := r.URL.Query().Get("table")
+	kind := r.URL.Query().Get("kind")
 
 	validSorts := map[string]bool{
 		"total_ms": true, "cnt": true, "avg_ms": true,
@@ -1583,6 +1601,30 @@ func (s *Server) handleQueryPatternsV2(w http.ResponseWriter, r *http.Request) {
 	}
 	if !validSorts[sortBy] {
 		sortBy = "total_ms"
+	}
+
+	// Optional filters — built once and reused for both queries.
+	var extraFilters []string
+	if database != "" {
+		extraFilters = append(extraFilters, fmt.Sprintf("has(databases, '%s')", sqlSafeStr(database)))
+	}
+	if table != "" {
+		// Accept "db.table" or bare "table" — match either form.
+		bare := table
+		if i := strings.IndexByte(bare, '.'); i >= 0 {
+			bare = bare[i+1:]
+		}
+		extraFilters = append(extraFilters, fmt.Sprintf(
+			"(has(tables, '%s') OR has(tables, '%s'))",
+			sqlSafeStr(table), sqlSafeStr(bare),
+		))
+	}
+	if kind != "" {
+		extraFilters = append(extraFilters, fmt.Sprintf("query_kind = '%s'", sqlSafeStr(kind)))
+	}
+	extraWhere := ""
+	if len(extraFilters) > 0 {
+		extraWhere = " AND " + strings.Join(extraFilters, " AND ")
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
@@ -1606,12 +1648,12 @@ func (s *Server) handleQueryPatternsV2(w http.ResponseWriter, r *http.Request) {
 		countIf(is_exception = 1) AS failures,
 		any(user) AS user,
 		any(client_name) AS client,
-		any(substring(query_text, 1, 300)) AS sample_query
+		any(query_text) AS sample_query
 	FROM ch_analyzer.query_samples
-	WHERE event_time >= '%s' AND event_time <= '%s'
+	WHERE event_time >= '%s' AND event_time <= '%s'%s
 	GROUP BY normalized_query_hash
 	ORDER BY %s DESC
-	LIMIT %d`, fromTime, toTime, sortBy, limit)
+	LIMIT %d`, fromTime, toTime, extraWhere, sortBy, limit)
 
 	rows, err := client.Query(ctx, sql)
 	if err != nil || len(rows) == 0 {
@@ -1634,14 +1676,14 @@ func (s *Server) handleQueryPatternsV2(w http.ResponseWriter, r *http.Request) {
 			countIf(type = 'ExceptionWhileProcessing') AS failures,
 			any(user) AS user,
 			any(client_name) AS client,
-			any(substring(query, 1, 300)) AS sample_query
+			any(query) AS sample_query
 		FROM system.query_log
 		WHERE event_time >= '%s' AND event_time <= '%s'
 		  AND is_initial_query = 1
-		  AND type IN ('QueryFinish', 'ExceptionWhileProcessing')
+		  AND type IN ('QueryFinish', 'ExceptionWhileProcessing')%s
 		GROUP BY normalized_query_hash
 		ORDER BY %s DESC
-		LIMIT %d`, fromTime, toTime, sortBy, limit)
+		LIMIT %d`, fromTime, toTime, extraWhere, sortBy, limit)
 		rows, err = client.Query(ctx, sql)
 		if err != nil {
 			slog.Warn("query patterns v2", "err", err, "instance", instance)
@@ -1676,6 +1718,34 @@ func sqlSafeUInt(s string) string {
 		return "0"
 	}
 	return s
+}
+
+// hashEqExpr returns a SQL expression that matches a normalized_query_hash
+// against an input that may be either a decimal UInt64 (e.g.
+// "12345678901234567890") or a hex string from hex(normalized_query_hash)
+// (e.g. "AB12CD3456789012"). This is defensive: different endpoints in the
+// codebase emit hashes in different formats, so accept both.
+func hashEqExpr(column, raw string) string {
+	if raw == "" {
+		return "1=0"
+	}
+	allDigits := true
+	for _, c := range raw {
+		if c < '0' || c > '9' {
+			allDigits = false
+			break
+		}
+	}
+	if allDigits {
+		return fmt.Sprintf("%s = %s", column, raw)
+	}
+	// Treat as hex; only allow [0-9A-Fa-f] to avoid injection.
+	for _, c := range raw {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return "1=0"
+		}
+	}
+	return fmt.Sprintf("hex(%s) = '%s'", column, strings.ToUpper(raw))
 }
 
 // stringifyHashes converts the normalized_query_hash field in every row from

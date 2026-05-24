@@ -178,8 +178,13 @@ export const api = {
       get<HistoryAsyncMetric[]>(`/api/instances/${inst}/history/disk-io?from=${from}&to=${to}`),
     queryPatterns: (inst: string, from: number, to: number, limit = 50) =>
       get<QueryPattern[]>(`/api/instances/${inst}/query-patterns?from=${from}&to=${to}&limit=${limit}`),
-    queryPatternsV2: (inst: string, from: number, to: number, limit = 50, sortBy = 'total_ms') =>
-      get<QueryPatternV2[]>(`/api/instances/${inst}/query-patterns-v2?from=${from}&to=${to}&limit=${limit}&sort_by=${sortBy}`),
+    queryPatternsV2: (inst: string, from: number, to: number, limit = 50, sortBy = 'total_ms', opts?: { database?: string; table?: string; kind?: string }) => {
+      const p = new URLSearchParams({ from: String(from), to: String(to), limit: String(limit), sort_by: sortBy })
+      if (opts?.database) p.set('database', opts.database)
+      if (opts?.table) p.set('table', opts.table)
+      if (opts?.kind) p.set('kind', opts.kind)
+      return get<QueryPatternV2[]>(`/api/instances/${inst}/query-patterns-v2?${p}`)
+    },
     queryPatternTimeline: (inst: string, hash: string, from: number, to: number) =>
       get<Record<string, any>[]>(`/api/instances/${inst}/query-pattern-timeline?hash=${hash}&from=${from}&to=${to}`),
     querySamples: (inst: string, from: number, to: number, opts?: { hash?: string; user?: string; kind?: string; minMs?: string; limit?: number; offset?: number; errorsOnly?: boolean; table?: string; q?: string }) => {

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { Sun, Moon, Menu, Lock, LockOpen, X, Loader2, ExternalLink, Copy, Check, ChevronRight, Settings, HelpCircle } from 'lucide-react'
+import { Sun, Moon, Menu, Lock, LockOpen, X, Loader2, ExternalLink, Copy, Check, ChevronRight, Settings, HelpCircle, Clock } from 'lucide-react'
 import { useStore, type View } from '../hooks/useStore'
 import { cn } from '../lib/utils'
 import { api } from '../lib/api'
@@ -38,6 +38,20 @@ const QUICK_RANGES = [
   { label: 'Last 2h', from: () => new Date(Date.now()-2*3600000), to: () => new Date() },
   { label: 'Last 12h', from: () => new Date(Date.now()-12*3600000), to: () => new Date() },
 ]
+
+// fmtRangeLabel returns a compact summary of the active window for the
+// time-range pill — short ("Last 1h", "Today") when it matches a preset,
+// or absolute timestamps for custom ranges.
+function fmtRangeLabel(preset: string, fromTs: number, toTs: number): string {
+  if (preset && preset !== 'custom') return `Last ${preset}`
+  const f = new Date(fromTs * 1000)
+  const t = new Date(toTs * 1000)
+  const sameDay = f.toDateString() === t.toDateString()
+  const fmtT = (d: Date) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  const fmtD = (d: Date) => d.toLocaleDateString([], { month: 'short', day: 'numeric' })
+  if (sameDay) return `${fmtD(f)} · ${fmtT(f)} – ${fmtT(t)}`
+  return `${fmtD(f)} ${fmtT(f)} – ${fmtD(t)} ${fmtT(t)}`
+}
 
 /* ── Re-auth modal ─────────────────────────────────────────────────────────── */
 function ReAuthModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
@@ -334,7 +348,7 @@ interface TopBarProps {
 
 export function TopBar({ onMobileMenuClick }: TopBarProps) {
   const {
-    view, selectedInstance, setView, rangePreset, setRangePreset, setCustomRange,
+    view, selectedInstance, setView, from, to, rangePreset, setRangePreset, setCustomRange,
     theme, toggleTheme, authExpired, setAuthExpired,
     denseMode, setDenseMode,
     refreshInterval,
@@ -342,6 +356,8 @@ export function TopBar({ onMobileMenuClick }: TopBarProps) {
 
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
+  const [timePickerOpen, setTimePickerOpen] = useState(false)
+  const timePickerRef = useRef<HTMLDivElement>(null)
   const [showReAuth, setShowReAuth] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -380,6 +396,26 @@ export function TopBar({ onMobileMenuClick }: TopBarProps) {
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [settingsOpen])
+
+  // Close time-range popover when clicking outside.
+  useEffect(() => {
+    if (!timePickerOpen) return
+    const handler = (e: MouseEvent) => {
+      if (timePickerRef.current && !timePickerRef.current.contains(e.target as Node)) {
+        setTimePickerOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [timePickerOpen])
+
+  // When the popover opens, seed the custom inputs from the active range so
+  // the user sees the current window — not stale text from a previous edit.
+  useEffect(() => {
+    if (!timePickerOpen) return
+    setCustomFrom(toLocalDatetime(new Date(from * 1000)))
+    setCustomTo(toLocalDatetime(new Date(to * 1000)))
+  }, [timePickerOpen, from, to])
 
   // Fetch notification status once on mount
   useEffect(() => {
@@ -542,89 +578,118 @@ export function TopBar({ onMobileMenuClick }: TopBarProps) {
             </button>
 
             {showTimeRange && (
-              /* Mobile: compact preset pills only */
-              <div className="flex md:hidden items-center gap-0.5 bg-[var(--surface)] rounded-md border border-[var(--border)] p-0.5">
-                {PRESETS.map(p => (
-                  <button
-                    key={p}
-                    onClick={() => setRangePreset(p)}
-                    className={cn(
-                      'px-1.5 py-1 rounded text-[10px] font-medium transition-colors',
-                      rangePreset === p
-                        ? 'bg-[var(--accent)] text-white'
-                        : 'text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--hover)]',
-                    )}
-                  >
-                    {p}
-                  </button>
-                ))}
-              </div>
-            )}
+              <div ref={timePickerRef} className="relative">
+                {/* Active range pill — click to open the popover. */}
+                <button
+                  onClick={() => setTimePickerOpen(v => !v)}
+                  className={cn(
+                    'flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-[11px] font-medium transition-colors',
+                    timePickerOpen
+                      ? 'border-[var(--accent)] bg-[var(--accent-subtle)] text-[var(--accent)]'
+                      : 'border-[var(--border)] bg-[var(--surface)] text-[var(--text)] hover:border-[var(--accent)]/40',
+                  )}
+                  title="Change time range"
+                >
+                  <Clock size={11} className="shrink-0" />
+                  <span className="hidden sm:inline">{fmtRangeLabel(rangePreset, from, to)}</span>
+                  <span className="sm:hidden">{rangePreset === 'custom' ? 'Custom' : `Last ${rangePreset}`}</span>
+                  <ChevronRight size={11} className={cn('shrink-0 transition-transform', timePickerOpen ? 'rotate-90' : 'rotate-0')} />
+                </button>
 
-            {showTimeRange && (
-              <div className="hidden md:flex items-center gap-2">
-                {/* Presets */}
-                <div className="flex items-center bg-[var(--surface)] rounded-md border border-[var(--border)] p-0.5 gap-0.5">
-                  {PRESETS.map(p => (
-                    <button
-                      key={p}
-                      onClick={() => setRangePreset(p)}
-                      className={cn(
-                        'px-2 py-1 rounded text-[11px] font-medium transition-colors',
-                        rangePreset === p
-                          ? 'bg-[var(--accent)] text-white'
-                          : 'text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--hover)]',
-                      )}
-                    >
-                      {p}
-                    </button>
-                  ))}
-                </div>
+                {timePickerOpen && (
+                  <div className="absolute right-0 top-full mt-1.5 z-50 w-[340px] bg-[var(--card)] border border-[var(--border)] rounded-lg shadow-2xl p-3 space-y-3">
+                    {/* Presets */}
+                    <div>
+                      <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--dim)] mb-1.5">Quick presets</div>
+                      <div className="grid grid-cols-5 gap-1">
+                        {PRESETS.map(p => (
+                          <button
+                            key={p}
+                            onClick={() => { setRangePreset(p); setTimePickerOpen(false) }}
+                            className={cn(
+                              'px-2 py-1.5 rounded text-[11px] font-medium border transition-colors',
+                              rangePreset === p
+                                ? 'bg-[var(--accent)] text-white border-[var(--accent)]'
+                                : 'border-[var(--border)] text-[var(--text)] hover:border-[var(--accent)]/40',
+                            )}
+                          >
+                            {p}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
 
-                {/* Quick ranges */}
-                <div className="flex items-center gap-0.5">
-                  {QUICK_RANGES.map(q => (
-                    <button
-                      key={q.label}
-                      onClick={() => {
-                        const f = toLocalDatetime(q.from())
-                        const t = toLocalDatetime(q.to())
-                        setCustomFrom(f)
-                        setCustomTo(t)
-                        setCustomRange(
-                          Math.floor(q.from().getTime() / 1000),
-                          Math.floor(q.to().getTime() / 1000),
-                        )
-                      }}
-                      className="px-2 py-1 rounded text-[11px] text-[var(--dim)] hover:text-[var(--text)] hover:bg-[var(--surface)] transition-colors"
-                    >
-                      {q.label}
-                    </button>
-                  ))}
-                </div>
+                    {/* Quick ranges */}
+                    <div>
+                      <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--dim)] mb-1.5">Common</div>
+                      <div className="grid grid-cols-2 gap-1">
+                        {QUICK_RANGES.map(q => (
+                          <button
+                            key={q.label}
+                            onClick={() => {
+                              setCustomRange(
+                                Math.floor(q.from().getTime() / 1000),
+                                Math.floor(q.to().getTime() / 1000),
+                              )
+                              setTimePickerOpen(false)
+                            }}
+                            className="px-2 py-1.5 rounded text-[11px] text-[var(--text)] border border-[var(--border)] hover:border-[var(--accent)]/40 hover:bg-[var(--hover)] transition-colors text-left"
+                          >
+                            {q.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
 
-                {/* Custom range */}
-                <div className="flex items-center gap-1.5">
-                  <input
-                    type="datetime-local"
-                    value={customFrom}
-                    onChange={e => setCustomFrom(e.target.value)}
-                    className="bg-[var(--surface)] border border-[var(--border)] rounded-md px-2 py-1 text-[11px] text-[var(--text)] w-[175px] focus:outline-none focus:border-[var(--accent)]"
-                  />
-                  <span className="text-[var(--dim)] text-[11px]">to</span>
-                  <input
-                    type="datetime-local"
-                    value={customTo}
-                    onChange={e => setCustomTo(e.target.value)}
-                    className="bg-[var(--surface)] border border-[var(--border)] rounded-md px-2 py-1 text-[11px] text-[var(--text)] w-[175px] focus:outline-none focus:border-[var(--accent)]"
-                  />
-                  <button
-                    onClick={handleGo}
-                    className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] transition-colors"
-                  >
-                    Apply
-                  </button>
-                </div>
+                    {/* Custom — apply on Enter or via the Apply button */}
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--dim)]">Custom range</span>
+                        <span className="text-[10px] text-[var(--dim)]">Local time</span>
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="flex items-center gap-2">
+                          <span className="w-8 text-[10px] uppercase text-[var(--dim)]">From</span>
+                          <input
+                            type="datetime-local"
+                            value={customFrom}
+                            onChange={e => setCustomFrom(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') { handleGo(); setTimePickerOpen(false) } }}
+                            className="flex-1 bg-[var(--surface)] border border-[var(--border)] rounded-md px-2 py-1 text-[11px] text-[var(--text)] focus:outline-none focus:border-[var(--accent)]"
+                          />
+                        </label>
+                        <label className="flex items-center gap-2">
+                          <span className="w-8 text-[10px] uppercase text-[var(--dim)]">To</span>
+                          <input
+                            type="datetime-local"
+                            value={customTo}
+                            onChange={e => setCustomTo(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') { handleGo(); setTimePickerOpen(false) } }}
+                            className="flex-1 bg-[var(--surface)] border border-[var(--border)] rounded-md px-2 py-1 text-[11px] text-[var(--text)] focus:outline-none focus:border-[var(--accent)]"
+                          />
+                        </label>
+                      </div>
+                      <div className="flex items-center justify-between mt-2">
+                        <button
+                          onClick={() => {
+                            setCustomFrom(toLocalDatetime(new Date(from * 1000)))
+                            setCustomTo(toLocalDatetime(new Date(to * 1000)))
+                          }}
+                          className="text-[10px] text-[var(--dim)] hover:text-[var(--text)] underline-offset-2 hover:underline"
+                          title="Reset inputs to the active range"
+                        >
+                          Reset to active
+                        </button>
+                        <button
+                          onClick={() => { handleGo(); setTimePickerOpen(false) }}
+                          className="px-3 py-1 rounded-md text-[11px] font-medium bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] transition-colors"
+                        >
+                          Apply
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
