@@ -1032,14 +1032,12 @@ func (s *Server) queryFromSamples(ctx context.Context, client *chclient.Client,
 		filters = append(filters, fmt.Sprintf("query_duration_ms >= %s", sqlSafeUInt(minMs)))
 	}
 	if table != "" {
-		// Accept "db.table" or bare "table" — match either form.
-		bare := table
-		if i := strings.IndexByte(bare, '.'); i >= 0 {
-			bare = bare[i+1:]
-		}
+		// Substring match across any table the query touched — matches
+		// "users" against "default.users", "default" against "default.users",
+		// and "ord" against "orders_v2".
 		filters = append(filters, fmt.Sprintf(
-			"(has(tables, '%s') OR has(tables, '%s'))",
-			sqlSafeStr(table), sqlSafeStr(bare),
+			"arrayExists(t -> positionCaseInsensitive(t, '%s') > 0, tables)",
+			sqlSafeStr(table),
 		))
 	}
 	if textSearch != "" {
@@ -1104,13 +1102,10 @@ func (s *Server) queryFromQueryLog(ctx context.Context, client *chclient.Client,
 		filters = append(filters, fmt.Sprintf("query_duration_ms >= %s", sqlSafeUInt(minMs)))
 	}
 	if table != "" {
-		bare := table
-		if i := strings.IndexByte(bare, '.'); i >= 0 {
-			bare = bare[i+1:]
-		}
+		// Substring match across any element of the tables array.
 		filters = append(filters, fmt.Sprintf(
-			"(has(tables, '%s') OR has(tables, '%s'))",
-			sqlSafeStr(table), sqlSafeStr(bare),
+			"arrayExists(t -> positionCaseInsensitive(t, '%s') > 0, tables)",
+			sqlSafeStr(table),
 		))
 	}
 	if textSearch != "" {
@@ -1603,20 +1598,22 @@ func (s *Server) handleQueryPatternsV2(w http.ResponseWriter, r *http.Request) {
 		sortBy = "total_ms"
 	}
 
-	// Optional filters — built once and reused for both queries.
+	// Optional filters — built once and reused for both queries. We match
+	// each array element with a case-insensitive substring (positionCaseInsensitive)
+	// so partial input like "users" matches both "default.users" and "users",
+	// and "ord" matches "orders_v2" — that's what users expect from a filter
+	// box. has(...) requires exact equality and was too strict.
 	var extraFilters []string
 	if database != "" {
-		extraFilters = append(extraFilters, fmt.Sprintf("has(databases, '%s')", sqlSafeStr(database)))
+		extraFilters = append(extraFilters, fmt.Sprintf(
+			"arrayExists(d -> positionCaseInsensitive(d, '%s') > 0, databases)",
+			sqlSafeStr(database),
+		))
 	}
 	if table != "" {
-		// Accept "db.table" or bare "table" — match either form.
-		bare := table
-		if i := strings.IndexByte(bare, '.'); i >= 0 {
-			bare = bare[i+1:]
-		}
 		extraFilters = append(extraFilters, fmt.Sprintf(
-			"(has(tables, '%s') OR has(tables, '%s'))",
-			sqlSafeStr(table), sqlSafeStr(bare),
+			"arrayExists(t -> positionCaseInsensitive(t, '%s') > 0, tables)",
+			sqlSafeStr(table),
 		))
 	}
 	if kind != "" {

@@ -635,8 +635,8 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
   const [databaseRaw, setDatabaseRaw] = useState('')
   const [tableRaw, setTableRaw] = useState('')
   const [kindFilter, setKindFilter] = useState('')
-  const databaseFilter = useDebouncedValue(databaseRaw.trim(), 250)
-  const tableFilter = useDebouncedValue(tableRaw.trim(), 250)
+  const databaseFilter = useDebouncedValue(databaseRaw.trim(), 150)
+  const tableFilter = useDebouncedValue(tableRaw.trim(), 150)
   // Failure detail panel
   const [failHash, setFailHash] = useState<string | null>(null)
   const [failData, setFailData] = useState<{ byCode: Record<string, any>[]; byTs: Record<string, any>[] } | null>(null)
@@ -990,9 +990,9 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
             <input
               value={tableRaw}
               onChange={e => setTableRaw(e.target.value)}
-              placeholder="Table (db.table or bare)"
+              placeholder="Table (substring)"
               className="rounded border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-[11px] text-[var(--text)] w-44 focus:outline-none focus:border-[var(--accent)]"
-              title="Filter to patterns that touch this table. Accepts db.table or bare name."
+              title="Filter to patterns whose tables contain this substring (case-insensitive). 'users' matches 'default.users'; 'ord' matches 'orders_v2'."
             />
             <select
               value={kindFilter}
@@ -1582,10 +1582,10 @@ function QueryLogTab({ instance, from, to, refreshKey, onShowQuery }: TabProps) 
   const [statusFilter, setStatusFilter] = useState<'all' | 'success' | 'error'>('all')
   const [tableRaw, setTableRaw] = useState('')
   const [minMsRaw, setMinMsRaw] = useState<string>('')
-  const searchQuery = useDebouncedValue(searchRaw.trim(), 250)
-  const userFilter = useDebouncedValue(userRaw.trim(), 250)
-  const tableQuery = useDebouncedValue(tableRaw.trim(), 250)
-  const minMs = useDebouncedValue(minMsRaw.trim(), 250)
+  const searchQuery = useDebouncedValue(searchRaw.trim(), 150)
+  const userFilter = useDebouncedValue(userRaw.trim(), 150)
+  const tableQuery = useDebouncedValue(tableRaw.trim(), 150)
+  const minMs = useDebouncedValue(minMsRaw.trim(), 150)
 
   const filterKey = `${instance}|${from}|${to}|${searchQuery}|${userFilter}|${kindFilter}|${statusFilter}|${tableQuery}|${minMs}|${refreshKey ?? 0}`
 
@@ -1858,9 +1858,9 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
   const [tableFilter, setTableFilter] = useState(initialTable ?? '')
   // Debounced copies — driven via useDebouncedValue so typing doesn't fire
   // an API call per keystroke, and the list doesn't flash an empty state.
-  const tableFilterQuery = useDebouncedValue(tableFilter.trim(), 250)
-  const userFilter = useDebouncedValue(userRaw.trim(), 250)
-  const minMs = useDebouncedValue(minMsRaw.trim(), 250)
+  const tableFilterQuery = useDebouncedValue(tableFilter.trim(), 150)
+  const userFilter = useDebouncedValue(userRaw.trim(), 150)
+  const minMs = useDebouncedValue(minMsRaw.trim(), 150)
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
 
   // Charts shown when drilling into failures for a specific hash
