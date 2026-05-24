@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/rohitjain/ch-analyzer/internal/chclient"
@@ -15,17 +17,64 @@ import (
 type MVCollector struct {
 	Thresholds config.MVThresholds
 	Logger     *slog.Logger
+
+	// queryViewsLogAvail caches per-instance availability of
+	// system.query_views_log. The table is opt-in in ClickHouse (requires
+	// query_views_log in config.xml) and probing on every Collect cycle
+	// floods the WARN log on instances that never enable it. We probe once
+	// per hour and skip the dependent queries silently in between.
+	queryViewsLogAvail sync.Map // map[instanceName]queryViewsLogState
+}
+
+type queryViewsLogState struct {
+	available bool
+	checkedAt time.Time
 }
 
 func (c *MVCollector) Name() string { return "mvs" }
+
+// queryViewsLogProbeTTL — how long to trust a "not available" verdict before
+// re-probing. An hour is long enough that an instance that never enables the
+// table is quiet, but short enough that flipping the config gets picked up
+// on the same shift.
+const queryViewsLogProbeTTL = time.Hour
+
+// queryViewsLogAvailable returns true when system.query_views_log exists on
+// the given instance. The result is cached for an hour; on a cache miss we
+// run a cheap EXISTS-style query (count() LIMIT 1) and log the outcome once.
+func (c *MVCollector) queryViewsLogAvailable(ctx context.Context, client *chclient.Client) bool {
+	name := client.Name()
+	if v, ok := c.queryViewsLogAvail.Load(name); ok {
+		st := v.(queryViewsLogState)
+		if time.Since(st.checkedAt) < queryViewsLogProbeTTL {
+			return st.available
+		}
+	}
+	// Probe: anything other than UNKNOWN_TABLE counts as "available" so we
+	// don't hide unrelated errors (auth, network, etc.) by misclassifying
+	// them as a missing log table.
+	_, err := client.Query(ctx, "SELECT 1 FROM system.query_views_log LIMIT 0")
+	avail := true
+	if err != nil && strings.Contains(err.Error(), "UNKNOWN_TABLE") {
+		avail = false
+	}
+	c.queryViewsLogAvail.Store(name, queryViewsLogState{available: avail, checkedAt: time.Now()})
+	if !avail {
+		c.logger().Info("system.query_views_log not enabled — MV failure/timing checks will be skipped on this instance",
+			slog.String("instance", name))
+	}
+	return avail
+}
 
 func (c *MVCollector) Collect(ctx context.Context, client *chclient.Client) (*CollectResult, error) {
 	start := time.Now()
 	result := &CollectResult{}
 
 	c.collectMVList(ctx, client, result)
-	c.collectMVFailures(ctx, client, result)
-	c.collectMVTiming(ctx, client, result)
+	if c.queryViewsLogAvailable(ctx, client) {
+		c.collectMVFailures(ctx, client, result)
+		c.collectMVTiming(ctx, client, result)
+	}
 	c.collectMVBloat(ctx, client, result)
 	c.detectChainedMVs(ctx, client, result)
 
