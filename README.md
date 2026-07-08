@@ -1,5 +1,11 @@
 # ch-analyzer
 
+<h2 align="center">
+  🌐 &nbsp;<a href="https://ch-analyzer.pages.dev"><b>Live&nbsp;demo&nbsp;&amp;&nbsp;docs&nbsp;→&nbsp;ch-analyzer.pages.dev</b></a>&nbsp; 🌐
+</h2>
+
+<p align="center"><b><a href="https://ch-analyzer.pages.dev">https://ch-analyzer.pages.dev</a></b></p>
+
 A self-hosted ClickHouse monitoring and alerting tool. Polls multiple CH instances every minute, stores metrics back into ClickHouse itself, sends Slack alerts, and serves a React dashboard — all in a single Go binary.
 
 ## Features
