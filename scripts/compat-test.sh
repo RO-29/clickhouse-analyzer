@@ -172,6 +172,10 @@ else:
         print(f"  ⚠️  capability drift vs golden ({snap_path}) — re-run with UPDATE_GOLDEN=1 to accept")
 PY
 
+  # Full per-feature e2e report (capabilities + collectors + web endpoints).
+  # Same script runs in CI so both surface identical per-feature pass/fail.
+  CH_PORT="$CH_PORT" WEB_PORT=18080 "$REPO_ROOT/scripts/feature-check.sh" "$V" || FAILED+=("$V (features)")
+
 done
 
 cleanup
