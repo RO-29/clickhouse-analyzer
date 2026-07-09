@@ -270,7 +270,14 @@ func (c *Client) detectCapabilities(ctx context.Context) *Capabilities {
 		}
 	} else {
 		caps.Features[FeatureClusterAllRepl] = FeatureStatus{Available: false, Reason: clusterReason}
-		caps.Features[FeatureClusterLogs] = FeatureStatus{Available: false, Reason: "no usable cluster for cluster-wide reads"}
+		// When the catalog shows multiple replicas but clusterAllReplicas is
+		// denied, per-node *_log reads only see the replica we connected to —
+		// call that out as a real completeness gap, not just "no cluster".
+		if replicas > 1 {
+			caps.Features[FeatureClusterLogs] = FeatureStatus{Available: false, Reason: fmt.Sprintf("%d replicas but clusterAllReplicas is unavailable — *_log reads see only the connected replica (incomplete). Grant READ ON REMOTE to fix.", replicas)}
+		} else {
+			caps.Features[FeatureClusterLogs] = FeatureStatus{Available: false, Reason: "no usable cluster for cluster-wide reads"}
+		}
 	}
 
 	c.logger.Info("capabilities detected",
@@ -340,37 +347,47 @@ func (c *Client) probeClusterReplicas(ctx context.Context) (replicas int, ok boo
 	// differently, so don't hardcode. Fall back to 'default' if the catalog is
 	// empty or unreadable.
 	cluster = "default"
+	catalogReplicas := 0 // replica count from system.clusters (known even if the
+	// clusterAllReplicas call is later denied — lets us report "4 replicas but
+	// cluster-wide reads denied" instead of a misleading "1").
 	if rows, err := c.Query(ctx, "SELECT cluster, count() AS n FROM system.clusters GROUP BY cluster ORDER BY n DESC, cluster LIMIT 20"); err == nil {
-		best := ""
+		best, bestN := "", 0
 		for _, r := range rows {
 			name := fmt.Sprint(r["cluster"])
-			if name == "" {
+			if name == "" || strings.Contains(name, ".") { // skip composite names like all_groups.default
 				continue
 			}
+			n := toInt(r["n"])
 			if name == "default" { // prefer the conventional Cloud cluster
-				best = "default"
+				best, bestN = "default", n
 				break
 			}
 			if best == "" {
-				best = name
+				best, bestN = name, n
 			}
 		}
 		if best != "" {
-			cluster = best
+			cluster, catalogReplicas = best, bestN
 		}
 	}
 
 	v, err := c.QuerySingleValue(ctx, fmt.Sprintf("SELECT count() FROM clusterAllReplicas('%s', system.one)", cluster))
 	if err != nil {
+		// Denied/unavailable: fall back to the catalog replica count so callers
+		// still know the topology (and can warn that per-node logs are partial).
+		fallback := catalogReplicas
+		if fallback < 1 {
+			fallback = 1
+		}
 		msg := err.Error()
 		low := strings.ToLower(msg)
 		switch {
 		case strings.Contains(low, "access_denied") || strings.Contains(low, "not enough privileges") || strings.Contains(msg, "Code: 497"):
-			return 1, false, cluster, fmt.Sprintf("clusterAllReplicas('%s', …) denied for this user — needs the REMOTE privilege (common on locked-down Cloud monitoring users)", cluster)
+			return fallback, false, cluster, fmt.Sprintf("clusterAllReplicas('%s', …) denied for this user — grant READ ON REMOTE to enable (common on locked-down Cloud monitoring users)", cluster)
 		case strings.Contains(low, "unknown cluster") || strings.Contains(low, "requested cluster"):
-			return 1, false, cluster, fmt.Sprintf("no cluster named '%s' — this deployment has no cluster for cluster-wide reads", cluster)
+			return fallback, false, cluster, fmt.Sprintf("no cluster named '%s' — this deployment has no cluster for cluster-wide reads", cluster)
 		default:
-			return 1, false, cluster, fmt.Sprintf("clusterAllReplicas('%s', …) not available: %s", cluster, truncErr(msg))
+			return fallback, false, cluster, fmt.Sprintf("clusterAllReplicas('%s', …) not available: %s", cluster, truncErr(msg))
 		}
 	}
 	n, perr := strconv.Atoi(strings.TrimSpace(v))
@@ -378,6 +395,28 @@ func (c *Client) probeClusterReplicas(ctx context.Context) (replicas int, ok boo
 		return 1, true, cluster, fmt.Sprintf("cluster '%s' reachable", cluster)
 	}
 	return n, true, cluster, fmt.Sprintf("cluster '%s' — %d replica(s)", cluster, n)
+}
+
+// toInt best-effort coerces a query cell (string / float64 / json.Number / int)
+// to an int; returns 0 on anything it can't parse.
+func toInt(v interface{}) int {
+	switch t := v.(type) {
+	case int:
+		return t
+	case int64:
+		return int(t)
+	case float64:
+		return int(t)
+	case string:
+		n, _ := strconv.Atoi(strings.TrimSpace(t))
+		return n
+	case fmt.Stringer:
+		n, _ := strconv.Atoi(strings.TrimSpace(t.String()))
+		return n
+	default:
+		n, _ := strconv.Atoi(strings.TrimSpace(fmt.Sprint(v)))
+		return n
+	}
 }
 
 // truncErr shortens a ClickHouse error to its first line / 120 chars for reasons.
