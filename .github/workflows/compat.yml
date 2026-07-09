@@ -41,18 +41,32 @@ jobs:
 
       - name: Apply schema
         run: |
-          curl -sf "http://localhost:18123/" --data-binary "CREATE DATABASE IF NOT EXISTS ch_analyzer"
           python3 - <<'PY'
-          import urllib.request
+          import urllib.request, urllib.error
           sql = open("schema.sql").read()
-          for stmt in sql.split(';'):
-              s = stmt.strip()
-              if not s or s.startswith('--'):
-                  continue
+          url = "http://localhost:18123/"
+          def run(stmt):
               try:
-                  urllib.request.urlopen("http://localhost:18123/", data=s.encode())
+                  urllib.request.urlopen(url, data=stmt.encode()); return None
+              except urllib.error.HTTPError as e:
+                  return f"{e.code} {e.read().decode('utf-8','replace')[:160]}"
               except Exception as e:
-                  print(f"schema stmt warning: {str(e)[:160]}")
+                  return str(e)[:160]
+          def clean(stmt):
+              lines = stmt.splitlines()
+              while lines and (not lines[0].strip() or lines[0].strip().startswith('--')):
+                  lines.pop(0)
+              return "\n".join(lines).strip()
+          if err := run("CREATE DATABASE IF NOT EXISTS ch_analyzer"):
+              print(f"CREATE DATABASE warning: {err}")
+          applied = errors = 0
+          for raw in sql.split(';'):
+              s = clean(raw)
+              if not s: continue
+              err = run(s)
+              if err: errors += 1; print(f"schema stmt warning: {err}")
+              else: applied += 1
+          print(f"schema: {applied} applied, {errors} warnings")
           PY
 
       - name: Write compat config

@@ -68,22 +68,44 @@ for V in "${VERSIONS[@]}"; do
 
   if ! wait_ready; then FAILED+=("$V (startup)"); continue; fi
 
-  # Create the app database + apply schema (idempotent migrations included).
-  curl -sf "http://localhost:${CH_PORT}/" --data-binary "CREATE DATABASE IF NOT EXISTS ch_analyzer" >/dev/null
-  # ClickHouse HTTP runs one statement per request; split schema.sql on ';'.
+  # Apply schema (creates DB + tables + idempotent migrations). ClickHouse HTTP
+  # runs one statement per request, so split on ';'. Each statement in schema.sql
+  # is preceded by comment lines — strip those before sending, or the whole
+  # statement would look like a comment and be skipped.
   python3 - "$REPO_ROOT/schema.sql" "$CH_PORT" <<'PY'
-import sys, urllib.request
+import sys, urllib.request, urllib.error
 sql = open(sys.argv[1]).read()
-port = sys.argv[2]
-for stmt in sql.split(';'):
-    s = stmt.strip()
-    if not s or s.startswith('--'):
-        continue
+url = f"http://localhost:{sys.argv[2]}/"
+
+def run(stmt):
     try:
-        urllib.request.urlopen(f"http://localhost:{port}/", data=s.encode())
+        urllib.request.urlopen(url, data=stmt.encode())
+        return None
+    except urllib.error.HTTPError as e:
+        return f"{e.code} {e.read().decode('utf-8','replace')[:160]}"
     except Exception as e:
-        # Older versions may reject a newer column default etc.; surface but continue.
-        print(f"  schema stmt warning: {str(e)[:120]}")
+        return str(e)[:160]
+
+def clean(stmt):
+    lines = stmt.splitlines()
+    while lines and (not lines[0].strip() or lines[0].strip().startswith('--')):
+        lines.pop(0)
+    return "\n".join(lines).strip()
+
+if err := run("CREATE DATABASE IF NOT EXISTS ch_analyzer"):
+    print(f"  CREATE DATABASE warning: {err}")
+applied = errors = 0
+for raw in sql.split(';'):
+    s = clean(raw)
+    if not s:
+        continue
+    err = run(s)
+    if err:
+        errors += 1
+        print(f"  schema stmt warning: {err}")
+    else:
+        applied += 1
+print(f"  schema: {applied} statement(s) applied, {errors} warning(s)")
 PY
 
   CFG="${REPORT_DIR}/config-${V}.yaml"
