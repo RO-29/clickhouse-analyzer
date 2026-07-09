@@ -93,6 +93,10 @@ type Instance struct {
 	Password string `yaml:"password"`
 	Secure   bool   `yaml:"secure"`
 	Database string `yaml:"database"`
+	// Mode forces the deployment edition for version/feature gating:
+	// "oss", "cloud", or "" / "auto" (default) to detect at runtime.
+	// Different instances in one fleet may be different editions.
+	Mode string `yaml:"mode"`
 }
 
 // PollingConfig controls how often metrics are collected.

@@ -919,6 +919,48 @@ func (s *Store) BulkTouchAlerts(dedupKeys []string) error {
 	return nil
 }
 
+// BulkRefreshAlerts refreshes still-firing alerts in place: for each alert it
+// writes a new version of the latest unresolved row with the current
+// message/title/severity/category and updated_at = now(), while preserving the
+// row identity (id, created_at, first_seen_at, fire_count). This keeps
+// long-lived alerts (anomalies, recurring errors) displaying current detail
+// instead of the text frozen at first fire, at the same write cadence as the
+// old timestamp-only touch (rate-limited by the alerter, so churn is unchanged).
+func (s *Store) BulkRefreshAlerts(alerts []Alert) error {
+	if len(alerts) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	for _, a := range alerts {
+		msg := escape(a.Message)
+		if len(msg) > 4000 {
+			msg = msg[:4000]
+		}
+		// Carry id / created_at / first_seen_at / fire_count from the latest
+		// unresolved row; overwrite the display content with the fresh values.
+		sql := fmt.Sprintf(`INSERT INTO %s.alerts
+			(id, instance, severity, category, title, message, resolved, resolved_at, created_at, dedup_key, version, updated_at, first_seen_at, fire_count)
+			SELECT id, instance, '%s', '%s', '%s', '%s', 0, NULL, created_at, dedup_key, version+1, now(), first_seen_at, fire_count
+			FROM %s.alerts
+			WHERE dedup_key = '%s' AND resolved = 0
+			ORDER BY created_at DESC, version DESC
+			LIMIT 1`,
+			s.database,
+			escape(a.Severity), escape(a.Category), escape(a.Title), msg,
+			s.database, escape(a.DedupKey))
+
+		s.manager.ForEach(func(_ string, client *chclient.Client) error {
+			if _, err := client.QuerySingleValue(ctx, sql); err != nil {
+				slog.Debug("bulk refresh alerts failed", "dedup_key", a.DedupKey, "err", err)
+			}
+			return nil
+		})
+	}
+	return nil
+}
+
 // AutoResolveStale marks any resolved=0 alert whose updated_at is older than
 // olderThan as resolved. Thin wrapper around BulkResolveStale that accepts a
 // Duration so callers don't need to reason about whole-hour rounding.

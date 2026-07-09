@@ -26,8 +26,16 @@ func parseFromTo(r *http.Request) (string, string) {
 	if to == "" {
 		to = fmt.Sprintf("%d", time.Now().Unix())
 	}
-	fromTime := time.Unix(parseInt64(from), 0).Format("2006-01-02 15:04:05")
-	toTime := time.Unix(parseInt64(to), 0).Format("2006-01-02 15:04:05")
+	// Render in UTC, not the app process's local timezone. These strings are
+	// interpolated into WHERE clauses as `event_time >= '<str>'`, and ClickHouse
+	// parses bare datetime literals in the server timezone — which is UTC on
+	// ClickHouse Cloud. If we formatted in the app's local zone (e.g. IST,
+	// UTC+5:30) the whole window would be shifted by the UTC offset; a wide
+	// window (24h) still overlaps the data so it looks fine, but the default 1h
+	// window is narrower than the offset and silently returns nothing. Epoch is
+	// an absolute instant, so .UTC() makes the literal match Cloud's event_time.
+	fromTime := time.Unix(parseInt64(from), 0).UTC().Format("2006-01-02 15:04:05")
+	toTime := time.Unix(parseInt64(to), 0).UTC().Format("2006-01-02 15:04:05")
 	return fromTime, toTime
 }
 
@@ -991,8 +999,17 @@ func (s *Server) handleQuerySamples(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
-	// Try ch_analyzer.query_samples first (fast).
+	// Try ch_analyzer.query_samples first (fast, long retention).
 	samples, err := s.queryFromSamples(ctx, client, fromTime, toTime, hash, user, kind, minMs, table, textSearch, errorsOnly, limit, offset)
+	if err != nil {
+		// An error here (not merely zero rows) means query_samples is broken —
+		// e.g. a schema drift like a missing column. That silently pushes every
+		// request onto the short-retention system.query_log fallback, which on
+		// Cloud looks like "no samples" for anything older than a few hours. Log
+		// it loudly so the degradation is visible instead of masked.
+		slog.Warn("query samples: query_samples read failed, falling back to query_log",
+			"err", err, "instance", instance)
+	}
 	if err != nil || len(samples) == 0 {
 		// Fall back to system.query_log.
 		samples, err = s.queryFromQueryLog(ctx, client, fromTime, toTime, hash, user, kind, minMs, table, textSearch, errorsOnly, limit, offset)
@@ -1010,10 +1027,29 @@ func (s *Server) handleQuerySamples(w http.ResponseWriter, r *http.Request) {
 func (s *Server) queryFromSamples(ctx context.Context, client *chclient.Client,
 	fromTime, toTime, hash, user, kind, minMs, table, textSearch string, errorsOnly bool, limit, offset int) ([]map[string]interface{}, error) {
 
-	// Check table exists first.
-	rows, err := client.Query(ctx, "SELECT count() as cnt FROM ch_analyzer.query_samples LIMIT 1")
-	if err != nil || len(rows) == 0 {
+	// Probe the table's columns. This does double duty: confirms the table
+	// exists (empty result → caller falls back to system.query_log) AND tells us
+	// whether the optional `exception` message column is present. That column was
+	// added after the original query_samples schema, so installs that predate it
+	// (or haven't re-run schema.sql) don't have it. Selecting a missing column
+	// hard-errors the ENTIRE query, which silently drops every Samples request to
+	// the system.query_log fallback — and on ClickHouse Cloud query_log retention
+	// is only hours, so drilling an older hash returns "no samples" even though
+	// query_samples has the rows. Detect and adapt instead of blindly selecting.
+	colRows, err := client.Query(ctx, "SELECT name FROM system.columns WHERE database = 'ch_analyzer' AND table = 'query_samples'")
+	if err != nil || len(colRows) == 0 {
 		return nil, err
+	}
+	hasExceptionMsg := false
+	for _, cr := range colRows {
+		if toString(cr["name"]) == "exception" {
+			hasExceptionMsg = true
+			break
+		}
+	}
+	exceptionExpr := "'' AS exception"
+	if hasExceptionMsg {
+		exceptionExpr = "ifNull(exception, '') AS exception"
 	}
 
 	var filters []string
@@ -1061,7 +1097,7 @@ func (s *Server) queryFromSamples(ctx context.Context, client *chclient.Client,
 		result_rows,
 		is_exception,
 		exception_code,
-		ifNull(exception, '') AS exception,
+		%s,
 		client_name,
 		interface,
 		cpu_user_us,
@@ -1072,7 +1108,7 @@ func (s *Server) queryFromSamples(ctx context.Context, client *chclient.Client,
 	FROM ch_analyzer.query_samples
 	WHERE %s
 	ORDER BY event_time DESC
-	LIMIT %d OFFSET %d`, strings.Join(filters, " AND "), limit, offset)
+	LIMIT %d OFFSET %d`, exceptionExpr, strings.Join(filters, " AND "), limit, offset)
 
 	return client.Query(ctx, sql)
 }
@@ -1164,7 +1200,9 @@ func (s *Server) handleQueryPatternOverview(w http.ResponseWriter, r *http.Reque
 	topSQL := fmt.Sprintf(`SELECT
 		normalized_query_hash,
 		sum(query_duration_ms) AS total_ms,
-		any(substring(query_text, 1, 80)) AS label
+		any(substring(query_text, 1, 80)) AS label,
+		any(query_kind) AS kind,
+		arrayDistinct(arrayFlatten(groupArray(tables))) AS tables
 	FROM ch_analyzer.query_samples
 	WHERE event_time >= '%s' AND event_time <= '%s'
 	GROUP BY normalized_query_hash
@@ -1177,7 +1215,9 @@ func (s *Server) handleQueryPatternOverview(w http.ResponseWriter, r *http.Reque
 		topSQL = fmt.Sprintf(`SELECT
 			normalized_query_hash,
 			sum(query_duration_ms) AS total_ms,
-			any(substring(query, 1, 80)) AS label
+			any(substring(query, 1, 80)) AS label,
+			any(query_kind) AS kind,
+			arrayDistinct(arrayFlatten(groupArray(tables))) AS tables
 		FROM system.query_log
 		WHERE event_time >= '%s' AND event_time <= '%s'
 		  AND is_initial_query = 1
@@ -1263,6 +1303,7 @@ func (s *Server) handleQueryUsers(w http.ResponseWriter, r *http.Request) {
 		user,
 		count() AS cnt,
 		sum(query_duration_ms) AS total_ms,
+		sum(cpu_user_us + cpu_system_us) / 1000 AS total_cpu_ms,
 		avg(query_duration_ms) AS avg_ms,
 		max(query_duration_ms) AS max_ms,
 		quantile(0.95)(query_duration_ms) AS p95_ms,
@@ -1274,7 +1315,7 @@ func (s *Server) handleQueryUsers(w http.ResponseWriter, r *http.Request) {
 	FROM ch_analyzer.query_samples
 	WHERE event_time >= '%s' AND event_time <= '%s'
 	GROUP BY user
-	ORDER BY total_ms DESC
+	ORDER BY total_cpu_ms DESC
 	LIMIT 50`, fromTime, toTime)
 
 	rows, err := client.Query(ctx, sql)
@@ -1284,6 +1325,8 @@ func (s *Server) handleQueryUsers(w http.ResponseWriter, r *http.Request) {
 			user,
 			count() AS cnt,
 			sum(query_duration_ms) AS total_ms,
+			sum(ProfileEvents['UserTimeMicroseconds'] +
+			    ProfileEvents['SystemTimeMicroseconds']) / 1000 AS total_cpu_ms,
 			avg(query_duration_ms) AS avg_ms,
 			max(query_duration_ms) AS max_ms,
 			quantile(0.95)(query_duration_ms) AS p95_ms,
@@ -1297,7 +1340,7 @@ func (s *Server) handleQueryUsers(w http.ResponseWriter, r *http.Request) {
 		  AND is_initial_query = 1
 		  AND type IN ('QueryFinish', 'ExceptionWhileProcessing')
 		GROUP BY user
-		ORDER BY total_ms DESC
+		ORDER BY total_cpu_ms DESC
 		LIMIT 50`, fromTime, toTime)
 		rows, err = client.Query(ctx, sql)
 		if err != nil {

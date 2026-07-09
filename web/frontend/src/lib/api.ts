@@ -43,6 +43,7 @@ import type {
   SLOReport,
   AnomalyContext,
   ThresholdsConfig,
+  Capabilities,
 } from '../types/api'
 
 const BASE = ''
@@ -125,6 +126,7 @@ export const api = {
   metrics: (inst: string, name: string, from: number, to: number, points = 120) =>
     get<MetricResponse>(`/api/instances/${inst}/metrics?name=${name}&from=${from}&to=${to}&points=${points}`),
   healthCheck: (inst: string) => get<HealthCheck[]>(`/api/instances/${inst}/health-check`),
+  capabilities: (inst: string) => get<Capabilities>(`/api/instances/${inst}/capabilities`),
   alerts: {
     active: (instance?: string) =>
       get<Alert[]>(`/api/alerts/active${instance ? `?instance=${encodeURIComponent(instance)}` : ''}`),

@@ -717,3 +717,37 @@ Memory critical again.
           first_seen_at = original time, fire_count = 1.
           New row carries forward first_seen_at; fire_count = 2.
 ```
+
+---
+
+## Version & edition compatibility layer
+
+`internal/chclient/capabilities.go` fingerprints each instance and caches the
+result (6h TTL) on the per-instance `Client`:
+
+- **Version** — parsed `version()` (`major.minor` used for gates).
+- **Edition** — `cloud_mode` setting → OSS/Cloud, overridable via `mode:` in config.
+- **Replicas / clusterAllReplicas** — probed; drives multi-node Cloud log reads.
+- **Feature registry** — probe-based (not just version numbers): system-table
+  inventory (`system.tables`), column inventory (`system.columns`), and live
+  access probes (`system.zookeeper` is denied on Cloud, disabled when Keeper
+  isn't configured). Probes are more robust than version gates because a table
+  can be disabled or restricted independent of version.
+
+Accessors: `client.Caps(ctx).Has(feature)`, `.LogTable("query_log")` (wraps in
+`clusterAllReplicas('<cluster>', …)` only on multi-node), `.PickSQL(feature,
+modern, legacy)`, `.Reason(feature)`.
+
+Design rules:
+- **Never hard-fail on a missing capability.** Gate, then skip + one-time log, or
+  render a "not supported on ClickHouse X (edition)" state in the UI.
+- **Detect once, reuse.** Collectors that hit version/edition-sensitive tables
+  check `Caps()` instead of issuing a guaranteed-to-fail query every poll (e.g.
+  the keeper collector short-circuits when `FeatureZookeeper` is unavailable).
+- **Surface it.** `GET /api/instances/{name}/capabilities` + the Explore
+  compatibility chip show detected version/edition and per-feature availability.
+
+Testing: `--compat-check` (detect caps + run every collector, non-zero exit on any
+hard error) is driven across the OSS version matrix by `scripts/compat-test.sh` /
+`make compat-test` / `.github/workflows/compat.yml`, with golden capability
+snapshots under `test/compat/golden/`.

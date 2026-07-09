@@ -3,7 +3,7 @@ import {
   CartesianGrid, Legend,
 } from 'recharts'
 import { Sparkles } from 'lucide-react'
-import { fmtBytes, fmtDuration, fmtCompact } from '../lib/utils'
+import { fmtBytes, fmtDuration, fmtCompact, chToDate } from '../lib/utils'
 
 interface SeriesDef {
   key: string
@@ -30,8 +30,8 @@ function ChartTooltip({ active, payload, label, formatValue, data }: any) {
   // Try to get the actual ts from the row
   const row = Array.isArray(data) ? data.find((r: any) => r.ts === label) : null
   const ts = row?.ts ?? label
-  const d = ts ? (typeof ts === 'string' ? new Date(ts) : new Date(ts * 1000)) : null
-  const timeStr = d
+  const d = ts ? chToDate(ts) : null
+  const timeStr = d && !isNaN(d.getTime())
     ? d.toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
     : String(label)
   return (
@@ -68,13 +68,13 @@ export function HistoryChart({
 
   const spanMs = (() => {
     if (data.length < 2) return 0
-    const toMs = (t: any) => typeof t === 'string' ? new Date(t).getTime() : t * 1000
+    const toMs = (t: any) => chToDate(t).getTime()
     return Math.abs(toMs(data[data.length - 1].ts) - toMs(data[0].ts))
   })()
 
   const formatTs = (ts: any) => {
     if (!ts) return ''
-    const d = typeof ts === 'string' ? new Date(ts) : new Date(ts * 1000)
+    const d = chToDate(ts)
     if (spanMs > 7 * MS_DAY) return d.toLocaleDateString('en-GB', { month: 'short', day: 'numeric' })
     if (spanMs > MS_DAY) return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
     return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })

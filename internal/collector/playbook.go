@@ -366,7 +366,7 @@ const insertStallPlaybook = "*Investigate:*\n```\n" +
 const asyncInsertQueuePlaybook = "*Investigate:*\n```\n" +
 	"SELECT database, table, count() AS pending,\n" +
 	"  formatReadableSize(sum(length(bytes))) AS buffered\n" +
-	"FROM system.asynchronous_insertions\n" +
+	"FROM system.asynchronous_inserts\n" +
 	"GROUP BY database, table\n" +
 	"ORDER BY pending DESC\n```"
 

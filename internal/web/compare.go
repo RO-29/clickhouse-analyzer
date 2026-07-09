@@ -974,16 +974,20 @@ func (s *Server) handleCompareQueryPatterns(w http.ResponseWriter, r *http.Reque
 	toParam := r.URL.Query().Get("to")
 	now := time.Now()
 	var fromTime, toTime string
+	// UTC, not local time: these strings become `event_time >= '<str>'` literals
+	// and ClickHouse parses them in the server timezone (UTC on Cloud). Formatting
+	// in the app's local zone would shift the window by the UTC offset and empty
+	// out any range narrower than that offset. See parseFromTo in history.go.
 	if fromParam == "" {
-		fromTime = now.Add(-1 * time.Hour).Format("2006-01-02 15:04:05")
+		fromTime = now.Add(-1 * time.Hour).UTC().Format("2006-01-02 15:04:05")
 	} else {
-		t := time.Unix(parseInt64(fromParam), 0)
+		t := time.Unix(parseInt64(fromParam), 0).UTC()
 		fromTime = t.Format("2006-01-02 15:04:05")
 	}
 	if toParam == "" {
-		toTime = now.Format("2006-01-02 15:04:05")
+		toTime = now.UTC().Format("2006-01-02 15:04:05")
 	} else {
-		t := time.Unix(parseInt64(toParam), 0)
+		t := time.Unix(parseInt64(toParam), 0).UTC()
 		toTime = t.Format("2006-01-02 15:04:05")
 	}
 

@@ -17,6 +17,9 @@ interface PlaybookQuery { label: string; sql: string }
 interface Playbook {
   what: string
   why: string[]
+  /** Heading for the `why` list. Defaults to "Common causes"; use e.g.
+   *  "What to check" for informational (non-failure) alerts. */
+  whyLabel?: string
   /** The exact SQL ch-analyzer ran to detect this condition */
   triggerSql?: string
   /** Short annotation explaining the threshold / firing condition */
@@ -155,7 +158,7 @@ WHERE event_time > now() - INTERVAL 5 MINUTE`,
     ],
     queries: [
       { label: 'Async insert flush errors (last 30 min)', sql: `SELECT event_time, status, exception, substring(query, 1, 200) AS q\nFROM system.asynchronous_insert_log\nWHERE status = 'ExceptionWhileFlushing'\n  AND event_time > now() - INTERVAL 30 MINUTE\nORDER BY event_time DESC\nLIMIT 20` },
-      { label: 'Currently pending async queue', sql: `SELECT database, table, count() AS queue_entries\nFROM system.asynchronous_insertions\nGROUP BY database, table\nORDER BY queue_entries DESC` },
+      { label: 'Currently pending async queue', sql: `SELECT database, table, count() AS queue_entries\nFROM system.asynchronous_inserts\nGROUP BY database, table\nORDER BY queue_entries DESC` },
       { label: 'Disk space', sql: `SELECT name, formatReadableSize(free_space) AS free, formatReadableSize(total_space) AS total\nFROM system.disks` },
     ],
   },
@@ -163,7 +166,7 @@ WHERE event_time > now() - INTERVAL 5 MINUTE`,
   'async_inserts:queue': {
     what: 'The async insert queue is growing — the flush thread cannot keep up with incoming data. If the queue fills completely, new inserts will be rejected.',
     triggerSql: `SELECT count() AS queue_depth
-FROM system.asynchronous_insertions`,
+FROM system.asynchronous_inserts`,
     triggerNote: `Fires when queue_depth > 50 (warn) or > 100 (critical).`,
     why: [
       'Insert rate exceeds the flush thread throughput',
@@ -171,7 +174,7 @@ FROM system.asynchronous_insertions`,
       'async_insert_busy_timeout_ms is too high — accumulating before flush',
     ],
     queries: [
-      { label: 'Queue depth by table', sql: `SELECT database, table, count() AS queue_entries\nFROM system.asynchronous_insertions\nGROUP BY database, table\nORDER BY queue_entries DESC` },
+      { label: 'Queue depth by table', sql: `SELECT database, table, count() AS queue_entries\nFROM system.asynchronous_inserts\nGROUP BY database, table\nORDER BY queue_entries DESC` },
       { label: 'Recent flush stats', sql: `SELECT status, count() AS cnt,\n  avg(flush_time_microseconds)/1000 AS avg_flush_ms\nFROM system.asynchronous_insert_log\nWHERE event_time > now() - INTERVAL 5 MINUTE\nGROUP BY status` },
     ],
   },
@@ -366,6 +369,27 @@ WHERE level IN ('Fatal', 'Critical')
     ],
   },
 
+  'mvs:chained': {
+    what: 'Informational — not a failure. One materialized view writes into a table that is itself the source of another materialized view (MV → MV). Every insert into the base table runs the whole chain synchronously, so a slowdown or exception anywhere in the chain blocks the original insert and can silently stop data partway through. Chains are legal and sometimes intentional; this alert just flags that one exists so you know the coupling is there.',
+    whyLabel: 'What to check',
+    why: [
+      'Is the chain intentional, or an accidental dependency someone added later?',
+      'Each hop adds latency to the source insert — confirm the total is acceptable',
+      'A failure in the 2nd MV rolls back the 1st — verify both targets stay consistent',
+      'Prefer a single MV with a richer SELECT over MV→MV where you can',
+    ],
+    triggerSql: `-- Which MVs feed into other MVs
+SELECT database, name, as_select
+FROM system.tables
+WHERE engine = 'MaterializedView'
+ORDER BY database, name`,
+    triggerNote: `Informational (info severity). Fires once per detected MV→MV dependency; it does not mean anything is currently broken.`,
+    queries: [
+      { label: 'Recent execution time & errors for MVs in the chain', sql: `SELECT view,\n  round(avg(view_duration_ms), 1) AS avg_ms,\n  max(view_duration_ms) AS max_ms,\n  count() AS executions,\n  countIf(status = 'ExceptionWhileProcessing') AS errors\nFROM system.query_views_log\nWHERE event_time > now() - INTERVAL 1 HOUR\nGROUP BY view\nORDER BY avg_ms DESC\nLIMIT 20` },
+      { label: 'All materialized views and their targets', sql: `SELECT database, name, engine, as_select\nFROM system.tables\nWHERE engine = 'MaterializedView'\nORDER BY database, name` },
+    ],
+  },
+
   'mvs': {
     what: 'A materialized view is executing slowly on inserts, or has thrown exceptions. Slow MVs block source table inserts — exceptions mean data is not reaching the MV target.',
     why: [
@@ -515,6 +539,7 @@ function getPlaybookKey(alert: Alert): string {
   if (dk.startsWith('storage:s3') || dk.startsWith('s3:')) return 'storage:s3'
   if (dk.startsWith('errors:textlog:')) return 'errors:fatal'
   if (dk.startsWith('errors:')) return 'errors:system'
+  if (dk.startsWith('mvs:chain')) return 'mvs:chained'
   if (dk.startsWith('mvs:')) return 'mvs'
   if (dk.startsWith('dictionaries:')) return 'dictionaries'
   if (dk.startsWith('queries:') || dk.startsWith('query_latency:')) return 'queries'
@@ -999,7 +1024,7 @@ export function AlertDetailPanel({
               <div className="rounded-lg border border-[var(--border)] p-3 space-y-2">
                 <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--dim)]">
                   <AlertTriangle size={11} className="text-amber-400" />
-                  Common causes
+                  {playbook.whyLabel ?? 'Common causes'}
                 </div>
                 <ul className="space-y-1.5">
                   {playbook.why.map((reason, i) => (

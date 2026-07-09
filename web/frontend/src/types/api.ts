@@ -129,6 +129,7 @@ export interface QueryUser {
   user: string
   cnt: number
   total_ms: number
+  total_cpu_ms?: number    // real CPU (UserTime+SystemTime); falls back to total_ms when absent
   avg_ms: number
   max_ms: number
   p95_ms: number
@@ -225,11 +226,22 @@ export interface ConnectionsResponse {
   total_active_queries: number
 }
 
+export interface Capabilities {
+  version: { Major: number; Minor: number; Patch: number; Raw: string }
+  edition: 'oss' | 'cloud' | 'unknown'
+  replicas: number
+  cluster: string
+  features: Record<string, { available: boolean; reason: string }>
+  detected_at: string
+}
+
 export interface PatternOverviewResponse {
   patterns: Array<{
     normalized_query_hash: string
     total_ms: number
     label: string
+    kind?: string
+    tables?: string[]
   }>
   timeline: Array<{
     ts: string

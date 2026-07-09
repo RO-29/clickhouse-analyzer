@@ -7,7 +7,7 @@ import {
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
-import { cn } from '../lib/utils'
+import { cn, chToDate } from '../lib/utils'
 import type { TableScanResult, TableScanEntry, DiskUsageEntry, TableQueryPattern, PartitionDiskRow } from '../types/api'
 import { PartitionDistribution } from '../components/PartitionDistribution'
 
@@ -37,7 +37,7 @@ function fmtCount(n: number): string {
 
 function fmtActivityTs(s: string | undefined): string {
   if (!s || s.startsWith('1970-01-01') || s.startsWith('0000-00-00')) return ''
-  const d = new Date(s.replace(' ', 'T'))
+  const d = chToDate(s)
   if (isNaN(d.getTime()) || d.getFullYear() < 2000) return ''
   const diff = Date.now() - d.getTime()
   if (diff < 60_000) return 'now'

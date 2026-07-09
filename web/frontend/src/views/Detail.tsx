@@ -1,12 +1,12 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { ArrowLeft, HelpCircle, RefreshCw, Sparkles, Wrench, AlertTriangle, CheckCircle2, Activity, Power } from 'lucide-react'
 import {
-  BarChart, Bar, XAxis, YAxis, Tooltip as RechartTooltip, ResponsiveContainer, CartesianGrid,
+  BarChart, Bar, XAxis, YAxis, Tooltip as RechartTooltip, ResponsiveContainer, CartesianGrid, Cell, LabelList,
 } from 'recharts'
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
-import { fmtBytes, fmtNum, fmtTime, fmtDuration, cn } from '../lib/utils'
+import { fmtBytes, fmtNum, fmtTime, fmtDuration, cn, chToDate } from '../lib/utils'
 import { Card, Section } from '../components/Card'
 import { Badge } from '../components/Badge'
 import { MetricChart } from '../components/MetricChart'
@@ -26,21 +26,60 @@ const TABS: { key: DetailTab; label: string }[] = [
 ]
 
 /* ── Disk usage bar chart via Recharts ────────────────────────────────── */
-function DiskChart({ disks }: { disks: DiskInfo[] }) {
-  const data = disks.map(d => ({
-    name: d.disk_name,
-    used: d.total_space - d.free_space,
-    free: d.free_space,
-  }))
+// Shorten a long, opaque disk name (e.g. Cloud "s3_disk_00…442572465958")
+// with a middle ellipsis so both the meaningful prefix and the distinguishing
+// suffix survive, instead of the axis silently clipping the readable half.
+function shortenName(name: string, max = 22) {
+  if (name.length <= max) return name
+  const keep = max - 1
+  const head = Math.ceil(keep * 0.6)
+  const tail = keep - head
+  return `${name.slice(0, head)}…${name.slice(name.length - tail)}`
+}
 
-  const height = Math.max(60, disks.length * 44)
+// Fill health → color. Meaningful for OSS (is the disk filling up?); Cloud
+// object-storage disks read near-empty and stay green, which is correct —
+// the old chart made them look 100% full because the dark "free" segment
+// spanned the whole row.
+function usageColor(pct: number) {
+  if (pct >= 90) return '#ef4444'
+  if (pct >= 70) return '#f59e0b'
+  return '#7c3aed'
+}
+
+function DiskTick({ x, y, payload }: any) {
+  const name: string = payload?.value ?? ''
+  return (
+    <text x={x} y={y} dy={3} textAnchor="end" fontSize={11} fill="#94a3b8" fontFamily="var(--font-mono, monospace)">
+      <title>{name}</title>
+      {shortenName(name)}
+    </text>
+  )
+}
+
+function DiskChart({ disks }: { disks: DiskInfo[] }) {
+  // Bar length is *used bytes* (not a used+free stack): near-empty Cloud disks
+  // with astronomically large, near-identical free_space no longer saturate
+  // every row to full width, and disks holding large tables stand out.
+  const data = disks
+    .map(d => {
+      const used = Math.max(0, d.total_space - d.free_space)
+      const pct = d.used_percent ?? (d.total_space > 0 ? (used / d.total_space) * 100 : 0)
+      return { name: d.disk_name, used, free: d.free_space, total: d.total_space, pct }
+    })
+    .sort((a, b) => b.used - a.used)
+
+  const maxUsed = Math.max(1, ...data.map(d => d.used))
+  const rowH = data.length > 10 ? 26 : 34
+  const height = Math.max(60, data.length * rowH + 16)
 
   return (
     <ResponsiveContainer width="100%" height={height}>
-      <BarChart data={data} layout="vertical" margin={{ top: 4, right: 8, left: 8, bottom: 0 }} barSize={14}>
+      <BarChart data={data} layout="vertical" margin={{ top: 4, right: 64, left: 8, bottom: 0 }} barSize={13}>
         <CartesianGrid horizontal={false} stroke="var(--chart-grid)" />
         <XAxis
           type="number"
+          domain={[0, maxUsed]}
           tickFormatter={v => fmtBytes(v)}
           tick={{ fontSize: 10, fill: '#64748b' }}
           axisLine={false}
@@ -49,13 +88,19 @@ function DiskChart({ disks }: { disks: DiskInfo[] }) {
         <YAxis
           type="category"
           dataKey="name"
-          tick={{ fontSize: 11, fill: '#94a3b8' }}
+          tick={<DiskTick />}
           axisLine={false}
           tickLine={false}
-          width={80}
+          width={160}
+          interval={0}
         />
         <RechartTooltip
-          formatter={(v: any, name: string) => [fmtBytes(v), name]}
+          cursor={{ fill: 'var(--chart-grid)', opacity: 0.3 }}
+          formatter={(_v: any, _n: string, p: any) => {
+            const d = p?.payload
+            if (!d) return ['', '']
+            return [`${fmtBytes(d.used)} used · ${fmtBytes(d.free)} free · ${d.pct.toFixed(1)}% of ${fmtBytes(d.total)}`, d.name]
+          }}
           contentStyle={{
             background: 'var(--card)',
             border: '1px solid var(--border)',
@@ -63,8 +108,17 @@ function DiskChart({ disks }: { disks: DiskInfo[] }) {
             fontSize: 11,
           }}
         />
-        <Bar dataKey="used" name="Used" stackId="a" fill="#7c3aed" radius={[0, 0, 0, 0]} />
-        <Bar dataKey="free" name="Free" stackId="a" fill="#1e2d40" radius={[2, 2, 2, 2]} />
+        <Bar dataKey="used" name="Used" radius={[2, 2, 2, 2]}>
+          {data.map((d, i) => (
+            <Cell key={i} fill={usageColor(d.pct)} />
+          ))}
+          <LabelList
+            dataKey="pct"
+            position="right"
+            formatter={(v: any) => `${Number(v).toFixed(v >= 10 ? 0 : 1)}%`}
+            style={{ fontSize: 10, fill: '#94a3b8' }}
+          />
+        </Bar>
       </BarChart>
     </ResponsiveContainer>
   )
@@ -274,7 +328,13 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
     setInstance(null)
   }
 
-  const localDisks = disks.filter(d => !d.disk_name.toLowerCase().includes('s3'))
+  // Drop S3/object-store disks (shown separately) and ClickHouse Cloud's
+  // ephemeral per-query temp disks (`__tmp_internal_<hash>`), which appear by
+  // the dozen at 0% and drown out the real `default` disk.
+  const localDisks = disks.filter(d => {
+    const n = d.disk_name.toLowerCase()
+    return !n.includes('s3') && !n.startsWith('__')
+  })
   const rangeAlerts = alertHistory.filter(a => a.created_at >= customFrom && a.created_at <= customTo)
 
   // Split unresolved alerts into fresh vs stale using the same 24h threshold
@@ -1199,7 +1259,7 @@ GROUP BY day ORDER BY day;`}</pre>
               <Card noPad>
                 <DataTable
                   columns={[
-                    { key: 'ts', label: 'Time', format: (v: any) => <span className="text-[var(--dim)]">{fmtTime(typeof v === 'string' ? new Date(v).getTime() / 1000 : v)}</span> },
+                    { key: 'ts', label: 'Time', format: (v: any) => <span className="text-[var(--dim)]">{fmtTime(typeof v === 'string' ? chToDate(v).getTime() / 1000 : v)}</span> },
                     { key: 'exception_code', label: 'Code' },
                     { key: 'cnt', label: 'Count', format: (v: any) => <span className="text-red-400">{fmtNum(v)}</span> },
                     { key: 'sample', label: 'Sample', format: (v: any) => <span className="text-[var(--dim)] font-mono truncate block max-w-sm" title={String(v ?? '')}>{String(v ?? '')}</span> },
@@ -1218,7 +1278,7 @@ GROUP BY day ORDER BY day;`}</pre>
               <Card noPad>
                 <DataTable
                   columns={[
-                    { key: 'ts', label: 'Time', format: (v: any) => <span className="text-[var(--dim)]">{fmtTime(typeof v === 'string' ? new Date(v).getTime() / 1000 : v)}</span> },
+                    { key: 'ts', label: 'Time', format: (v: any) => <span className="text-[var(--dim)]">{fmtTime(typeof v === 'string' ? chToDate(v).getTime() / 1000 : v)}</span> },
                     { key: 'merge_count', label: 'Merges', format: (v: any) => fmtNum(v) },
                     { key: 'new_part_count', label: 'New Parts', format: (v: any) => fmtNum(v) },
                     { key: 'avg_merge_ms', label: 'Avg Merge', format: (v: any) => fmtDuration(v) },

@@ -33,6 +33,15 @@ func (c *KeeperCollector) Collect(ctx context.Context, client *chclient.Client) 
 	start := time.Now()
 	result := &CollectResult{}
 
+	// Skip entirely when system.zookeeper isn't usable on this instance — it's
+	// access-denied on managed Keeper (ClickHouse Cloud) and absent on
+	// non-replicated deployments. The capability layer probes this once and
+	// caches it, so we avoid a guaranteed-to-fail query every poll.
+	if !client.Caps(ctx).Has(chclient.FeatureZookeeper) {
+		result.Duration = time.Since(start)
+		return result, nil
+	}
+
 	// Probe ZK/Keeper reachability with a short timeout.
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -48,6 +57,18 @@ func (c *KeeperCollector) Collect(ctx context.Context, client *chclient.Client) 
 			strings.Contains(errStr, "not configured") ||
 			strings.Contains(errStr, "Coordination is disabled") ||
 			strings.Contains(errStr, "ZooKeeper is not configured") {
+			result.Duration = time.Since(start)
+			return result, nil
+		}
+
+		// No grant on system.zookeeper — skip silently. On ClickHouse Cloud /
+		// managed services Keeper is not operator-visible and SELECT ON
+		// system.zookeeper is intentionally withheld; there is nothing to probe.
+		// Replication health is covered by the replication collector, which uses
+		// system.replicas / system.replication_queue instead.
+		if strings.Contains(errStr, "ACCESS_DENIED") ||
+			strings.Contains(errStr, "Not enough privileges") ||
+			strings.Contains(errStr, "Code: 497") {
 			result.Duration = time.Since(start)
 			return result, nil
 		}

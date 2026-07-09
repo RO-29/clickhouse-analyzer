@@ -93,23 +93,35 @@ func (c *ErrorsCollector) collectSystemErrors(ctx context.Context, client *chcli
 
 	for _, row := range rows {
 		name := getString(row, "name")
-		times := getFloat(row, "times")
+		// The SQL aliases the count column as `cnt` (value on CH 22+, times on
+		// older builds). Read `cnt`, not `times` — reading the wrong key made
+		// every error show "×0" and, because the warn branch also fired on
+		// name alone, surfaced benign single-occurrence errors as alerts.
+		cnt := getFloat(row, "cnt")
 		lastMsg := getString(row, "last_error_message")
 
-		totalErrorCount += times
+		// Drop benign, self-healing conditions that inflate the counter without
+		// being actionable — chiefly KEEPER_EXCEPTION "Transaction failed (Bad
+		// version)", ClickHouse's own optimistic-concurrency retry on Replicated
+		// inserts. It succeeds on retry and is normal under concurrent writes.
+		if isBenignError(name, lastMsg) {
+			continue
+		}
+
+		totalErrorCount += cnt
 
 		labels := map[string]string{"error": name}
-		result.AddMetric(client.Name(), "errors.system.count", times, labels)
+		result.AddMetric(client.Name(), "errors.system.count", cnt, labels)
 
 		// Truncate long messages
 		if len(lastMsg) > 150 {
 			lastMsg = lastMsg[:150] + "…"
 		}
-		entry := fmt.Sprintf("  - *%s* (×%.0f): %s", name, times, lastMsg)
+		entry := fmt.Sprintf("  - *%s* (×%.0f): %s", name, cnt, lastMsg)
 
-		if seriousSet[name] && times >= 5 {
+		if seriousSet[name] && cnt >= 5 {
 			criticalErrors = append(criticalErrors, entry)
-		} else if times >= 10 || seriousSet[name] {
+		} else if cnt >= 10 || (seriousSet[name] && cnt >= 3) {
 			warnErrors = append(warnErrors, entry)
 		}
 	}
@@ -168,6 +180,22 @@ func (c *ErrorsCollector) collectSystemErrors(ctx context.Context, client *chcli
 			msg,
 			fmt.Sprintf("%s:errors:system:warn", client.Name()))
 	}
+}
+
+// isBenignError reports whether a system.errors entry is normal operational
+// noise rather than an actionable failure. system.errors counters accumulate
+// self-healing conditions that alarm operators for no reason; the canonical one
+// is the Keeper optimistic-concurrency retry on ReplicatedMergeTree inserts.
+func isBenignError(name, lastMsg string) bool {
+	switch name {
+	case "KEEPER_EXCEPTION", "ZOOKEEPER_ERROR":
+		// "Transaction failed (Bad version)" is CH retrying a znode CAS — expected
+		// under concurrent inserts and resolved automatically.
+		if strings.Contains(lastMsg, "Bad version") || strings.Contains(lastMsg, "version check failed") {
+			return true
+		}
+	}
+	return false
 }
 
 // collectTextLog scans system.text_log for recent Fatal/Critical log entries.

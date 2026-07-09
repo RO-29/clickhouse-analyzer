@@ -176,14 +176,14 @@ func (a *Analyzer) updateHistory(instance string, metrics map[string]float64, ar
 		}
 
 		threshold := m + a.thresholds.AnomalyStdDevMultiplier*sd
-		if val > threshold {
-			zScore := (val - m) / sd
+		if val > threshold && anomalySignificant(val, m) {
+			label, _, _ := metricMeta(name)
 			ar.CrossAlerts = append(ar.CrossAlerts, collector.Alert{
 				Instance:  instance,
 				Severity:  collector.SeverityWarn,
 				Category:  "anomaly",
-				Title:     "Anomaly detected: " + name,
-				Message:   formatAnomaly(name, val, m, sd) + fmt.Sprintf(" (baseline: %.1f, current: %.1f, z=%.1f\u03c3)", m, val, zScore),
+				Title:     "Anomaly detected: " + label,
+				Message:   formatAnomaly(name, val, m, sd),
 				DedupKey:  instance + ":anomaly:" + name,
 				Timestamp: now,
 			})
@@ -191,11 +191,12 @@ func (a *Analyzer) updateHistory(instance string, metrics map[string]float64, ar
 
 		// Sustained issue: last N values all above mean + 1*stddev.
 		if a.checkSustained(vals, m, sd) {
+			label, _, _ := metricMeta(name)
 			ar.CrossAlerts = append(ar.CrossAlerts, collector.Alert{
 				Instance:  instance,
 				Severity:  collector.SeverityWarn,
 				Category:  "sustained",
-				Title:     "Sustained elevated: " + name,
+				Title:     "Sustained elevated: " + label,
 				Message: formatSustained(name, val, m,
 					a.thresholds.SustainedIssueCount),
 				DedupKey:  instance + ":sustained:" + name,
@@ -444,14 +445,168 @@ func stddev(vals []float64, m float64) float64 {
 	return math.Sqrt(sum / float64(len(vals)-1))
 }
 
+// anomalySignificant filters out statistically-significant-but-practically-
+// meaningless anomalies. Low-cardinality integer metrics (e.g. "number of
+// tables receiving inserts") sit near-constant, so a ±1 wiggle is many sigmas
+// even though 1→2 means nothing. We additionally require a real movement:
+//   - a minimum absolute delta when the baseline itself is tiny, and
+//   - at least a 20% jump over baseline on top of the z-score gate.
+func anomalySignificant(val, m float64) bool {
+	delta := val - m
+	if m < 10 && delta < 3 {
+		return false
+	}
+	if m > 0 && delta < 0.20*m {
+		return false
+	}
+	return true
+}
+
+type metricUnit int
+
+const (
+	unitPlain metricUnit = iota
+	unitBytes
+	unitRows
+	unitCount
+	unitSeconds
+	unitMs
+	unitPercent
+)
+
+// metricMeta turns a raw metric key like "queries.running.read_rows" into a
+// human label, a display unit, and a one-line hint about what a spike means.
+// Anomaly detection runs over arbitrary collector metrics, so we match known
+// keys explicitly and fall back to keyword inference — no metric is ever left
+// shown as a raw dotted key.
+func metricMeta(name string) (label string, unit metricUnit, hint string) {
+	switch name {
+	case "queries.running.read_rows":
+		return "rows read by in-flight queries", unitRows, "Usually a heavy new query or a full-table scan — check Live Queries."
+	case "queries.running.read_bytes":
+		return "bytes read by in-flight queries", unitBytes, "Usually a heavy new query or a full-table scan — check Live Queries."
+	case "inserts.table.count":
+		return "tables receiving inserts", unitCount, "More tables than usual are being written to — often a new pipeline or backfill."
+	case "inserts.table.rows":
+		return "rows inserted per table", unitRows, "A spike is usually a bulk load; a drop can mean a stalled producer."
+	case "inserts.seconds_since_last":
+		return "seconds since the last insert", unitSeconds, "A rising value means inserts have slowed or stopped — possible pipeline stall."
+	case "mvs.timing.executions":
+		return "materialized-view executions", unitCount, "MVs are firing more often than usual — normally tracks insert volume."
+	case "system.async.OSCPUOverload":
+		return "OS CPU overload indicator", unitPlain, "The host CPU is oversubscribed — queries and merges may slow down."
+	case "tables.disk_balance.bytes":
+		return "table storage imbalance", unitBytes, "Data is spread unevenly across disks or tables."
+	case "storage.distribution.rows":
+		return "row distribution across storage", unitRows, "The spread of rows across parts/tables shifted."
+	case "storage.distribution.bytes":
+		return "byte distribution across storage", unitBytes, "The spread of bytes across parts/tables shifted."
+	}
+	switch {
+	case strings.Contains(name, "bytes"):
+		unit = unitBytes
+	case strings.Contains(name, "rows"):
+		unit = unitRows
+	case strings.Contains(name, "seconds") || strings.HasSuffix(name, "_secs"):
+		unit = unitSeconds
+	case strings.HasSuffix(name, "_ms") || strings.Contains(name, "millis"):
+		unit = unitMs
+	case strings.Contains(name, "pct") || strings.Contains(name, "percent") || strings.Contains(name, "ratio"):
+		unit = unitPercent
+	case strings.Contains(name, "count") || strings.Contains(name, "executions") || strings.Contains(name, "num_"):
+		unit = unitCount
+	default:
+		unit = unitPlain
+	}
+	label = strings.NewReplacer(".", " ", "_", " ").Replace(name)
+	return label, unit, ""
+}
+
+func fmtMetricValue(unit metricUnit, v float64) string {
+	switch unit {
+	case unitBytes:
+		return humanBytes(v)
+	case unitSeconds:
+		return fmt.Sprintf("%.0fs", v)
+	case unitMs:
+		return fmt.Sprintf("%.0fms", v)
+	case unitPercent:
+		return fmt.Sprintf("%.1f%%", v)
+	case unitRows, unitCount:
+		return humanCount(v)
+	default:
+		if v == math.Trunc(v) && math.Abs(v) < 1e15 {
+			return humanCount(v)
+		}
+		return fmt.Sprintf("%.2f", v)
+	}
+}
+
+func humanCount(v float64) string {
+	a := math.Abs(v)
+	switch {
+	case a >= 1e9:
+		return fmt.Sprintf("%.1fB", v/1e9)
+	case a >= 1e6:
+		return fmt.Sprintf("%.1fM", v/1e6)
+	case a >= 1e3:
+		return fmt.Sprintf("%.1fK", v/1e3)
+	default:
+		return fmt.Sprintf("%.0f", v)
+	}
+}
+
+func humanBytes(v float64) string {
+	a := math.Abs(v)
+	const k = 1024.0
+	switch {
+	case a >= k*k*k*k:
+		return fmt.Sprintf("%.1f TB", v/(k*k*k*k))
+	case a >= k*k*k:
+		return fmt.Sprintf("%.1f GB", v/(k*k*k))
+	case a >= k*k:
+		return fmt.Sprintf("%.1f MB", v/(k*k))
+	case a >= k:
+		return fmt.Sprintf("%.1f KB", v/k)
+	default:
+		return fmt.Sprintf("%.0f B", v)
+	}
+}
+
+func capitalize(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+// formatAnomaly renders a plain-English anomaly description: what the metric is,
+// what it jumped to vs its baseline, how big the jump is, and what it usually
+// means. Ends with "(metric: <key>)" for traceability. Keeps the word
+// "baseline" so the frontend still recognises it as an anomaly alert.
 func formatAnomaly(name string, val, m, sd float64) string {
-	return fmt.Sprintf("%s = %.2f (mean=%.2f, stddev=%.2f, %.1f sigma above mean)",
-		name, val, m, sd, (val-m)/sd)
+	label, unit, hint := metricMeta(name)
+	z := (val - m) / sd
+	ratio := ""
+	if m > 0 {
+		ratio = fmt.Sprintf(" (~%.1f× normal)", val/m)
+	}
+	msg := fmt.Sprintf("%s jumped to %s, vs a typical %s%s — %.1fσ above the recent baseline.",
+		capitalize(label), fmtMetricValue(unit, val), fmtMetricValue(unit, m), ratio, z)
+	if hint != "" {
+		msg += " " + hint
+	}
+	return msg + fmt.Sprintf(" (metric: %s)", name)
 }
 
 func formatSustained(name string, val, m float64, n int) string {
-	return fmt.Sprintf("%s has been elevated for %d consecutive checks (current=%.2f, mean=%.2f)",
-		name, n, val, m)
+	label, unit, hint := metricMeta(name)
+	msg := fmt.Sprintf("%s has stayed elevated for %d consecutive checks — now %s, vs a typical %s. This is a persistent shift, not a one-off spike.",
+		capitalize(label), n, fmtMetricValue(unit, val), fmtMetricValue(unit, m))
+	if hint != "" {
+		msg += " " + hint
+	}
+	return msg + fmt.Sprintf(" (metric: %s)", name)
 }
 
 func formatf(format string, args ...interface{}) string {

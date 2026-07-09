@@ -1,0 +1,20 @@
+{
+  "edition": "oss",
+  "features": {
+    "clusterAllReplicas": true,
+    "cluster_wide_logs": false,
+    "system.asynchronous_insert_log": false,
+    "system.asynchronous_inserts": true,
+    "system.backup_log": false,
+    "system.crash_log": false,
+    "system.disks.is_remote": true,
+    "system.disks.object_storage_type": true,
+    "system.dropped_tables": true,
+    "system.projections": true,
+    "system.query_views_log": false,
+    "system.remote_data_paths": true,
+    "system.session_log": false,
+    "system.text_log": false,
+    "system.zookeeper": false
+  }
+}

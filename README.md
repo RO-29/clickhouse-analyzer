@@ -83,6 +83,10 @@ CREATE USER IF NOT EXISTS monitoring IDENTIFIED BY 'your_password';
 GRANT SELECT ON system.* TO monitoring;
 GRANT SELECT ON *.* TO monitoring;
 GRANT SELECT, INSERT ON ch_analyzer.* TO monitoring;
+
+-- Optional, multi-replica ClickHouse Cloud only: enables cluster-wide *_log
+-- reads via clusterAllReplicas(). See "Migrations & grants" below for why.
+-- GRANT READ ON *.* TO monitoring;
 ```
 
 ### 2. Run the schema
@@ -96,6 +100,66 @@ clickhouse-client --host your-host --port 8443 --secure \
 ```
 
 Or just run `./setup.sh` (edit the credentials at the top first) — it handles the user, schema, binary install, and systemd service in one shot.
+
+### Migrations & grants (SQL changes in this release)
+
+Fresh installs get everything below from `schema.sql` / `setup.sh` automatically.
+For an **existing** install, apply the migration once; the grant is optional.
+
+**1. `query_samples.exception` column** — captures the exception *message* (not
+just the code) so error-sample drilldowns and failure views show *why* a query
+failed. Idempotent; existing rows default to `''`.
+
+```sql
+ALTER TABLE ch_analyzer.query_samples
+  ADD COLUMN IF NOT EXISTS exception String DEFAULT '';
+```
+
+**2. `READ ON REMOTE` grant (optional — multi-replica ClickHouse Cloud only).**
+Each replica writes its own `query_log`/`part_log`/etc. Without this grant, on a
+multi-replica service the log-backed tabs (Query Log, Failures, Merges & Parts,
+MV Performance, …) and the compatibility chip's `clusterAllReplicas` /
+`cluster_wide_logs` features see **only the replica the connection lands on** —
+incomplete. Granting it lets ch-analyzer fan reads across all replicas with
+`clusterAllReplicas()`. Run as an admin user (`monitoring` can't self-grant):
+
+```sql
+GRANT READ ON *.* TO monitoring;   -- CH 24.x+; the ACCESS_DENIED error names "READ ON REMOTE"
+```
+
+Leaving it ungranted is safe — those tabs simply reflect one replica, and the
+chip explains the gap. No action is needed for the Users/CPU tab: it reads the
+existing `cpu_user_us` / `cpu_system_us` columns (captured from `ProfileEvents`),
+already covered by the standard `SELECT` grant.
+
+#### Query behavior changes (no action required)
+
+Internal query-logic changes in this release. These change *what/how* ch-analyzer
+queries, but need no migration or grant — listed so the behavior is documented:
+
+- **Time ranges are now UTC-correct.** Epoch `from`/`to` are formatted with
+  `.UTC()` before interpolation into `event_time >= '…'` literals (ClickHouse
+  parses bare datetime literals in the server timezone — UTC on Cloud). Fixes
+  Explore/History tabs returning empty on the default 1h window when the app ran
+  in a non-UTC timezone. Applies to all `parseFromTo` callers and `compare.go`.
+- **Users tab measures real CPU.** `query-users` now aggregates
+  `cpu_user_us + cpu_system_us` (from `query_samples`) / `ProfileEvents['UserTimeMicroseconds'] + ['SystemTimeMicroseconds']`
+  (fallback on `system.query_log`) and orders by CPU — previously it summed
+  `query_duration_ms` (wall time) but labeled it CPU.
+- **Correct async-insert table.** Queue-depth checks and the capability probe use
+  `system.asynchronous_inserts` (the real table), not the non-existent
+  `system.asynchronous_insertions`.
+- **Cluster-aware log reads.** The cluster name is discovered from
+  `system.clusters` (not hardcoded `default`); when a multi-replica cluster is
+  usable, `*_log` reads are wrapped in `clusterAllReplicas('<cluster>', system.<table>)`
+  so history spans all replicas.
+- **S3 tab no longer starves.** The expensive `system.remote_data_paths` scan runs
+  concurrently with its own short budget and degrades to "n/a" on timeout, instead
+  of consuming the shared request deadline and stalling the rest of the S3 tab.
+- **Error-sample resilience.** The Samples query probes `system.columns` for the
+  optional `exception` column and selects it only when present, so it never
+  hard-fails (and silently falls back to short-retention `system.query_log`) on
+  installs that predate the column.
 
 ### 3. Configure
 
@@ -333,9 +397,45 @@ Set `k8s.enabled: true` in config only when the binary runs inside the cluster (
 
 ---
 
+## Version compatibility
+
+ch-analyzer runs against a wide range of ClickHouse deployments and adapts per
+instance — a single fleet can mix OSS and Cloud, and different versions, freely.
+
+| Deployment | Supported |
+|------------|-----------|
+| ClickHouse OSS (self-hosted) | **23.x → latest** |
+| ClickHouse Cloud | **25.3 → latest** |
+
+**How it works.** On first use (and every 6h) each instance is fingerprinted:
+`version()`, edition (`cloud_mode` setting, or a config override), replica count,
+and a probe-based feature registry (which `system.*` tables/columns exist, whether
+`system.zookeeper` is readable, whether `clusterAllReplicas` works). Every
+collector and query gates on these capabilities, so a feature missing on an older
+version or restricted on Cloud is **skipped gracefully or shown as "not
+supported"** — never a hard error or a silently-empty panel. The detected version,
+edition, and per-feature availability are shown in the **compatibility chip** in
+the Explore header and via `GET /api/instances/{name}/capabilities`.
+
+**Edition override.** Detection is automatic, but you can pin it per instance:
+
+```yaml
+instances:
+  - name: "prod-cloud"
+    host: "xxx.clickhouse.cloud"
+    mode: "cloud"        # auto (default) | oss | cloud
+```
+
+**Testing.** `make compat-test` spins up each OSS version in Docker, applies the
+schema, and runs `--compat-check` (detect capabilities + run every collector,
+failing on any hard error). The same matrix runs in CI (`.github/workflows/compat.yml`).
+Cloud is covered by a live smoke test since it can't run in a container.
+
 ## Requirements
 
 - Go 1.23+
 - Node 22+ (for frontend builds)
-- ClickHouse 22.x+ on monitored instances
+- ClickHouse **OSS 23.x+ or Cloud 25.3+** on monitored instances (older OSS mostly
+  works too — unsupported features degrade gracefully)
 - `clickhouse-client` in PATH (for `setup.sh` only)
+- Docker (only for `make compat-test`)
