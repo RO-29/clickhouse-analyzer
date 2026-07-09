@@ -6,7 +6,7 @@ import {
 import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { api } from '../lib/api'
-import { fmtBytes, fmtNum, fmtTime, fmtDuration, cn } from '../lib/utils'
+import { fmtBytes, fmtNum, fmtTime, fmtDuration, cn, chToDate } from '../lib/utils'
 import { Card, Section } from '../components/Card'
 import { Badge } from '../components/Badge'
 import { MetricChart } from '../components/MetricChart'
@@ -1199,7 +1199,7 @@ GROUP BY day ORDER BY day;`}</pre>
               <Card noPad>
                 <DataTable
                   columns={[
-                    { key: 'ts', label: 'Time', format: (v: any) => <span className="text-[var(--dim)]">{fmtTime(typeof v === 'string' ? new Date(v).getTime() / 1000 : v)}</span> },
+                    { key: 'ts', label: 'Time', format: (v: any) => <span className="text-[var(--dim)]">{fmtTime(typeof v === 'string' ? chToDate(v).getTime() / 1000 : v)}</span> },
                     { key: 'exception_code', label: 'Code' },
                     { key: 'cnt', label: 'Count', format: (v: any) => <span className="text-red-400">{fmtNum(v)}</span> },
                     { key: 'sample', label: 'Sample', format: (v: any) => <span className="text-[var(--dim)] font-mono truncate block max-w-sm" title={String(v ?? '')}>{String(v ?? '')}</span> },
@@ -1218,7 +1218,7 @@ GROUP BY day ORDER BY day;`}</pre>
               <Card noPad>
                 <DataTable
                   columns={[
-                    { key: 'ts', label: 'Time', format: (v: any) => <span className="text-[var(--dim)]">{fmtTime(typeof v === 'string' ? new Date(v).getTime() / 1000 : v)}</span> },
+                    { key: 'ts', label: 'Time', format: (v: any) => <span className="text-[var(--dim)]">{fmtTime(typeof v === 'string' ? chToDate(v).getTime() / 1000 : v)}</span> },
                     { key: 'merge_count', label: 'Merges', format: (v: any) => fmtNum(v) },
                     { key: 'new_part_count', label: 'New Parts', format: (v: any) => fmtNum(v) },
                     { key: 'avg_merge_ms', label: 'Avg Merge', format: (v: any) => fmtDuration(v) },

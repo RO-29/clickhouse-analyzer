@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -686,6 +687,56 @@ func (s *Server) handleS3Stats(w http.ResponseWriter, r *http.Request) {
 		s3DiskFilter = " disk_name LIKE '%s3%'"
 	}
 
+	// system.remote_data_paths: the authoritative list of objects CH's storage
+	// layer believes it owns on remote disks. Comparing this sum to the actual
+	// S3 bucket size reveals orphans. Available CH 22.6+; missing on older
+	// versions, in which case we silently skip.
+	//
+	// This table enumerates EVERY remote object, so `count()/sum(size)` is a
+	// full unindexable scan — on ClickHouse Cloud (TBs across millions of parts)
+	// it routinely exceeds 30s. Run it CONCURRENTLY with the other (sub-second)
+	// queries on its own tight budget so it never sits on the critical path or
+	// starves them (the old "latency by query/table failed: context deadline
+	// exceeded" symptom). If it can't finish in budget we degrade to
+	// RemoteTrackedAvailable=false; the volume-by-table numbers still populate.
+	type remoteResult struct {
+		available bool
+		count     int
+		bytes     float64
+	}
+	remoteSQL := `
+		SELECT count() AS cnt, sum(size) AS bytes
+		FROM system.remote_data_paths`
+	if len(resp.S3Disks) > 0 {
+		quoted := make([]string, 0, len(resp.S3Disks))
+		for _, n := range resp.S3Disks {
+			quoted = append(quoted, "'"+sqlSafeStr(n)+"'")
+		}
+		remoteSQL += " WHERE disk_name IN (" + strings.Join(quoted, ", ") + ")"
+	}
+	remoteCh := make(chan remoteResult, 1)
+	go func() {
+		rctx, rcancel := context.WithTimeout(r.Context(), 4*time.Second)
+		defer rcancel()
+		rRows, err := client.Query(rctx, remoteSQL)
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				slog.Debug("s3 stats: system.remote_data_paths scan too slow, skipped", "instance", instance)
+			} else {
+				// Most common: CH < 22.6 lacks the table.
+				slog.Debug("s3 stats: system.remote_data_paths unavailable", "instance", instance, "err", err)
+			}
+			remoteCh <- remoteResult{}
+			return
+		}
+		res := remoteResult{available: true}
+		if len(rRows) > 0 {
+			res.count = int(float64Val(rRows[0]["cnt"]))
+			res.bytes = float64Val(rRows[0]["bytes"])
+		}
+		remoteCh <- res
+	}()
+
 	// S3 data volume by table — active parts only (the headline number).
 	volSQL := `
 		SELECT database, table, disk_name, count() as parts,
@@ -704,33 +755,6 @@ func (s *Server) handleS3Stats(w http.ResponseWriter, r *http.Request) {
 	inactSQL := `SELECT sum(bytes_on_disk) AS bytes FROM system.parts WHERE active = 0 AND` + s3DiskFilter
 	if iRows, err := client.Query(ctx, inactSQL); err == nil && len(iRows) > 0 {
 		resp.InactiveBytes = float64Val(iRows[0]["bytes"])
-	}
-
-	// system.remote_data_paths: the authoritative list of objects CH's
-	// storage layer believes it owns on remote disks. Comparing this sum to
-	// the actual S3 bucket size reveals orphans. Available CH 22.6+; missing
-	// on older versions, in which case we silently skip.
-	remoteSQL := `
-		SELECT count() AS cnt, sum(size) AS bytes
-		FROM system.remote_data_paths`
-	if len(resp.S3Disks) > 0 {
-		quoted := make([]string, 0, len(resp.S3Disks))
-		for _, n := range resp.S3Disks {
-			quoted = append(quoted, "'"+sqlSafeStr(n)+"'")
-		}
-		remoteSQL += " WHERE disk_name IN (" + strings.Join(quoted, ", ") + ")"
-	}
-	if rRows, err := client.Query(ctx, remoteSQL); err == nil {
-		resp.RemoteTrackedAvailable = true
-		if len(rRows) > 0 {
-			resp.RemoteTrackedCount = int(float64Val(rRows[0]["cnt"]))
-			resp.RemoteTrackedBytes = float64Val(rRows[0]["bytes"])
-		}
-	} else {
-		// Most common failure: CH < 22.6 doesn't have system.remote_data_paths.
-		// Log at debug — operators on old CH see this every poll.
-		slog.Debug("s3 stats: system.remote_data_paths unavailable",
-			"instance", instance, "err", err)
 	}
 
 	// Detached parts on S3 disks. system.detached_parts has `disk` (CH 22+)
@@ -826,6 +850,14 @@ func (s *Server) handleS3Stats(w http.ResponseWriter, r *http.Request) {
 	} else {
 		resp.LatencyByTable = rows
 	}
+
+	// Join the concurrent remote_data_paths scan (launched above). It runs on
+	// its own 6s budget, so by now it has usually already finished or given up;
+	// this only blocks for whatever slack remains in that budget.
+	rr := <-remoteCh
+	resp.RemoteTrackedAvailable = rr.available
+	resp.RemoteTrackedCount = rr.count
+	resp.RemoteTrackedBytes = rr.bytes
 
 	writeJSON(w, http.StatusOK, resp)
 }

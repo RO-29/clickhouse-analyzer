@@ -52,6 +52,18 @@ func (c *KeeperCollector) Collect(ctx context.Context, client *chclient.Client) 
 			return result, nil
 		}
 
+		// No grant on system.zookeeper — skip silently. On ClickHouse Cloud /
+		// managed services Keeper is not operator-visible and SELECT ON
+		// system.zookeeper is intentionally withheld; there is nothing to probe.
+		// Replication health is covered by the replication collector, which uses
+		// system.replicas / system.replication_queue instead.
+		if strings.Contains(errStr, "ACCESS_DENIED") ||
+			strings.Contains(errStr, "Not enough privileges") ||
+			strings.Contains(errStr, "Code: 497") {
+			result.Duration = time.Since(start)
+			return result, nil
+		}
+
 		// Connection failure — alert.
 		if strings.Contains(errStr, "ALL_CONNECTION_TRIES_FAILED") ||
 			strings.Contains(errStr, "CANNOT_CONNECT") ||

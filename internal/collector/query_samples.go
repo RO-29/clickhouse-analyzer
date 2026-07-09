@@ -139,6 +139,7 @@ func (c *QuerySamplesCollector) readQueryLog(ctx context.Context, client *chclie
 			result_rows,
 			result_bytes,
 			exception_code,
+			substring(ifNull(exception, ''), 1, 4000) AS exception,
 			if(type = 'ExceptionWhileProcessing', 1, 0) AS is_exception,
 			client_name,
 			interface,
@@ -192,7 +193,7 @@ func (c *QuerySamplesCollector) insertRows(ctx context.Context, client *chclient
 			(event_time, user, query_kind, normalized_query_hash, query_text,
 			 query_duration_ms, memory_usage, read_rows, read_bytes,
 			 written_rows, written_bytes, result_rows, result_bytes,
-			 exception_code, is_exception, client_name, interface,
+			 exception_code, exception, is_exception, client_name, interface,
 			 databases, tables, cpu_user_us, cpu_system_us,
 			 initial_address, interface_code, http_user_agent, forwarded_for) VALUES `)
 
@@ -207,7 +208,7 @@ func (c *QuerySamplesCollector) insertRows(ctx context.Context, client *chclient
 				maxTime = t
 			}
 
-			sb.WriteString(fmt.Sprintf("('%s','%s','%s',%s,'%s',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'%s','%s',%s,%s,%s,%s,'%s',%s,'%s','%s')",
+			sb.WriteString(fmt.Sprintf("('%s','%s','%s',%s,'%s',%s,%s,%s,%s,%s,%s,%s,%s,%s,'%s',%s,'%s','%s',%s,%s,%s,%s,'%s',%s,'%s','%s')",
 				sqlEscape(evtTime),
 				sqlEscape(toString(row["user"])),
 				sqlEscape(toString(row["query_kind"])),
@@ -222,6 +223,7 @@ func (c *QuerySamplesCollector) insertRows(ctx context.Context, client *chclient
 				safeUInt64(row["result_rows"]),
 				safeUInt64(row["result_bytes"]),
 				safeInt32(row["exception_code"]),
+				sqlEscape(toString(row["exception"])),
 				safeUInt8(row["is_exception"]),
 				sqlEscape(toString(row["client_name"])),
 				sqlEscape(toString(row["interface"])),

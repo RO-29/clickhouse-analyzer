@@ -17,6 +17,44 @@ export function fmtTime(unix: number): string {
   })
 }
 
+/**
+ * Parse a ClickHouse timestamp into a Date.
+ *
+ * ClickHouse returns naive datetime strings ("YYYY-MM-DD HH:MM:SS", UTC on
+ * ClickHouse Cloud) with no timezone marker. `new Date("2026-07-09 06:48:22")`
+ * would parse that as *local* time, shifting it by the viewer's UTC offset. We
+ * pin such strings to UTC so downstream toLocale* renders them in the viewer's
+ * local timezone \u2014 i.e. query in UTC, display in local.
+ *
+ * Numbers are treated as epoch seconds; strings that already carry a zone
+ * (trailing Z or \u00b1hh:mm, e.g. Go RFC3339) are trusted as-is.
+ */
+export function chToDate(s: string | number | null | undefined): Date {
+  if (s == null || s === '') return new Date(NaN)
+  if (typeof s === 'number') return new Date(s * 1000)
+  const str = String(s).trim()
+  if (/([zZ]|[+-]\d\d:?\d\d)$/.test(str)) return new Date(str)
+  return new Date(str.replace(' ', 'T') + 'Z')
+}
+
+/** ClickHouse UTC timestamp \u2192 local "dd Mon, HH:MM". */
+export function fmtCHDateTime(s: string | number | null | undefined): string {
+  const d = chToDate(s)
+  if (isNaN(d.getTime())) return '\u2014'
+  return d.toLocaleString('en-GB', {
+    day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
+  })
+}
+
+/** ClickHouse UTC timestamp \u2192 local "dd/MM HH:MM:SS" (compact, for dense tables). */
+export function fmtCHClock(s: string | number | null | undefined): string {
+  const d = chToDate(s)
+  if (isNaN(d.getTime())) return '\u2014'
+  return d.toLocaleString('en-GB', {
+    day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
+  })
+}
+
 export function fmtDuration(ms: number | string | null | undefined): string {
   const n = Number(ms)
   if (!isFinite(n)) return '—'

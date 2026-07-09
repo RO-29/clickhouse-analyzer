@@ -5,7 +5,7 @@ import { useStore } from '../hooks/useStore'
 import { useAIAnalysis } from '../hooks/useAIAnalysis'
 import { useDebouncedValue } from '../hooks/useDebouncedValue'
 import { api } from '../lib/api'
-import { fmtBytes, fmtNum, fmtDuration, fmtCompact, cn, latencyBg, kindBg, tokenizeSql } from '../lib/utils'
+import { fmtBytes, fmtNum, fmtDuration, fmtCompact, cn, latencyBg, kindBg, tokenizeSql, chToDate, fmtCHDateTime, fmtCHClock } from '../lib/utils'
 import { Card } from '../components/Card'
 import { HistoryChart } from '../components/HistoryChart'
 import { DataTable } from '../components/DataTable'
@@ -752,14 +752,30 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
 
   // ── Recharts stacked bar data for overview ─────────────────────────────────
   const COLORS = ['#7c3aed','#22c55e','#f59e0b','#ef4444','#3b82f6','#06b6d4','#f97316','#ec4899']
-  const { stackedChartData, patternKeys } = (() => {
-    if (!overview || !overview.timeline?.length || !overview.patterns?.length) return { stackedChartData: null, patternKeys: [] }
+  const { stackedChartData, patternKeys, patternLabels } = (() => {
+    if (!overview || !overview.timeline?.length || !overview.patterns?.length) return { stackedChartData: null, patternKeys: [], patternLabels: [] }
     const allTs = [...new Set(overview.timeline.map(r => r.ts))].sort()
     const fmtTs = (ts: string) => {
-      const d = new Date(ts)
+      const d = chToDate(ts)
       return isNaN(d.getTime()) ? ts : d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
     }
+    // dataKey stays the hash (unique + stable); the human-readable label is the
+    // normalized query text the backend returns (substring of query_text). Fall
+    // back to a short hash tag only when the sample text is empty.
     const keys = overview.patterns.map(p => String(p.normalized_query_hash).slice(0, 10))
+    const labels = overview.patterns.map(p => {
+      // Prefer "KIND table" (e.g. "SELECT users", "INSERT events") — the most
+      // identifiable label. Pick the first non-system table the pattern touches.
+      const kind = String(p.kind ?? '').trim()
+      const tbls = Array.isArray(p.tables) ? p.tables : []
+      const tbl = tbls.find(t => t && !t.startsWith('system.') && !t.startsWith('information_schema.')) ?? tbls[0]
+      if (kind && tbl) return `${kind.toUpperCase()} ${shortTableName(tbl)}`
+      if (kind && !tbl) return kind.toUpperCase()
+      // Fall back to the query-text snippet, then a short hash tag.
+      const raw = String(p.label ?? '').replace(/\s+/g, ' ').trim()
+      if (raw) return raw.length > 44 ? raw.slice(0, 44) + '…' : raw
+      return `#${String(p.normalized_query_hash).slice(0, 8)}`
+    })
     const data = allTs.map(ts => {
       const row: Record<string, any> = { ts: fmtTs(ts) }
       overview.patterns.forEach((p, i) => {
@@ -768,7 +784,7 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
       })
       return row
     })
-    return { stackedChartData: data, patternKeys: keys }
+    return { stackedChartData: data, patternKeys: keys, patternLabels: labels }
   })()
 
   // ── table columns — Datadog order: query first, then metrics ─────────────
@@ -950,7 +966,7 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
                   cursor={{ fill: 'rgba(124,58,237,0.06)' }}
                 />
                 {patternKeys.map((k, i) => (
-                  <Bar key={k} dataKey={k} stackId="a" fill={COLORS[i % COLORS.length]} fillOpacity={0.85} />
+                  <Bar key={k} dataKey={k} name={patternLabels[i] ?? k} stackId="a" fill={COLORS[i % COLORS.length]} fillOpacity={0.85} />
                 ))}
               </BarChart>
             </ResponsiveContainer>
@@ -958,9 +974,9 @@ function QueryPatternsTab({ instance, from, to, refreshKey, onAnalyze, onShowQue
           {/* Legend */}
           <div className="px-4 pb-2.5 flex items-center gap-3 flex-wrap border-t border-[var(--border)] pt-2">
             {patternKeys.slice(0, 8).map((k, i) => (
-              <span key={k} className="flex items-center gap-1.5 text-[10px] text-[var(--dim)]">
+              <span key={k} className="flex items-center gap-1.5 text-[10px] text-[var(--dim)] max-w-[220px]" title={patternLabels[i] ?? k}>
                 <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: COLORS[i % COLORS.length] }} />
-                {k}
+                <span className="font-mono truncate">{patternLabels[i] ?? k}</span>
               </span>
             ))}
           </div>
@@ -1449,7 +1465,7 @@ function ConnectionsTab({ instance, from, to, refreshKey, onShowQuery: _onShowQu
                   key={i}
                   className="grid gap-2 px-3 py-2 text-xs hover:bg-[var(--hover)] transition-colors"
                   style={{ gridTemplateColumns: '170px 120px 70px 80px 80px 80px 80px 80px 1fr' }}
-                  title={`first ${c.first_seen} · last ${c.last_seen}${fwd ? ` · fwd ${fwd}` : ''}`}
+                  title={`first ${fmtCHDateTime(c.first_seen)} · last ${fmtCHDateTime(c.last_seen)}${fwd ? ` · fwd ${fwd}` : ''}`}
                 >
                   <span className="font-mono text-[var(--fg)] truncate">{c.initial_address}</span>
                   <span className="truncate text-[var(--dim)]" title={c.user}>{c.user || '—'}</span>
@@ -1533,7 +1549,7 @@ function ConnectionsTab({ instance, from, to, refreshKey, onShowQuery: _onShowQu
                   className="grid gap-2 px-3 py-2 text-xs hover:bg-[var(--hover)] transition-colors"
                   style={{ gridTemplateColumns: '140px 80px 160px 100px 100px 100px 1fr' }}
                 >
-                  <span className="font-mono text-[var(--dim)] tabular-nums">{String(s.event_time).slice(5, 19)}</span>
+                  <span className="font-mono text-[var(--dim)] tabular-nums" title={fmtCHDateTime(s.event_time)}>{fmtCHClock(s.event_time)}</span>
                   <span className={cn('font-mono text-[10px] uppercase', typeColor)}>{type}</span>
                   <span className="truncate font-mono text-[var(--fg)]" title={s.user}>{s.user || '—'}</span>
                   <span className="truncate text-[var(--dim)]" title={s.auth_type}>{s.auth_type || '—'}</span>
@@ -1771,8 +1787,8 @@ function QueryLogTab({ instance, from, to, refreshKey, onShowQuery }: TabProps) 
                   style={{ gridTemplateColumns: '120px 80px 60px 60px 90px 80px 90px 1fr 160px' }}
                   onClick={() => onShowQuery(q)}
                 >
-                  <span className="font-mono text-[var(--dim)] tabular-nums truncate" title={evtTime}>
-                    {evtTime.slice(5, 19)}
+                  <span className="font-mono text-[var(--dim)] tabular-nums truncate" title={fmtCHDateTime(evtTime)}>
+                    {fmtCHClock(evtTime)}
                   </span>
                   <span className="truncate text-[var(--dim)]" title={String(s.user ?? '')}>
                     {String(s.user ?? '')}
@@ -2123,8 +2139,8 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
                   className="w-full flex items-center gap-3 px-3 py-2 hover:bg-[var(--hover)] transition-colors text-left"
                 >
                   {isOpen ? <ChevronDown size={13} className="shrink-0 text-[var(--dim)]" /> : <ChevronRight size={13} className="shrink-0 text-[var(--dim)]" />}
-                  <span className="text-xs text-[var(--dim)] tabular-nums w-36 shrink-0">
-                    {String(s.event_time).slice(0, 19)}
+                  <span className="text-xs text-[var(--dim)] tabular-nums w-36 shrink-0" title={fmtCHDateTime(s.event_time)}>
+                    {fmtCHClock(s.event_time)}
                   </span>
                   <span className={cn('text-xs font-semibold tabular-nums w-20 shrink-0', durationColor(s.query_duration_ms))}>
                     {fmtDuration(s.query_duration_ms)}
@@ -2189,15 +2205,23 @@ function SamplesTab({ instance, from, to, refreshKey, onShowQuery, initialHash, 
                         ))}
                       </div>
                     )}
-                    {/* Exception message */}
-                    {s.is_exception === 1 && s.exception && (
+                    {/* Exception — show for every failed sample. The message text
+                        is only present for failures captured after the query_samples
+                        `exception` column was added; older rows carry just the code. */}
+                    {s.is_exception === 1 && (
                       <div>
                         <div className="text-[11px] font-semibold text-red-400 mb-1">
-                          Error {s.exception_code}
+                          Error{s.exception_code ? ` ${s.exception_code}` : ''}
                         </div>
-                        <pre className="text-xs font-mono text-red-300/80 whitespace-pre-wrap break-all leading-relaxed bg-red-500/5 border border-red-500/15 rounded p-2 max-h-28 overflow-y-auto">
-                          {s.exception}
-                        </pre>
+                        {s.exception ? (
+                          <pre className="text-xs font-mono text-red-300/80 whitespace-pre-wrap break-all leading-relaxed bg-red-500/5 border border-red-500/15 rounded p-2 max-h-28 overflow-y-auto">
+                            {s.exception}
+                          </pre>
+                        ) : (
+                          <div className="text-[11px] italic text-[var(--dim)] bg-red-500/5 border border-red-500/15 rounded p-2">
+                            Error message not recorded for this sample{s.exception_code ? ` (exception code ${s.exception_code})` : ''}. Messages are captured for failures after the query_samples <span className="font-mono not-italic">exception</span> column is added.
+                          </div>
+                        )}
                       </div>
                     )}
                     {/* Query text — full, no height cap (use the expand button for the modal if needed) */}

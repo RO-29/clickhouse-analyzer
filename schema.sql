@@ -104,6 +104,7 @@ CREATE TABLE IF NOT EXISTS ch_analyzer.query_samples (
     result_rows           UInt64,
     result_bytes          UInt64,
     exception_code        Int32,
+    exception             String                 DEFAULT '',
     is_exception          UInt8,
     client_name           LowCardinality(String),
     interface             LowCardinality(String),
@@ -162,6 +163,14 @@ ALTER TABLE ch_analyzer.query_samples
     ADD COLUMN IF NOT EXISTS http_user_agent String DEFAULT '';
 ALTER TABLE ch_analyzer.query_samples
     ADD COLUMN IF NOT EXISTS forwarded_for String DEFAULT '';
+
+-- query_samples.exception — the exception MESSAGE text (not just the code) for
+-- failed queries, so the Samples "errors only" view can show why a query failed.
+-- Before this column existed, the Samples read selected a non-existent `exception`
+-- column, which hard-errored query_samples and silently fell back to the
+-- short-retention system.query_log (breaking error drills on ClickHouse Cloud).
+ALTER TABLE ch_analyzer.query_samples
+    ADD COLUMN IF NOT EXISTS exception String DEFAULT '';
 
 -- query_samples retention: bump from the old 30-day default to 365 days so
 -- long-range forensics work. If you need to claw storage back, override with:

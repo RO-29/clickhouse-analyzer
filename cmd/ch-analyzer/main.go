@@ -943,8 +943,22 @@ func (a *alertStoreAdapter) ResolveAlert(dedupKey string) error {
 	return a.store.ResolveAlert(dedupKey)
 }
 
-func (a *alertStoreAdapter) TouchAlerts(dedupKeys []string) error {
-	return a.store.BulkTouchAlerts(dedupKeys)
+func (a *alertStoreAdapter) RefreshAlerts(alerts []collector.Alert) error {
+	if len(alerts) == 0 {
+		return nil
+	}
+	out := make([]store.Alert, 0, len(alerts))
+	for _, al := range alerts {
+		out = append(out, store.Alert{
+			Instance: al.Instance,
+			Severity: string(al.Severity),
+			Category: al.Category,
+			Title:    al.Title,
+			Message:  al.Message,
+			DedupKey: al.DedupKey,
+		})
+	}
+	return a.store.BulkRefreshAlerts(out)
 }
 
 func (a *alertStoreAdapter) AutoResolveStale(olderThan time.Duration) (int64, error) {

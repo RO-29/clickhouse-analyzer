@@ -230,6 +230,8 @@ export interface PatternOverviewResponse {
     normalized_query_hash: string
     total_ms: number
     label: string
+    kind?: string
+    tables?: string[]
   }>
   timeline: Array<{
     ts: string

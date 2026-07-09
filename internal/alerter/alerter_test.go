@@ -335,7 +335,7 @@ func (f *fakeStore) ResolveAlert(dedupKey string) error {
 	return nil
 }
 
-func (f *fakeStore) TouchAlerts(_ []string) error { return nil }
+func (f *fakeStore) RefreshAlerts(_ []collector.Alert) error { return nil }
 
 func (f *fakeStore) AutoResolveStale(_ time.Duration) (int64, error) { return 0, nil }
 

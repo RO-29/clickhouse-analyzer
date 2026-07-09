@@ -21,9 +21,13 @@ type StoreInterface interface {
 	InsertAlert(alert collector.Alert) (int64, error)
 	// ResolveAlert marks the alert identified by dedupKey as resolved.
 	ResolveAlert(dedupKey string) error
-	// TouchAlerts bumps updated_at = now() for the given dedup keys. Used to
-	// keep staleness detection accurate; rate-limited by the alerter.
-	TouchAlerts(dedupKeys []string) error
+	// RefreshAlerts updates still-firing alerts in place: it bumps
+	// updated_at = now() AND refreshes message/title/severity to the latest
+	// collector output, preserving created_at / first_seen_at / fire_count.
+	// Rate-limited by the alerter. This keeps long-lived alerts (anomalies,
+	// recurring errors) showing current detail instead of the text frozen at
+	// first fire.
+	RefreshAlerts(alerts []collector.Alert) error
 	// AutoResolveStale marks any resolved=0 alert with updated_at older than
 	// olderThan as resolved. Called from the heartbeat loop as a safety net
 	// against ghost alerts that escaped the clean-check resolution path
@@ -302,12 +306,12 @@ func (am *AlertManager) ReconcileWithObservation(ctx context.Context, currentAle
 	// ── Compute diff ────────────────────────────────────────────────────────
 	var (
 		toInsert []collector.Alert // firing now, no open DB row
-		toTouch  []string          // firing now, open DB row
+		toTouch  []collector.Alert // firing now, open DB row (refresh in place)
 		missing  []collector.Alert // open DB row, not firing now
 	)
 	for key, a := range currentByKey {
 		if _, ok := dbByKey[key]; ok {
-			toTouch = append(toTouch, key)
+			toTouch = append(toTouch, a)
 		} else {
 			toInsert = append(toInsert, a)
 		}
@@ -429,8 +433,8 @@ func (am *AlertManager) ReconcileWithObservation(ctx context.Context, currentAle
 	}
 	am.mu.Unlock()
 	if shouldTouch {
-		if err := am.store.TouchAlerts(toTouch); err != nil {
-			am.logger.Debug("touch alerts failed", slog.String("err", err.Error()))
+		if err := am.store.RefreshAlerts(toTouch); err != nil {
+			am.logger.Debug("refresh alerts failed", slog.String("err", err.Error()))
 		}
 	}
 
