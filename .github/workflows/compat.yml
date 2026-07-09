@@ -22,6 +22,14 @@ jobs:
     services:
       clickhouse:
         image: clickhouse/clickhouse-server:${{ matrix.ch_version }}
+        # CH 24.x+ entrypoints lock the passwordless `default` user to
+        # 127.0.0.1/::1 when no password is set. In CI the client reaches the
+        # service over the Docker bridge (not localhost), so it 401s on 24.3+
+        # while 23.x (no such lockdown) passed. Skipping user setup keeps the
+        # image's built-in default user (empty password, network-open) across
+        # all versions, matching the empty-password compat config below.
+        env:
+          CLICKHOUSE_SKIP_USER_SETUP: 1
         ports:
           - 18123:8123
         options: >-
@@ -69,36 +77,25 @@ jobs:
           print(f"schema: {applied} applied, {errors} warnings")
           PY
 
-      - name: Write compat config
-        run: |
-          cat > /tmp/compat.yaml <<'YAML'
-          instances:
-            - name: "compat"
-              host: "localhost"
-              port: 18123
-              username: "default"
-              password: ""
-              secure: false
-              mode: "oss"
-          storage:
-            database: "ch_analyzer"
-          web:
-            enabled: false
-          YAML
+      # Full per-feature e2e: capabilities + every collector + every read-only
+      # /api endpoint (boots the real web server). Same script runs locally
+      # (scripts/compat-test.sh) so local and CI produce an identical report.
+      - name: Run feature-check
+        env:
+          CH_PORT: "18123"
+          WEB_PORT: "18080"
+        run: scripts/feature-check.sh "${{ matrix.ch_version }}"
 
-      - name: Run compat-check
-        run: ./bin/ch-analyzer --config /tmp/compat.yaml --compat-check > /tmp/report.json
-
-      - name: Summarize
+      - name: Job summary
         if: always()
         run: |
-          python3 - <<'PY'
-          import json
-          data = json.load(open("/tmp/report.json"))
-          for inst in data:
-              c = inst["capabilities"]
-              print(f"version={c['version']['Raw']} edition={c['edition']} replicas={c['replicas']} hard_errors={inst['hard_errors']}")
-              for col in inst["collectors"]:
-                  if not col["ok"]:
-                      print(f"  FAIL {col['name']}: {col.get('error','')[:200]}")
-          PY
+          f="test/compat/reports/${{ matrix.ch_version }}.md"
+          [ -f "$f" ] && cat "$f" >> "$GITHUB_STEP_SUMMARY" || echo "no report produced for ${{ matrix.ch_version }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: feature-report-${{ matrix.ch_version }}
+          path: test/compat/reports/${{ matrix.ch_version }}.md
+          if-no-files-found: warn

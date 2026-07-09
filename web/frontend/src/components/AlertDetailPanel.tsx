@@ -158,7 +158,7 @@ WHERE event_time > now() - INTERVAL 5 MINUTE`,
     ],
     queries: [
       { label: 'Async insert flush errors (last 30 min)', sql: `SELECT event_time, status, exception, substring(query, 1, 200) AS q\nFROM system.asynchronous_insert_log\nWHERE status = 'ExceptionWhileFlushing'\n  AND event_time > now() - INTERVAL 30 MINUTE\nORDER BY event_time DESC\nLIMIT 20` },
-      { label: 'Currently pending async queue', sql: `SELECT database, table, count() AS queue_entries\nFROM system.asynchronous_insertions\nGROUP BY database, table\nORDER BY queue_entries DESC` },
+      { label: 'Currently pending async queue', sql: `SELECT database, table, count() AS queue_entries\nFROM system.asynchronous_inserts\nGROUP BY database, table\nORDER BY queue_entries DESC` },
       { label: 'Disk space', sql: `SELECT name, formatReadableSize(free_space) AS free, formatReadableSize(total_space) AS total\nFROM system.disks` },
     ],
   },
@@ -166,7 +166,7 @@ WHERE event_time > now() - INTERVAL 5 MINUTE`,
   'async_inserts:queue': {
     what: 'The async insert queue is growing — the flush thread cannot keep up with incoming data. If the queue fills completely, new inserts will be rejected.',
     triggerSql: `SELECT count() AS queue_depth
-FROM system.asynchronous_insertions`,
+FROM system.asynchronous_inserts`,
     triggerNote: `Fires when queue_depth > 50 (warn) or > 100 (critical).`,
     why: [
       'Insert rate exceeds the flush thread throughput',
@@ -174,7 +174,7 @@ FROM system.asynchronous_insertions`,
       'async_insert_busy_timeout_ms is too high — accumulating before flush',
     ],
     queries: [
-      { label: 'Queue depth by table', sql: `SELECT database, table, count() AS queue_entries\nFROM system.asynchronous_insertions\nGROUP BY database, table\nORDER BY queue_entries DESC` },
+      { label: 'Queue depth by table', sql: `SELECT database, table, count() AS queue_entries\nFROM system.asynchronous_inserts\nGROUP BY database, table\nORDER BY queue_entries DESC` },
       { label: 'Recent flush stats', sql: `SELECT status, count() AS cnt,\n  avg(flush_time_microseconds)/1000 AS avg_flush_ms\nFROM system.asynchronous_insert_log\nWHERE event_time > now() - INTERVAL 5 MINUTE\nGROUP BY status` },
     ],
   },

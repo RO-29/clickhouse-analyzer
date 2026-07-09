@@ -4,7 +4,7 @@
     "clusterAllReplicas": true,
     "cluster_wide_logs": false,
     "system.asynchronous_insert_log": false,
-    "system.asynchronous_insertions": false,
+    "system.asynchronous_inserts": true,
     "system.backup_log": false,
     "system.crash_log": false,
     "system.disks.is_remote": true,

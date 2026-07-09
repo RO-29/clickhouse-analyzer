@@ -305,7 +305,7 @@ GROUP BY t.database, t.name HAVING part_count > 5 AND oldest_part_days > 14`,
 				`SELECT count() AS total, countIf(status = 'ExceptionWhileFlushing') AS errors
 FROM system.asynchronous_insert_log
 WHERE event_time > now() - INTERVAL 5 MINUTE`,
-				`SELECT count() AS queue_depth FROM system.asynchronous_insertions`,
+				`SELECT count() AS queue_depth FROM system.asynchronous_inserts`,
 			},
 		},
 		{

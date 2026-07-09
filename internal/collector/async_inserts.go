@@ -92,8 +92,8 @@ func (c *AsyncInsertsCollector) Collect(ctx context.Context, client *chclient.Cl
 		}
 	}
 
-	// Check pending queue depth (system.asynchronous_insertions — CH 22.4+).
-	queueSQL := `SELECT count() AS queue_depth FROM system.asynchronous_insertions`
+	// Check pending queue depth (system.asynchronous_inserts — CH 22.4+).
+	queueSQL := `SELECT count() AS queue_depth FROM system.asynchronous_inserts`
 	qRows, qErr := client.Query(ctx, queueSQL)
 	if qErr == nil && len(qRows) > 0 {
 		depth := getFloat(qRows[0], "queue_depth")
@@ -103,7 +103,7 @@ func (c *AsyncInsertsCollector) Collect(ctx context.Context, client *chclient.Cl
 			result.AddAlert(client.Name(), SeverityCritical, "inserts",
 				fmt.Sprintf("Async insert queue very deep: %.0f entries", depth),
 				fmt.Sprintf("The async insert buffer has %.0f pending entries — flush thread is likely falling behind.\n\n"+
-					"*Investigate:*\n```\nSELECT database, table, count() AS cnt\nFROM system.asynchronous_insertions\n"+
+					"*Investigate:*\n```\nSELECT database, table, count() AS cnt\nFROM system.asynchronous_inserts\n"+
 					"GROUP BY database, table ORDER BY cnt DESC\n```",
 					depth),
 				dedupKey)

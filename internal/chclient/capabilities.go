@@ -72,7 +72,7 @@ type Feature string
 const (
 	FeatureDroppedTables    Feature = "system.dropped_tables"
 	FeatureAsyncInsertLog   Feature = "system.asynchronous_insert_log"
-	FeatureAsyncInsertions  Feature = "system.asynchronous_insertions"
+	FeatureAsyncInsertions  Feature = "system.asynchronous_inserts"
 	FeatureZookeeper        Feature = "system.zookeeper"
 	FeatureRemoteDataPaths  Feature = "system.remote_data_paths"
 	FeatureTextLog          Feature = "system.text_log"
@@ -97,12 +97,12 @@ type FeatureStatus struct {
 
 // Capabilities is the per-instance, cached result of capability detection.
 type Capabilities struct {
-	Version    Version                  `json:"version"`
-	Edition    Edition                  `json:"edition"`
-	Replicas   int                      `json:"replicas"`   // from clusterAllReplicas probe; 1 if single/unknown
-	Cluster    string                   `json:"cluster"`    // cluster name used for cluster-wide reads
+	Version    Version                   `json:"version"`
+	Edition    Edition                   `json:"edition"`
+	Replicas   int                       `json:"replicas"` // from clusterAllReplicas probe; 1 if single/unknown
+	Cluster    string                    `json:"cluster"`  // cluster name used for cluster-wide reads
 	Features   map[Feature]FeatureStatus `json:"features"`
-	DetectedAt time.Time                `json:"detected_at"`
+	DetectedAt time.Time                 `json:"detected_at"`
 }
 
 // Has reports whether a feature is available on this instance.
@@ -218,8 +218,11 @@ func (c *Client) detectCapabilities(ctx context.Context) *Capabilities {
 	sysColumns := c.systemColumnSet(dctx, "disks")
 
 	// ── cluster / multi-node probe ───────────────────────────────────────────
-	replicas, clusterOK := c.probeClusterReplicas(dctx)
+	replicas, clusterOK, clusterName, clusterReason := c.probeClusterReplicas(dctx)
 	caps.Replicas = replicas
+	if clusterName != "" {
+		caps.Cluster = clusterName
+	}
 
 	// ── resolve features ─────────────────────────────────────────────────────
 	tableFeature := func(f Feature, table string, sinceNote string) {
@@ -231,7 +234,7 @@ func (c *Client) detectCapabilities(ctx context.Context) *Capabilities {
 	}
 	tableFeature(FeatureDroppedTables, "dropped_tables", "system.dropped_tables not present (needs CH 22.3+)")
 	tableFeature(FeatureAsyncInsertLog, "asynchronous_insert_log", "system.asynchronous_insert_log not present or disabled (needs CH 22.4+)")
-	tableFeature(FeatureAsyncInsertions, "asynchronous_insertions", "system.asynchronous_insertions not present (needs CH 22.4+)")
+	tableFeature(FeatureAsyncInsertions, "asynchronous_inserts", "system.asynchronous_inserts not present (needs CH 22.4+)")
 	tableFeature(FeatureRemoteDataPaths, "remote_data_paths", "system.remote_data_paths not present (needs CH 22.6+)")
 	tableFeature(FeatureTextLog, "text_log", "system.text_log not present or disabled")
 	tableFeature(FeatureQueryViewsLog, "query_views_log", "system.query_views_log not present or disabled")
@@ -259,14 +262,14 @@ func (c *Client) detectCapabilities(ctx context.Context) *Capabilities {
 	// clusterAllReplicas availability + whether cluster-wide log reads are
 	// warranted (multi-node only; single-node adds overhead for nothing).
 	if clusterOK {
-		caps.Features[FeatureClusterAllRepl] = FeatureStatus{Available: true, Reason: "present"}
+		caps.Features[FeatureClusterAllRepl] = FeatureStatus{Available: true, Reason: clusterReason}
 		if replicas > 1 {
 			caps.Features[FeatureClusterLogs] = FeatureStatus{Available: true, Reason: fmt.Sprintf("%d replicas — reading *_log cluster-wide", replicas)}
 		} else {
 			caps.Features[FeatureClusterLogs] = FeatureStatus{Available: false, Reason: "single node — per-node *_log is complete"}
 		}
 	} else {
-		caps.Features[FeatureClusterAllRepl] = FeatureStatus{Available: false, Reason: "clusterAllReplicas('default', …) not available"}
+		caps.Features[FeatureClusterAllRepl] = FeatureStatus{Available: false, Reason: clusterReason}
 		caps.Features[FeatureClusterLogs] = FeatureStatus{Available: false, Reason: "no usable cluster for cluster-wide reads"}
 	}
 
@@ -326,16 +329,66 @@ func (c *Client) systemColumnSet(ctx context.Context, table string) map[string]b
 
 // probeClusterReplicas returns the replica count of the "default" cluster and
 // whether clusterAllReplicas is usable. Returns (1, false) on any failure.
-func (c *Client) probeClusterReplicas(ctx context.Context) (int, bool) {
-	v, err := c.QuerySingleValue(ctx, "SELECT count() FROM clusterAllReplicas('default', system.one)")
+// probeClusterReplicas checks whether clusterAllReplicas(...) is usable for
+// cluster-wide *_log reads and how many replicas it fans out to. On ClickHouse
+// Cloud this is normally available (the cluster is named 'default' and each
+// replica writes its own query_log), but a locked-down monitoring user may lack
+// the REMOTE privilege — so we discover the real cluster name and surface a
+// specific reason instead of a blanket "not available".
+func (c *Client) probeClusterReplicas(ctx context.Context) (replicas int, ok bool, cluster, reason string) {
+	// Discover the widest cluster. Cloud exposes 'default'; OSS/BYOC may name it
+	// differently, so don't hardcode. Fall back to 'default' if the catalog is
+	// empty or unreadable.
+	cluster = "default"
+	if rows, err := c.Query(ctx, "SELECT cluster, count() AS n FROM system.clusters GROUP BY cluster ORDER BY n DESC, cluster LIMIT 20"); err == nil {
+		best := ""
+		for _, r := range rows {
+			name := fmt.Sprint(r["cluster"])
+			if name == "" {
+				continue
+			}
+			if name == "default" { // prefer the conventional Cloud cluster
+				best = "default"
+				break
+			}
+			if best == "" {
+				best = name
+			}
+		}
+		if best != "" {
+			cluster = best
+		}
+	}
+
+	v, err := c.QuerySingleValue(ctx, fmt.Sprintf("SELECT count() FROM clusterAllReplicas('%s', system.one)", cluster))
 	if err != nil {
-		return 1, false
+		msg := err.Error()
+		low := strings.ToLower(msg)
+		switch {
+		case strings.Contains(low, "access_denied") || strings.Contains(low, "not enough privileges") || strings.Contains(msg, "Code: 497"):
+			return 1, false, cluster, fmt.Sprintf("clusterAllReplicas('%s', …) denied for this user — needs the REMOTE privilege (common on locked-down Cloud monitoring users)", cluster)
+		case strings.Contains(low, "unknown cluster") || strings.Contains(low, "requested cluster"):
+			return 1, false, cluster, fmt.Sprintf("no cluster named '%s' — this deployment has no cluster for cluster-wide reads", cluster)
+		default:
+			return 1, false, cluster, fmt.Sprintf("clusterAllReplicas('%s', …) not available: %s", cluster, truncErr(msg))
+		}
 	}
 	n, perr := strconv.Atoi(strings.TrimSpace(v))
 	if perr != nil || n < 1 {
-		return 1, true
+		return 1, true, cluster, fmt.Sprintf("cluster '%s' reachable", cluster)
 	}
-	return n, true
+	return n, true, cluster, fmt.Sprintf("cluster '%s' — %d replica(s)", cluster, n)
+}
+
+// truncErr shortens a ClickHouse error to its first line / 120 chars for reasons.
+func truncErr(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) > 120 {
+		s = s[:120] + "…"
+	}
+	return s
 }
 
 // probeZookeeper checks whether system.zookeeper is actually SELECT-able. On
