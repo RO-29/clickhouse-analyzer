@@ -33,6 +33,15 @@ func (c *KeeperCollector) Collect(ctx context.Context, client *chclient.Client) 
 	start := time.Now()
 	result := &CollectResult{}
 
+	// Skip entirely when system.zookeeper isn't usable on this instance — it's
+	// access-denied on managed Keeper (ClickHouse Cloud) and absent on
+	// non-replicated deployments. The capability layer probes this once and
+	// caches it, so we avoid a guaranteed-to-fail query every poll.
+	if !client.Caps(ctx).Has(chclient.FeatureZookeeper) {
+		result.Duration = time.Since(start)
+		return result, nil
+	}
+
 	// Probe ZK/Keeper reachability with a short timeout.
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()

@@ -9,6 +9,7 @@ import { fmtBytes, fmtNum, fmtDuration, fmtCompact, cn, latencyBg, kindBg, token
 import { Card } from '../components/Card'
 import { HistoryChart } from '../components/HistoryChart'
 import { DataTable } from '../components/DataTable'
+import { CompatibilityChip } from '../components/CompatibilityChip'
 
 import type {
   QueryPattern,
@@ -3949,6 +3950,7 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
           <RefreshCw size={11} />
           Refresh
         </button>
+        {inst && <CompatibilityChip instance={inst} />}
         <span className={cn(
           'text-[11px] hidden sm:flex items-center gap-1',
           isStale ? 'text-amber-400' : 'text-[var(--dim)]'

@@ -333,9 +333,45 @@ Set `k8s.enabled: true` in config only when the binary runs inside the cluster (
 
 ---
 
+## Version compatibility
+
+ch-analyzer runs against a wide range of ClickHouse deployments and adapts per
+instance — a single fleet can mix OSS and Cloud, and different versions, freely.
+
+| Deployment | Supported |
+|------------|-----------|
+| ClickHouse OSS (self-hosted) | **23.x → latest** |
+| ClickHouse Cloud | **25.3 → latest** |
+
+**How it works.** On first use (and every 6h) each instance is fingerprinted:
+`version()`, edition (`cloud_mode` setting, or a config override), replica count,
+and a probe-based feature registry (which `system.*` tables/columns exist, whether
+`system.zookeeper` is readable, whether `clusterAllReplicas` works). Every
+collector and query gates on these capabilities, so a feature missing on an older
+version or restricted on Cloud is **skipped gracefully or shown as "not
+supported"** — never a hard error or a silently-empty panel. The detected version,
+edition, and per-feature availability are shown in the **compatibility chip** in
+the Explore header and via `GET /api/instances/{name}/capabilities`.
+
+**Edition override.** Detection is automatic, but you can pin it per instance:
+
+```yaml
+instances:
+  - name: "prod-cloud"
+    host: "xxx.clickhouse.cloud"
+    mode: "cloud"        # auto (default) | oss | cloud
+```
+
+**Testing.** `make compat-test` spins up each OSS version in Docker, applies the
+schema, and runs `--compat-check` (detect capabilities + run every collector,
+failing on any hard error). The same matrix runs in CI (`.github/workflows/compat.yml`).
+Cloud is covered by a live smoke test since it can't run in a container.
+
 ## Requirements
 
 - Go 1.23+
 - Node 22+ (for frontend builds)
-- ClickHouse 22.x+ on monitored instances
+- ClickHouse **OSS 23.x+ or Cloud 25.3+** on monitored instances (older OSS mostly
+  works too — unsupported features degrade gracefully)
 - `clickhouse-client` in PATH (for `setup.sh` only)
+- Docker (only for `make compat-test`)

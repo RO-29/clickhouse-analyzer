@@ -225,6 +225,15 @@ export interface ConnectionsResponse {
   total_active_queries: number
 }
 
+export interface Capabilities {
+  version: { Major: number; Minor: number; Patch: number; Raw: string }
+  edition: 'oss' | 'cloud' | 'unknown'
+  replicas: number
+  cluster: string
+  features: Record<string, { available: boolean; reason: string }>
+  detected_at: string
+}
+
 export interface PatternOverviewResponse {
   patterns: Array<{
     normalized_query_hash: string
