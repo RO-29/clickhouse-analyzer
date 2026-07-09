@@ -7,7 +7,7 @@ DOCKER_IMAGE=ch-analyzer
 DOCKER_TAG=$(VERSION)
 
 .PHONY: build clean install run test lint docker docker-push k8s-deploy frontend \
-        compose-up compose-down compose-logs compose-restart compose-ps
+        compose-up compose-down compose-logs compose-restart compose-ps compat-test
 
 # Frontend (React + Tailwind)
 frontend:
@@ -58,6 +58,15 @@ run: build
 
 test:
 	go test ./... -v -race
+
+# Version-compatibility matrix: spin up each ClickHouse OSS version in Docker,
+# apply schema.sql, and run `--compat-check` (detect capabilities + run every
+# collector, fail on any hard error). Requires Docker + a built binary.
+#   make compat-test                      # default matrix (23.3 -> latest)
+#   make compat-test VERSIONS="24.8 25.3" # specific versions
+#   make compat-test UPDATE_GOLDEN=1      # refresh capability snapshots
+compat-test: build-go
+	UPDATE_GOLDEN=$(UPDATE_GOLDEN) ./scripts/compat-test.sh $(VERSIONS)
 
 lint:
 	golangci-lint run ./...

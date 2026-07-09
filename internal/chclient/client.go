@@ -35,6 +35,10 @@ type InstanceConfig struct {
 	Password string `json:"password" yaml:"password"`
 	Secure   bool   `json:"secure"   yaml:"secure"`
 	Database string `json:"database" yaml:"database"`
+	// Mode forces the deployment edition for capability gating: "oss", "cloud",
+	// or "" / "auto" to detect it at runtime (cloud_mode setting + version()).
+	// Instances in one fleet may be different editions, so this is per-instance.
+	Mode string `json:"mode" yaml:"mode"`
 }
 
 // ClientOptions controls timeouts and TLS behaviour shared by all instances
@@ -85,6 +89,13 @@ type Client struct {
 	password string
 	hc       *http.Client
 	logger   *slog.Logger
+
+	// modeHint is the configured edition override ("oss"/"cloud"/""=auto).
+	modeHint string
+	// caps holds the lazily-detected, cached capability set for this instance.
+	capsMu   sync.RWMutex
+	caps     *Capabilities
+	capsTime time.Time
 }
 
 // NewClient creates a Client for a single ClickHouse instance.
@@ -139,6 +150,7 @@ func NewClient(cfg InstanceConfig, opts ClientOptions) *Client {
 		password: cfg.Password,
 		hc:       hc,
 		logger:   logger,
+		modeHint: strings.ToLower(strings.TrimSpace(cfg.Mode)),
 	}
 }
 

@@ -37,6 +37,7 @@ func main() {
 	mcpServer := flag.Bool("mcp-server", false, "Run as MCP stdio server (used by Claude CLI subprocess)")
 	mcpInstance := flag.String("mcp-instance", "", "ClickHouse instance name for MCP server mode")
 	dryRun := flag.Bool("dry-run", false, "Run all collectors once, print alerts that would fire, then exit")
+	compatCheck := flag.Bool("compat-check", false, "Detect capabilities + run every collector once per instance; print a JSON report and exit non-zero on any hard error (version-compatibility CI)")
 	flag.Parse()
 
 	if *showVersion {
@@ -89,9 +90,15 @@ func main() {
 	// Expose config path so the web server can pass it to MCP subprocesses.
 	os.Setenv("CH_ANALYZER_CONFIG", *configPath)
 
-	// Setup structured logging with capture buffer for dashboard
+	// Setup structured logging with capture buffer for dashboard. In
+	// --compat-check mode logs go to stderr so stdout carries only the JSON
+	// report (the harness captures stdout).
 	logBuffer := web.NewLogBuffer(5000)
-	jsonHandler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+	logDst := os.Stdout
+	if *compatCheck {
+		logDst = os.Stderr
+	}
+	jsonHandler := slog.NewJSONHandler(logDst, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	})
 	logHandler := web.NewLogBufferHandler(logBuffer, jsonHandler)
@@ -137,6 +144,7 @@ func main() {
 			Password: inst.Password,
 			Secure:   inst.Secure,
 			Database: inst.Database,
+			Mode:     inst.Mode,
 		}
 	}
 	clientMgr := chclient.NewManager(instances, chclient.ClientOptions{
@@ -276,6 +284,10 @@ func main() {
 	collectors := buildCollectors(cfg)
 
 	// Dry-run mode: collect once, print alerts, exit.
+	if *compatCheck {
+		os.Exit(runCompatCheck(ctx, clientMgr, collectors))
+	}
+
 	if *dryRun {
 		slog.Info("dry-run mode: running one collection cycle")
 		var dryAlerts []collector.Alert
@@ -1017,4 +1029,55 @@ func equalsIgnoreCase(a, b string) bool {
 		}
 	}
 	return true
+}
+
+// runCompatCheck detects capabilities and runs every collector once against each
+// configured instance, printing a JSON report. It exits non-zero if any
+// collector returns a hard error (collectors are expected to degrade gracefully
+// on missing tables/columns/permissions, so a returned error is a real
+// compatibility gap). Used by scripts/compat-test.sh across ClickHouse versions.
+func runCompatCheck(ctx context.Context, mgr *chclient.Manager, collectors []collector.Collector) int {
+	type collectorResult struct {
+		Name  string `json:"name"`
+		OK    bool   `json:"ok"`
+		Error string `json:"error,omitempty"`
+	}
+	type instanceReport struct {
+		Instance     string                 `json:"instance"`
+		Capabilities *chclient.Capabilities `json:"capabilities"`
+		Collectors   []collectorResult      `json:"collectors"`
+		HardErrors   int                    `json:"hard_errors"`
+	}
+
+	var reports []instanceReport
+	hardErrors := 0
+
+	for _, name := range mgr.Names() {
+		client := mgr.Get(name)
+		if client == nil {
+			continue
+		}
+		rep := instanceReport{Instance: name, Capabilities: client.Caps(ctx)}
+		for _, c := range collectors {
+			cctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+			_, err := c.Collect(cctx, client)
+			cancel()
+			if err != nil {
+				rep.Collectors = append(rep.Collectors, collectorResult{Name: c.Name(), OK: false, Error: err.Error()})
+				rep.HardErrors++
+				hardErrors++
+			} else {
+				rep.Collectors = append(rep.Collectors, collectorResult{Name: c.Name(), OK: true})
+			}
+		}
+		reports = append(reports, rep)
+	}
+
+	out, _ := json.MarshalIndent(reports, "", "  ")
+	fmt.Println(string(out)) // stdout: machine-readable report only
+	fmt.Fprintf(os.Stderr, "compat-check: %d instance(s), %d hard error(s)\n", len(reports), hardErrors)
+	if hardErrors > 0 {
+		return 1
+	}
+	return 0
 }

@@ -284,6 +284,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 
 	// Historical analysis endpoints (from history.go).
 	mux.HandleFunc("GET /api/instances/{name}/health-check", s.handleHealthCheck)
+	mux.HandleFunc("GET /api/instances/{name}/capabilities", s.handleCapabilities)
 	mux.HandleFunc("GET /api/instances/{name}/query-patterns", s.handleQueryPatterns)
 	mux.HandleFunc("GET /api/instances/{name}/query-patterns-v2", s.handleQueryPatternsV2)
 	mux.HandleFunc("GET /api/instances/{name}/query-pattern-timeline", s.handleQueryPatternTimeline)

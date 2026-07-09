@@ -1,0 +1,90 @@
+name: compatibility
+
+# Version-compatibility matrix: for each supported ClickHouse OSS version, spin
+# up a real server, apply schema.sql, and run `ch-analyzer --compat-check`
+# (detect capabilities + run every collector, fail on any hard error). This is
+# what guarantees "nothing breaks" across 23.x -> latest. ClickHouse Cloud
+# (25.3+) can't run in CI and is covered by a live smoke test instead.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  compat:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ch_version: ["23.3", "23.8", "24.3", "24.8", "25.3", "latest"]
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:${{ matrix.ch_version }}
+        ports:
+          - 18123:8123
+        options: >-
+          --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Build binary (Go only)
+        run: make build-go
+
+      - name: Apply schema
+        run: |
+          curl -sf "http://localhost:18123/" --data-binary "CREATE DATABASE IF NOT EXISTS ch_analyzer"
+          python3 - <<'PY'
+          import urllib.request
+          sql = open("schema.sql").read()
+          for stmt in sql.split(';'):
+              s = stmt.strip()
+              if not s or s.startswith('--'):
+                  continue
+              try:
+                  urllib.request.urlopen("http://localhost:18123/", data=s.encode())
+              except Exception as e:
+                  print(f"schema stmt warning: {str(e)[:160]}")
+          PY
+
+      - name: Write compat config
+        run: |
+          cat > /tmp/compat.yaml <<'YAML'
+          instances:
+            - name: "compat"
+              host: "localhost"
+              port: 18123
+              username: "default"
+              password: ""
+              secure: false
+              mode: "oss"
+          storage:
+            database: "ch_analyzer"
+          web:
+            enabled: false
+          YAML
+
+      - name: Run compat-check
+        run: ./bin/ch-analyzer --config /tmp/compat.yaml --compat-check > /tmp/report.json
+
+      - name: Summarize
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json
+          data = json.load(open("/tmp/report.json"))
+          for inst in data:
+              c = inst["capabilities"]
+              print(f"version={c['version']['Raw']} edition={c['edition']} replicas={c['replicas']} hard_errors={inst['hard_errors']}")
+              for col in inst["collectors"]:
+                  if not col["ok"]:
+                      print(f"  FAIL {col['name']}: {col.get('error','')[:200]}")
+          PY
