@@ -129,6 +129,7 @@ export interface QueryUser {
   user: string
   cnt: number
   total_ms: number
+  total_cpu_ms?: number    // real CPU (UserTime+SystemTime); falls back to total_ms when absent
   avg_ms: number
   max_ms: number
   p95_ms: number

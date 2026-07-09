@@ -1303,6 +1303,7 @@ func (s *Server) handleQueryUsers(w http.ResponseWriter, r *http.Request) {
 		user,
 		count() AS cnt,
 		sum(query_duration_ms) AS total_ms,
+		sum(cpu_user_us + cpu_system_us) / 1000 AS total_cpu_ms,
 		avg(query_duration_ms) AS avg_ms,
 		max(query_duration_ms) AS max_ms,
 		quantile(0.95)(query_duration_ms) AS p95_ms,
@@ -1314,7 +1315,7 @@ func (s *Server) handleQueryUsers(w http.ResponseWriter, r *http.Request) {
 	FROM ch_analyzer.query_samples
 	WHERE event_time >= '%s' AND event_time <= '%s'
 	GROUP BY user
-	ORDER BY total_ms DESC
+	ORDER BY total_cpu_ms DESC
 	LIMIT 50`, fromTime, toTime)
 
 	rows, err := client.Query(ctx, sql)
@@ -1324,6 +1325,8 @@ func (s *Server) handleQueryUsers(w http.ResponseWriter, r *http.Request) {
 			user,
 			count() AS cnt,
 			sum(query_duration_ms) AS total_ms,
+			sum(ProfileEvents['UserTimeMicroseconds'] +
+			    ProfileEvents['SystemTimeMicroseconds']) / 1000 AS total_cpu_ms,
 			avg(query_duration_ms) AS avg_ms,
 			max(query_duration_ms) AS max_ms,
 			quantile(0.95)(query_duration_ms) AS p95_ms,
@@ -1337,7 +1340,7 @@ func (s *Server) handleQueryUsers(w http.ResponseWriter, r *http.Request) {
 		  AND is_initial_query = 1
 		  AND type IN ('QueryFinish', 'ExceptionWhileProcessing')
 		GROUP BY user
-		ORDER BY total_ms DESC
+		ORDER BY total_cpu_ms DESC
 		LIMIT 50`, fromTime, toTime)
 		rows, err = client.Query(ctx, sql)
 		if err != nil {

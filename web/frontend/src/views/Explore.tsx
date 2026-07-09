@@ -2517,11 +2517,15 @@ function UsersTab({ instance, from, to, refreshKey, onDrillUser, onFetched }: Us
   }, [instance, from, to, refreshKey, onFetched])
 
   // ALL hooks BEFORE any early return (Rules of Hooks)
+  // "CPU" means actual CPU time (UserTime+SystemTime), not query wall-duration.
+  // Fall back to total_ms only when the backend/data has no CPU attribution.
+  const cpuOf = (u: QueryUser) => Number(u.total_cpu_ms) || Number(u.total_ms) || 0
+
   const pieData = useMemo(() => {
     if (users.length === 0) return null
     const top = users.slice(0, 7)
-    const otherMs = users.slice(7).reduce((s, u) => s + (u.total_ms || 0), 0)
-    const entries = [...top.map((u, i) => ({ name: u.user || '(unknown)', value: u.total_ms || 0, color: USER_COLORS[i % USER_COLORS.length] })),
+    const otherMs = users.slice(7).reduce((s, u) => s + cpuOf(u), 0)
+    const entries = [...top.map((u, i) => ({ name: u.user || '(unknown)', value: cpuOf(u), color: USER_COLORS[i % USER_COLORS.length] })),
       ...(otherMs > 0 ? [{ name: 'other', value: otherMs, color: '#475569' }] : [])]
     return entries
   }, [users])
@@ -2529,8 +2533,8 @@ function UsersTab({ instance, from, to, refreshKey, onDrillUser, onFetched }: Us
   if (loading) return <LoadingSkeleton />
   if (error) return <ErrorBox message={error} />
 
-  const maxTotalMs = users.reduce((m, u) => Math.max(m, u.total_ms || 0), 1)
-  const grandTotal = users.reduce((s, u) => s + (u.total_ms || 0), 0)
+  const maxCpu = users.reduce((m, u) => Math.max(m, cpuOf(u)), 1)
+  const grandTotal = users.reduce((s, u) => s + cpuOf(u), 0)
   const topUser = users[0]
 
   return (
@@ -2543,7 +2547,7 @@ function UsersTab({ instance, from, to, refreshKey, onDrillUser, onFetched }: Us
             <StatCard
               label="Top User"
               value={topUser.user || '(unknown)'}
-              sub={grandTotal > 0 ? `${((topUser.total_ms / grandTotal) * 100).toFixed(0)}% of total CPU` : ''}
+              sub={grandTotal > 0 ? `${((cpuOf(topUser) / grandTotal) * 100).toFixed(0)}% of total CPU` : ''}
               color="text-[var(--accent)]"
             />
           )}
@@ -2566,7 +2570,7 @@ function UsersTab({ instance, from, to, refreshKey, onDrillUser, onFetched }: Us
           ) : (
             <div className="space-y-1.5">
               {users.map((u, i) => {
-                const pct = (u.total_ms / maxTotalMs) * 100
+                const pct = (cpuOf(u) / maxCpu) * 100
                 const color = USER_COLORS[i % USER_COLORS.length]
                 return (
                   <div
@@ -2583,7 +2587,7 @@ function UsersTab({ instance, from, to, refreshKey, onDrillUser, onFetched }: Us
                         <div className="h-full rounded-full transition-all duration-500"
                           style={{ width: `${pct}%`, background: color }} />
                       </div>
-                      <span className="text-xs tabular-nums text-[var(--dim)] w-16 text-right shrink-0">{fmtDuration(u.total_ms)}</span>
+                      <span className="text-xs tabular-nums text-[var(--dim)] w-16 text-right shrink-0" title="CPU time">{fmtDuration(cpuOf(u))}</span>
                     </div>
                     <div className="hidden lg:flex gap-3 text-xs text-[var(--dim)] shrink-0">
                       <span><span className="text-[var(--fg)]">{fmtCompact(u.cnt)}</span> execs</span>
@@ -2604,22 +2608,34 @@ function UsersTab({ instance, from, to, refreshKey, onDrillUser, onFetched }: Us
         {pieData && (
           <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 flex flex-col">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--dim)] mb-3">CPU Share</div>
-            <div className="flex-1" style={{ minHeight: 180 }}>
+            <div style={{ height: 180 }}>
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius="55%" outerRadius="80%">
                     {pieData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
                   </Pie>
                   <Tooltip
-                    contentStyle={{ background: '#0f1420', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, fontSize: 11 }}
+                    contentStyle={{ background: '#0f1420', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, fontSize: 11, color: '#e5e7eb' }}
                     formatter={(v: any, name: any) => {
                       const pct = grandTotal > 0 ? ((Number(v) / grandTotal) * 100).toFixed(1) : '0'
                       return [`${fmtDuration(Number(v))} (${pct}%)`, name]
                     }}
                   />
-                  <Legend iconSize={8} wrapperStyle={{ fontSize: 10, color: '#9ca3af' }} />
                 </PieChart>
               </ResponsiveContainer>
+            </div>
+            {/* Custom legend — the Recharts <Legend> rendered blank labels;
+                this always shows name + CPU share and is theme-aware. */}
+            <div className="mt-3 space-y-1">
+              {pieData.map((e, i) => (
+                <div key={i} className="flex items-center gap-2 text-[11px]">
+                  <span className="w-2 h-2 rounded-full shrink-0" style={{ background: e.color }} />
+                  <span className="flex-1 truncate text-[var(--fg)]" title={e.name}>{e.name}</span>
+                  <span className="tabular-nums text-[var(--dim)] shrink-0">
+                    {grandTotal > 0 ? ((e.value / grandTotal) * 100).toFixed(0) : '0'}%
+                  </span>
+                </div>
+              ))}
             </div>
           </div>
         )}
