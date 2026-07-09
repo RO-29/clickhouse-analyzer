@@ -2608,7 +2608,7 @@ function UsersTab({ instance, from, to, refreshKey, onDrillUser, onFetched }: Us
         {pieData && (
           <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 flex flex-col">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--dim)] mb-3">CPU Share</div>
-            <div style={{ height: 180 }}>
+            <div className="relative" style={{ height: 180 }}>
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius="55%" outerRadius="80%">
@@ -2623,6 +2623,11 @@ function UsersTab({ instance, from, to, refreshKey, onDrillUser, onFetched }: Us
                   />
                 </PieChart>
               </ResponsiveContainer>
+              {/* Total in the donut hole — the sum the slices add up to. */}
+              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                <div className="text-lg font-bold leading-none text-[var(--fg)] tabular-nums">{fmtDuration(grandTotal)}</div>
+                <div className="text-[10px] uppercase tracking-wider text-[var(--dim)] mt-1">total CPU</div>
+              </div>
             </div>
             {/* Custom legend — the Recharts <Legend> rendered blank labels;
                 this always shows name + CPU share and is theme-aware. */}

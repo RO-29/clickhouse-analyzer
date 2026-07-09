@@ -83,6 +83,10 @@ CREATE USER IF NOT EXISTS monitoring IDENTIFIED BY 'your_password';
 GRANT SELECT ON system.* TO monitoring;
 GRANT SELECT ON *.* TO monitoring;
 GRANT SELECT, INSERT ON ch_analyzer.* TO monitoring;
+
+-- Optional, multi-replica ClickHouse Cloud only: enables cluster-wide *_log
+-- reads via clusterAllReplicas(). See "Migrations & grants" below for why.
+-- GRANT READ ON *.* TO monitoring;
 ```
 
 ### 2. Run the schema
@@ -96,6 +100,37 @@ clickhouse-client --host your-host --port 8443 --secure \
 ```
 
 Or just run `./setup.sh` (edit the credentials at the top first) — it handles the user, schema, binary install, and systemd service in one shot.
+
+### Migrations & grants (SQL changes in this release)
+
+Fresh installs get everything below from `schema.sql` / `setup.sh` automatically.
+For an **existing** install, apply the migration once; the grant is optional.
+
+**1. `query_samples.exception` column** — captures the exception *message* (not
+just the code) so error-sample drilldowns and failure views show *why* a query
+failed. Idempotent; existing rows default to `''`.
+
+```sql
+ALTER TABLE ch_analyzer.query_samples
+  ADD COLUMN IF NOT EXISTS exception String DEFAULT '';
+```
+
+**2. `READ ON REMOTE` grant (optional — multi-replica ClickHouse Cloud only).**
+Each replica writes its own `query_log`/`part_log`/etc. Without this grant, on a
+multi-replica service the log-backed tabs (Query Log, Failures, Merges & Parts,
+MV Performance, …) and the compatibility chip's `clusterAllReplicas` /
+`cluster_wide_logs` features see **only the replica the connection lands on** —
+incomplete. Granting it lets ch-analyzer fan reads across all replicas with
+`clusterAllReplicas()`. Run as an admin user (`monitoring` can't self-grant):
+
+```sql
+GRANT READ ON *.* TO monitoring;   -- CH 24.x+; the ACCESS_DENIED error names "READ ON REMOTE"
+```
+
+Leaving it ungranted is safe — those tabs simply reflect one replica, and the
+chip explains the gap. No action is needed for the Users/CPU tab: it reads the
+existing `cpu_user_us` / `cpu_system_us` columns (captured from `ProfileEvents`),
+already covered by the standard `SELECT` grant.
 
 ### 3. Configure
 
