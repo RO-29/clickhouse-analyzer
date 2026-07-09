@@ -328,7 +328,13 @@ export default function Detail({ refreshKey }: { refreshKey?: number }) {
     setInstance(null)
   }
 
-  const localDisks = disks.filter(d => !d.disk_name.toLowerCase().includes('s3'))
+  // Drop S3/object-store disks (shown separately) and ClickHouse Cloud's
+  // ephemeral per-query temp disks (`__tmp_internal_<hash>`), which appear by
+  // the dozen at 0% and drown out the real `default` disk.
+  const localDisks = disks.filter(d => {
+    const n = d.disk_name.toLowerCase()
+    return !n.includes('s3') && !n.startsWith('__')
+  })
   const rangeAlerts = alertHistory.filter(a => a.created_at >= customFrom && a.created_at <= customTo)
 
   // Split unresolved alerts into fresh vs stale using the same 24h threshold

@@ -2611,20 +2611,16 @@ function UsersTab({ instance, from, to, refreshKey, onDrillUser, onFetched }: Us
             <div className="relative" style={{ height: 180 }}>
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
-                  <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius="55%" outerRadius="80%">
+                  <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius="55%" outerRadius="80%" isAnimationActive={false}>
                     {pieData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
                   </Pie>
-                  <Tooltip
-                    contentStyle={{ background: '#0f1420', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, fontSize: 11, color: '#e5e7eb' }}
-                    formatter={(v: any, name: any) => {
-                      const pct = grandTotal > 0 ? ((Number(v) / grandTotal) * 100).toFixed(1) : '0'
-                      return [`${fmtDuration(Number(v))} (${pct}%)`, name]
-                    }}
-                  />
+                  {/* No <Tooltip>: it rendered over the donut hole and hid the
+                      center total. The legend below already gives every slice's
+                      name + share, so hover detail is redundant. */}
                 </PieChart>
               </ResponsiveContainer>
               {/* Total in the donut hole — the sum the slices add up to. */}
-              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+              <div className="absolute inset-0 z-10 flex flex-col items-center justify-center pointer-events-none">
                 <div className="text-lg font-bold leading-none text-[var(--fg)] tabular-nums">{fmtDuration(grandTotal)}</div>
                 <div className="text-[10px] uppercase tracking-wider text-[var(--dim)] mt-1">total CPU</div>
               </div>
