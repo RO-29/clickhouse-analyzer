@@ -1659,16 +1659,20 @@ func (s *Server) handleResolveAlert(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "dedup_key required")
 		return
 	}
-	if err := s.store.ResolveAlert(body.DedupKey); err != nil {
+	// Route through the alert manager so the resolution fires its side effects
+	// (PagerDuty resolve, webhook alert_resolved, ack clear, Slack refresh) and
+	// resets the clean-check counter. Resolving via store.ResolveAlert directly
+	// would close the DB row but leave the PagerDuty incident open forever.
+	if s.alertMgr != nil {
+		if err := s.alertMgr.ResolveAndNotify(body.DedupKey); err != nil {
+			slog.Warn("resolve alert failed", "err", err, "dedup_key", body.DedupKey)
+			writeErr(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
+	} else if err := s.store.ResolveAlert(body.DedupKey); err != nil {
 		slog.Warn("resolve alert failed", "err", err, "dedup_key", body.DedupKey)
 		writeErr(w, http.StatusInternalServerError, "internal server error")
 		return
-	}
-	// Reset the clean-check counter so the next reconcile doesn't carry a
-	// stale count for this key. If the condition is still firing, reconcile
-	// will re-insert a fresh DB row on the next tick — that's intended.
-	if s.alertMgr != nil {
-		s.alertMgr.ClearCleanChecks(body.DedupKey)
 	}
 	slog.Info("alert resolved via API", "dedup_key", body.DedupKey)
 
@@ -1686,7 +1690,15 @@ func (s *Server) handleResolveStale(w http.ResponseWriter, r *http.Request) {
 	if hours < 1 {
 		hours = 1
 	}
-	resolved, err := s.store.BulkResolveStale(hours)
+	// Route through the alert manager so each resolved alert fires its resolve
+	// side effects (PagerDuty resolve, webhook) instead of just closing DB rows.
+	var resolved int64
+	var err error
+	if s.alertMgr != nil {
+		resolved, err = s.alertMgr.ResolveStaleAndNotify(time.Duration(hours) * time.Hour)
+	} else {
+		resolved, err = s.store.BulkResolveStale(hours)
+	}
 	if err != nil {
 		slog.Warn("bulk resolve stale failed", "err", err, "hours", hours)
 		writeErr(w, http.StatusInternalServerError, "internal server error")

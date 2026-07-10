@@ -292,6 +292,7 @@ type fakeStore struct {
 	fireCount  map[string]int       // carry-forward across firings
 	insertErr  error                // if non-nil, InsertAlert returns this
 	insertOnce error                // if set, returned on the next InsertAlert then cleared
+	staleResolveAll bool            // if true, AutoResolveStale resolves all active alerts
 }
 
 func newFakeStore() *fakeStore {
@@ -337,7 +338,18 @@ func (f *fakeStore) ResolveAlert(dedupKey string) error {
 
 func (f *fakeStore) RefreshAlerts(_ []collector.Alert) error { return nil }
 
-func (f *fakeStore) AutoResolveStale(_ time.Duration) (int64, error) { return 0, nil }
+func (f *fakeStore) AutoResolveStale(_ time.Duration) (int64, error) {
+	if !f.staleResolveAll {
+		return 0, nil
+	}
+	active := f.GetAllActiveAlerts()
+	f.mu.Lock()
+	for _, a := range active {
+		f.resolved[a.DedupKey] = true
+	}
+	f.mu.Unlock()
+	return int64(len(active)), nil
+}
 
 func (f *fakeStore) GetAllActiveAlerts() []collector.Alert {
 	f.mu.Lock()
