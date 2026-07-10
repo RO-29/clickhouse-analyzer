@@ -113,7 +113,7 @@ export function MultiInstanceChart({ series, title, height = 300, yFormat = 'num
               />
               <Tooltip
                 content={(props: any) => <ChartTooltip {...props} yFormat={yFormat} />}
-                cursor={{ stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1 }}
+                cursor={{ stroke: 'rgba(148,163,184,0.25)', strokeWidth: 1 }}
               />
               <Legend
                 wrapperStyle={{ fontSize: 11, paddingTop: 8 }}

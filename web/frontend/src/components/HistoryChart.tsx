@@ -138,7 +138,7 @@ export function HistoryChart({
               <YAxis tickFormatter={v => formatValue(Number(v))} {...commonAxisProps} width={44} />
               <Tooltip
                 content={(props: any) => <ChartTooltip {...props} formatValue={formatValue} data={data} />}
-                cursor={{ fill: 'rgba(255,255,255,0.04)' }}
+                cursor={{ fill: 'rgba(148,163,184,0.12)' }}
               />
               {series.length > 1 && (
                 <Legend
@@ -168,7 +168,7 @@ export function HistoryChart({
               <YAxis tickFormatter={v => formatValue(Number(v))} {...commonAxisProps} width={44} />
               <Tooltip
                 content={(props: any) => <ChartTooltip {...props} formatValue={formatValue} data={data} />}
-                cursor={{ stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1 }}
+                cursor={{ stroke: 'rgba(148,163,184,0.25)', strokeWidth: 1 }}
               />
               {series.length > 1 && (
                 <Legend

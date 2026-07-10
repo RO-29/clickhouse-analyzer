@@ -84,8 +84,10 @@ export default function CHLogs({ refreshKey }: { refreshKey?: number }) {
     setError(null)
     try {
       const effectiveLimit = limit === 0 ? 10000 : limit
-      // Backend supports a single level filter — pass the first selected level if any
-      const levelArg = selectedLevels.size > 0 ? [...selectedLevels][0] : undefined
+      // Send every selected level — the backend filters with level IN (...).
+      // (Previously only the first selection was sent, so the multi-select pills
+      // silently ignored all but one.)
+      const levelArg = selectedLevels.size > 0 ? [...selectedLevels].join(',') : undefined
       const data = await api.chLogs(inst, levelArg, debouncedSearch || undefined, minutes, effectiveLimit)
       setLogs(data)
       setExpanded(new Set())

@@ -10,7 +10,7 @@ import { Card } from '../components/Card'
 import { Badge } from '../components/Badge'
 import { AlertDetailPanel } from '../components/AlertDetailPanel'
 import { SqlBlock } from '../components/SqlBlock'
-import type { Alert, Suggestion } from '../types/api'
+import type { Alert, Suggestion, MaintenanceWindow } from '../types/api'
 
 /* ------------------------------------------------------------------ */
 /*  Staleness helpers                                                  */
@@ -727,13 +727,16 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [bulkResolving, setBulkResolving] = useState(false)
 
-  // Snooze/ack — fetched from server, refreshed every 30s
+  // Snooze/ack/maintenance — fetched from server, refreshed every 30s
   const [snoozed, setSnoozed] = useState<Record<string, number>>({})
   const [acked, setAcked] = useState<Record<string, any>>({})
+  const [maintWindows, setMaintWindows] = useState<MaintenanceWindow[]>([])
 
   const refreshSnoozeAck = useCallback(async () => {
     try {
-      const [snoozes, acks] = await Promise.all([api.snooze.list(), api.ack.list()])
+      const [snoozes, acks, maint] = await Promise.all([
+        api.snooze.list(), api.ack.list(), api.maintenance.list(),
+      ])
       const nowMs = Date.now()
       const snoozedMap: Record<string, number> = {}
       for (const s of snoozes) {
@@ -743,6 +746,7 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
       const ackedMap: Record<string, any> = {}
       for (const a of acks) ackedMap[a.dedup_key] = a
       setAcked(ackedMap)
+      setMaintWindows(maint ?? [])
     } catch {}
   }, [])
 
@@ -1090,7 +1094,16 @@ export default function Alerts({ refreshKey }: { refreshKey?: number }) {
     )
   }
 
-  const maintInstances = cachedInstances.filter((inst: any) => inst.in_maintenance)
+  // Derive maintenance banners from the active maintenance windows. (The old
+  // code filtered `cachedInstances` — a string[] of names — on `.in_maintenance`,
+  // which is always undefined on a string, so the banner never rendered.)
+  const maintInstances = maintWindows
+    .filter((w) => w.end_time * 1000 > Date.now())
+    .map((w) => ({
+      name: w.instance === '*' ? 'all instances' : w.instance,
+      maintenance_until: w.end_time * 1000,
+      maintenance_reason: w.reason,
+    }))
 
   return (
     <div className="space-y-6">

@@ -225,7 +225,7 @@ export function MetricChart({ instance, instances, title, subtitle, seriesHelp, 
               />
               <Tooltip
                 content={(props: any) => <ChartTooltip {...props} formatValue={formatValue} />}
-                cursor={{ stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1 }}
+                cursor={{ stroke: 'rgba(148,163,184,0.25)', strokeWidth: 1 }}
               />
               {series.map((s, i) => (
                 <Area

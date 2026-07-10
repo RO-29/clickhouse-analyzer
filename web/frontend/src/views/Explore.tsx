@@ -3830,7 +3830,10 @@ export default function Explore({ refreshKey }: { refreshKey?: number }) {
   const [tab, setTab] = useState<Tab>(() => {
     const p = new URLSearchParams(window.location.search)
     const t = p.get('tab') as Tab | null
-    const validTabs: Tab[] = ['antipatterns','patterns','samples','live','users','tables','failures','merges','mvs','s3','inserts','metrics','diskio','partsage']
+    // Derive the valid set from the canonical TABS list so a deep link can never
+    // silently fall back just because this allowlist drifted (it was missing
+    // 'querylog' and 'connections').
+    const validTabs = TABS.map((x) => x.key)
     return t && validTabs.includes(t) ? t : 'patterns'
   })
   const [queryModal, setQueryModal] = useState<string | null>(null)
