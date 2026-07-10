@@ -47,10 +47,11 @@ func (c *SystemCollector) collectAsyncMetrics(ctx context.Context, client *chcli
 		"LoadAverage1",
 		"LoadAverage5",
 		"LoadAverage15",
-		// CPU — OSS CH names
-		"OSUserTimeCPU",
-		"OSSystemTimeCPU",
-		"OSIdleTimeCPU",
+		// CPU — normalized rates in [0,1] (fraction of total CPU capacity),
+		// present on OSS and most builds.
+		"OSUserTimeNormalized",
+		"OSSystemTimeNormalized",
+		"OSIdleTimeNormalized",
 		// CPU — Altinity/newer builds
 		"CGroupMaxCPU",
 		"OSCPUOverload",
@@ -177,16 +178,21 @@ func (c *SystemCollector) collectAsyncMetrics(ctx context.Context, client *chcli
 	}
 
 	// --- CPU ---
-	// Strategy 1: OSS CH has OSUserTimeCPU/OSSystemTimeCPU/OSIdleTimeCPU
-	user := values["OSUserTimeCPU"]
-	system := values["OSSystemTimeCPU"]
-	idle := values["OSIdleTimeCPU"]
-	total := user + system + idle
+	// Strategy 1: normalized CPU-time rates from system.asynchronous_metrics.
+	// These are fractions in [0,1] of total CPU capacity, so busy% is derived
+	// directly. (The previous OSUserTimeCPU/OSSystemTimeCPU/OSIdleTimeCPU names
+	// do not exist in any CH release — the OSS CPU path never fired and always
+	// fell through to the load-average proxy.)
+	user := values["OSUserTimeNormalized"]
+	system := values["OSSystemTimeNormalized"]
+	idle := values["OSIdleTimeNormalized"]
+	accounted := user + system + idle
 
-	// Only use OSS CPU metrics if they return meaningful values (>1.0).
-	// On Altinity builds these exist but return near-zero cumulative counters.
-	if total > 1.0 && idle > 0 {
-		busyPct := ((user + system) / total) * 100.0
+	if accounted > 0.001 {
+		busyPct := ((user + system) / accounted) * 100.0
+		if busyPct > 100 {
+			busyPct = 100
+		}
 		result.AddMetric(client.Name(), "system.cpu.busy_percent", busyPct, nil)
 		c.checkCPUAlert(client.Name(), busyPct, result)
 	} else {

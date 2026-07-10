@@ -2,7 +2,6 @@ package collector
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -10,10 +9,17 @@ import (
 	"github.com/rohitjain/ch-analyzer/internal/chclient"
 )
 
-// PartsAgeCollector detects tables where active parts have not been merged for an
-// unusually long time. Unlike TableCollector (which checks part count), this focuses
-// on part age — old unmerged parts indicate merge pressure even when total count
-// looks acceptable. Also surfaces as data in the Explore → Parts Age tab.
+// PartsAgeCollector surfaces the age of the oldest active part per table as a
+// metric for the Explore → Parts Age tab.
+//
+// It intentionally emits NO alerts. Old active parts are the normal end-state of
+// a merged partition: ClickHouse never merges across partitions and stops merging
+// a part once it reaches the max merge size, so a large, healthy, historically-
+// partitioned table always has parts whose modification_time is days or months
+// old. Treating that age as "merge pressure" fired critical on essentially every
+// mature table. The real merge-backlog signal — parts accumulating while merges
+// are not running — is detected by TableCollector (too-many-parts + merges-stalled)
+// against per-table part counts, not part age.
 type PartsAgeCollector struct {
 	Logger *slog.Logger
 }
@@ -61,38 +67,10 @@ func (c *PartsAgeCollector) Collect(ctx context.Context, client *chclient.Client
 	for _, row := range rows {
 		db := getString(row, "database")
 		tbl := getString(row, "table")
-		partCount := getFloat(row, "part_count")
 		oldestHours := getFloat(row, "oldest_part_hours")
-		totalBytes := getFloat(row, "total_bytes")
 
 		labels := map[string]string{"database": db, "table": tbl}
 		result.AddMetric(client.Name(), "parts.oldest_hours", oldestHours, labels)
-
-		dedupKey := fmt.Sprintf("%s:parts_age:cold_parts:%s.%s", client.Name(), db, tbl)
-		sizeMB := totalBytes / 1024 / 1024
-
-		if oldestHours > 168 && partCount > 20 { // >7 days + >20 parts
-			result.AddAlert(client.Name(), SeverityCritical, "tables",
-				fmt.Sprintf("Cold parts on %s.%s: %.0f parts, oldest %.0fd",
-					db, tbl, partCount, oldestHours/24),
-				fmt.Sprintf("Table `%s.%s` has %.0f active parts; oldest unmerged for %.0f hours (%.0f days). "+
-					"Total: %.0f MB. Parts this old indicate merges are disabled or severely behind.\n\n"+
-					"*Investigate:*\n```\n-- Running merges\nSELECT count(), max(elapsed) FROM system.merges\nWHERE database='%s' AND table='%s'\n\n"+
-					"-- Part age distribution\nSELECT min(modification_time), max(modification_time), count()\nFROM system.parts\n"+
-					"WHERE database='%s' AND table='%s' AND active=1\n```",
-					db, tbl, partCount, oldestHours, oldestHours/24, sizeMB, db, tbl, db, tbl),
-				dedupKey)
-		} else if oldestHours > 72 && partCount > 10 { // >3 days + >10 parts
-			result.AddAlert(client.Name(), SeverityWarn, "tables",
-				fmt.Sprintf("Stale parts on %s.%s: %.0f parts, oldest %.0fd",
-					db, tbl, partCount, oldestHours/24),
-				fmt.Sprintf("Table `%s.%s` has %.0f active parts with the oldest not merged for %.0f hours. "+
-					"%.0f MB. Normal merge should reduce this — monitor for continued growth.\n\n"+
-					"*Check:*\n```\nSELECT min(modification_time), max(modification_time), count()\nFROM system.parts\n"+
-					"WHERE database='%s' AND table='%s' AND active=1\n```",
-					db, tbl, partCount, oldestHours, sizeMB, db, tbl),
-				dedupKey)
-		}
 	}
 
 	result.Duration = time.Since(start)

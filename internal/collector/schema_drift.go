@@ -15,11 +15,19 @@ import (
 
 // SchemaDriftCollector detects schema changes (columns added, dropped, or type
 // changed) between polls by maintaining an in-memory fingerprint map.
+//
+// State is keyed by instance name because a single collector instance is shared
+// across every monitored node. Keying only by "db.table" (as it did originally)
+// let two instances with legitimately different schemas overwrite each other's
+// baseline every poll, producing a perpetual false "schema changed" alert that
+// ping-ponged between nodes.
 type SchemaDriftCollector struct {
-	Logger      *slog.Logger
-	mu          sync.Mutex
-	lastColumns map[string][]string // "db.table" -> sorted column list ("name:type")
-	initialized bool
+	Logger *slog.Logger
+	mu     sync.Mutex
+	// instance name -> ("db.table" -> sorted column list "name:type").
+	lastColumns map[string]map[string][]string
+	// instance names whose baseline has been captured.
+	initialized map[string]bool
 }
 
 func (c *SchemaDriftCollector) Name() string { return "schema_drift" }
@@ -77,22 +85,33 @@ func (c *SchemaDriftCollector) Collect(ctx context.Context, client *chclient.Cli
 		current[key] = cols
 	}
 
+	instance := client.Name()
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// First poll: just store fingerprints, emit no alerts.
-	if !c.initialized {
-		c.lastColumns = current
-		c.initialized = true
-		result.AddMetric(client.Name(), "tables.schema_changes_detected", 0, nil)
+	if c.lastColumns == nil {
+		c.lastColumns = make(map[string]map[string][]string)
+	}
+	if c.initialized == nil {
+		c.initialized = make(map[string]bool)
+	}
+
+	// First poll for THIS instance: just store fingerprints, emit no alerts.
+	if !c.initialized[instance] {
+		c.lastColumns[instance] = current
+		c.initialized[instance] = true
+		result.AddMetric(instance, "tables.schema_changes_detected", 0, nil)
 		result.Duration = time.Since(start)
 		return result, nil
 	}
 
+	prevSnapshot := c.lastColumns[instance]
+
 	// Compare current snapshot against previous.
 	changesDetected := 0
 	for key, curCols := range current {
-		prevCols, existed := c.lastColumns[key]
+		prevCols, existed := prevSnapshot[key]
 		if !existed {
 			// New table — not a schema change on an existing table, skip.
 			continue
@@ -133,10 +152,10 @@ func (c *SchemaDriftCollector) Collect(ctx context.Context, client *chclient.Cli
 			fmt.Sprintf("%s:schema_drift:%s", client.Name(), key))
 	}
 
-	result.AddMetric(client.Name(), "tables.schema_changes_detected", float64(changesDetected), nil)
+	result.AddMetric(instance, "tables.schema_changes_detected", float64(changesDetected), nil)
 
-	// Update the stored snapshot.
-	c.lastColumns = current
+	// Update the stored snapshot for this instance.
+	c.lastColumns[instance] = current
 
 	result.Duration = time.Since(start)
 	return result, nil

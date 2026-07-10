@@ -98,8 +98,11 @@ func (c *CacheHealthCollector) collectMarkCacheHitRate(ctx context.Context, clie
 }
 
 func (c *CacheHealthCollector) collectCacheSizes(ctx context.Context, client *chclient.Client, result *CollectResult) {
+	// MarkCacheBytes / UncompressedCacheBytes / MarkCacheFiles are exposed in
+	// system.asynchronous_metrics, not system.metrics — querying system.metrics
+	// returned nothing, so the cache-size series were always empty.
 	sql := `
-		SELECT metric, value FROM system.metrics
+		SELECT metric, value FROM system.asynchronous_metrics
 		WHERE metric IN ('MarkCacheBytes', 'UncompressedCacheBytes', 'MarkCacheFiles')`
 
 	rows, err := client.Query(ctx, sql)

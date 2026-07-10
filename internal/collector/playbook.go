@@ -71,7 +71,7 @@ func asyncInsertErrorPlaybook(limit int) string {
 	return fmt.Sprintf("*Investigate:*\n```\n"+
 		"SELECT query, exception, event_time\n"+
 		"FROM system.asynchronous_insert_log\n"+
-		"WHERE status = 'ExceptionWhileFlushing'\n"+
+		"WHERE status = 'FlushError'\n"+
 		"  AND event_time > now() - INTERVAL 5 MINUTE\n"+
 		"ORDER BY event_time DESC LIMIT %d\n```", limit)
 }

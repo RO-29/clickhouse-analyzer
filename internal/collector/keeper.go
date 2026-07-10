@@ -95,13 +95,19 @@ func (c *KeeperCollector) Collect(ctx context.Context, client *chclient.Client) 
 		return result, nil
 	}
 
-	// Keeper is reachable. Check connection stats (system.zookeeper_connection — CH 22+).
+	// Keeper is reachable. Check the local session state from
+	// system.zookeeper_connection (CH 22+). Only columns that actually exist are
+	// used: is_expired signals this replica has LOST its Keeper session — the
+	// moment that happens the replica's ReplicatedMergeTree tables flip to
+	// read-only and stop replicating, which is the single most important Keeper
+	// failure to page on. (The previous query read outstanding_requests /
+	// avg_latency / max_latency, none of which exist in this table, so it
+	// errored every poll and no Keeper-side alert could ever fire.)
 	connSQL := `
 		SELECT
 			count() AS connected_nodes,
-			sum(outstanding_requests) AS total_outstanding,
-			max(avg_latency) AS max_avg_latency_ms,
-			max(max_latency) AS max_latency_ms
+			sum(is_expired) AS expired_sessions,
+			min(session_uptime_elapsed_seconds) AS min_session_uptime_s
 		FROM system.zookeeper_connection`
 
 	connRows, err := client.Query(ctx, connSQL)
@@ -118,36 +124,21 @@ func (c *KeeperCollector) Collect(ctx context.Context, client *chclient.Client) 
 
 	row := connRows[0]
 	connectedNodes := getFloat(row, "connected_nodes")
-	outstanding := getFloat(row, "total_outstanding")
-	maxAvgLatency := getFloat(row, "max_avg_latency_ms")
-	maxLatency := getFloat(row, "max_latency_ms")
+	expired := getFloat(row, "expired_sessions")
+	minSessionUptime := getFloat(row, "min_session_uptime_s")
 
 	result.AddMetric(client.Name(), "keeper.connected_nodes", connectedNodes, nil)
-	result.AddMetric(client.Name(), "keeper.outstanding_requests", outstanding, nil)
-	result.AddMetric(client.Name(), "keeper.max_avg_latency_ms", maxAvgLatency, nil)
+	result.AddMetric(client.Name(), "keeper.expired_sessions", expired, nil)
+	result.AddMetric(client.Name(), "keeper.min_session_uptime_s", minSessionUptime, nil)
 
-	if outstanding > 500 {
+	if expired > 0 {
 		result.AddAlert(client.Name(), SeverityCritical, "system",
-			fmt.Sprintf("Keeper overloaded: %.0f outstanding requests", outstanding),
-			fmt.Sprintf("ClickHouse Keeper has %.0f outstanding requests queued. "+
-				"This level of backlog delays distributed operations and may cause timeouts.\n\n%s",
-				outstanding, keeperConnectionPlaybook),
-			fmt.Sprintf("%s:keeper:outstanding_requests", client.Name()))
-	} else if outstanding > 100 {
-		result.AddAlert(client.Name(), SeverityWarn, "system",
-			fmt.Sprintf("Keeper backlog: %.0f outstanding requests", outstanding),
-			fmt.Sprintf("ClickHouse Keeper has %.0f outstanding requests — monitor for growth.\n\n%s",
-				outstanding, keeperConnectionPlaybook),
-			fmt.Sprintf("%s:keeper:outstanding_requests", client.Name()))
-	}
-
-	if maxAvgLatency > 500 {
-		result.AddAlert(client.Name(), SeverityWarn, "system",
-			fmt.Sprintf("Keeper high latency: avg %.0fms, max %.0fms", maxAvgLatency, maxLatency),
-			fmt.Sprintf("ClickHouse Keeper average latency is %.0fms (max: %.0fms). "+
-				"High latency slows down distributed operations and inserts.\n\n%s",
-				maxAvgLatency, maxLatency, keeperConnectionPlaybook),
-			fmt.Sprintf("%s:keeper:latency", client.Name()))
+			"Keeper session expired — replicas going read-only",
+			fmt.Sprintf("%.0f Keeper/ZooKeeper session(s) have expired on this node. "+
+				"When a replica loses its Keeper session its ReplicatedMergeTree tables "+
+				"become read-only and stop accepting inserts until the session recovers.\n\n%s",
+				expired, keeperConnectionPlaybook),
+			fmt.Sprintf("%s:keeper:session_expired", client.Name()))
 	}
 
 	result.Duration = time.Since(start)

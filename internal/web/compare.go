@@ -774,7 +774,7 @@ func (s *Server) handleCompareMetrics(w http.ResponseWriter, r *http.Request) {
 	errs := s.manager.ForEachParallel(ctx, func(ctx context.Context, name string, client *chclient.Client) error {
 		asyncRows, err := client.Query(ctx, `
 			SELECT metric, value FROM system.asynchronous_metrics
-			WHERE metric IN ('MemoryResident','OSMemoryTotal','OSMemoryAvailable','LoadAverage1','LoadAverage5','LoadAverage15','CGroupMaxCPU','CGroupMemoryUsed')
+			WHERE metric IN ('MemoryResident','OSMemoryTotal','OSMemoryAvailable','LoadAverage1','LoadAverage5','LoadAverage15','CGroupMaxCPU','CGroupMemoryUsed','MarkCacheBytes','MarkCacheFiles')
 		`)
 		if err != nil {
 			return fmt.Errorf("query async metrics: %w", err)
@@ -782,7 +782,7 @@ func (s *Server) handleCompareMetrics(w http.ResponseWriter, r *http.Request) {
 
 		syncRows, err := client.Query(ctx, `
 			SELECT metric, value FROM system.metrics
-			WHERE metric IN ('Query','Merge','PartMutation','MemoryTracking','MarkCacheBytes','MarkCacheFiles')
+			WHERE metric IN ('Query','Merge','PartMutation','MemoryTracking')
 		`)
 		if err != nil {
 			return fmt.Errorf("query metrics: %w", err)
@@ -922,7 +922,7 @@ func (s *Server) handleCacheStats(w http.ResponseWriter, r *http.Request) {
 
 	syncRows, err := client.Query(ctx, `
 		SELECT metric, value FROM system.metrics
-		WHERE metric IN ('MarkCacheBytes','MarkCacheFiles','FilesystemCacheSize','FilesystemCacheSizeLimit','FilesystemCacheElements')
+		WHERE metric IN ('FilesystemCacheSize','FilesystemCacheSizeLimit','FilesystemCacheElements')
 	`)
 	if err != nil {
 		slog.Error("query cache metrics", "err", err, "instance", instance)
@@ -930,9 +930,11 @@ func (s *Server) handleCacheStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// MarkCacheBytes / MarkCacheFiles are exposed in asynchronous_metrics, not
+	// system.metrics.
 	asyncRows, err := client.Query(ctx, `
 		SELECT metric, value FROM system.asynchronous_metrics
-		WHERE metric IN ('TotalPrimaryKeyBytesInMemory','TotalPrimaryKeyBytesInMemoryAllocated','TotalIndexGranularityBytesInMemory')
+		WHERE metric IN ('MarkCacheBytes','MarkCacheFiles','TotalPrimaryKeyBytesInMemory','TotalPrimaryKeyBytesInMemoryAllocated','TotalIndexGranularityBytesInMemory')
 	`)
 	if err != nil {
 		slog.Error("query async cache metrics", "err", err, "instance", instance)

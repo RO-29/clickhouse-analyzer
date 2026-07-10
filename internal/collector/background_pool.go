@@ -30,15 +30,19 @@ func (c *BackgroundPoolCollector) Collect(ctx context.Context, client *chclient.
 	start := time.Now()
 	result := &CollectResult{}
 
+	// Metric names must match system.metrics exactly. The merges/mutations pool
+	// is BackgroundMergesAndMutationsPoolTask (note the "And") — the previous
+	// name lacked it and the check silently never fired. BackgroundProcessingPool*
+	// was removed in CH 21.x and replaced by the Common pool.
 	sql := `
 		SELECT metric, value FROM system.metrics
 		WHERE metric IN (
-			'BackgroundMergesMutationsPoolTask',
-			'BackgroundMergesMutationsPoolSize',
+			'BackgroundMergesAndMutationsPoolTask',
+			'BackgroundMergesAndMutationsPoolSize',
 			'BackgroundFetchesPoolTask',
 			'BackgroundFetchesPoolSize',
-			'BackgroundProcessingPoolTask',
-			'BackgroundProcessingPoolSize'
+			'BackgroundCommonPoolTask',
+			'BackgroundCommonPoolSize'
 		)`
 
 	rows, err := client.Query(ctx, sql)
@@ -66,9 +70,9 @@ func (c *BackgroundPoolCollector) Collect(ctx context.Context, client *chclient.
 	}
 
 	pools := []poolDef{
-		{"merges_mutations", "BackgroundMergesMutationsPoolTask", "BackgroundMergesMutationsPoolSize"},
+		{"merges_mutations", "BackgroundMergesAndMutationsPoolTask", "BackgroundMergesAndMutationsPoolSize"},
 		{"fetches", "BackgroundFetchesPoolTask", "BackgroundFetchesPoolSize"},
-		{"processing", "BackgroundProcessingPoolTask", "BackgroundProcessingPoolSize"},
+		{"common", "BackgroundCommonPoolTask", "BackgroundCommonPoolSize"},
 	}
 
 	for _, pool := range pools {

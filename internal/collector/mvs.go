@@ -223,10 +223,12 @@ func (c *MVCollector) collectMVTiming(ctx context.Context, client *chclient.Clie
 // collectMVBloat compares target table sizes to source table sizes to detect
 // MV bloat (target much larger than source).
 func (c *MVCollector) collectMVBloat(ctx context.Context, client *chclient.Client, result *CollectResult) {
-	// Step 1: get all MVs with their inner (target) tables.
-	// The inner table name is stored in the view definition. We get it from
-	// system.tables where engine_full LIKE '%TO%' or from the inner UUID.
-	// A simpler approach: match MV names to .inner.UUID or explicit target tables.
+	// Get each MV's implicit inner (target) table size. For an MV created
+	// without an explicit `TO` target, ClickHouse creates a hidden table named
+	// `.inner_id.<mv-uuid>` in the same database. The join must therefore match
+	// that name against the MV's uuid — the previous `inner_t.uuid = mv.uuid`
+	// could never match (the inner table has its own distinct uuid), so this
+	// query returned no rows and the target-size metrics were always empty.
 	sql := `
 		SELECT
 			mv.database AS mv_database,
@@ -237,8 +239,8 @@ func (c *MVCollector) collectMVBloat(ctx context.Context, client *chclient.Clien
 			inner_t.total_rows AS target_rows
 		FROM system.tables AS mv
 		INNER JOIN system.tables AS inner_t
-			ON inner_t.uuid = mv.uuid
-			AND inner_t.name LIKE '.inner_id.%'
+			ON inner_t.database = mv.database
+			AND inner_t.name = concat('.inner_id.', toString(mv.uuid))
 		WHERE mv.engine = 'MaterializedView'
 		  AND inner_t.total_bytes > 0`
 

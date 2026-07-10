@@ -148,7 +148,9 @@ func (s *Server) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// --- CPU ---
-	rows, err = client.Query(ctx, `SELECT metric, value FROM system.asynchronous_metrics WHERE metric IN ('OSUserTimeCPU','OSSystemTimeCPU','OSIdleTimeCPU','CGroupMaxCPU','LoadAverage1','LoadAverage5','LoadAverage15')`)
+	// Normalized CPU-time rates in [0,1] (see SystemCollector for why the old
+	// OSUserTimeCPU/... names never returned anything).
+	rows, err = client.Query(ctx, `SELECT metric, value FROM system.asynchronous_metrics WHERE metric IN ('OSUserTimeNormalized','OSSystemTimeNormalized','OSIdleTimeNormalized','CGroupMaxCPU','LoadAverage1','LoadAverage5','LoadAverage15')`)
 	if err == nil {
 		metrics := make(map[string]float64)
 		for _, row := range rows {
@@ -156,16 +158,19 @@ func (s *Server) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 				metrics[m] = toFloat64(row["value"])
 			}
 		}
-		// Strategy 1: OSS CH
-		user := metrics["OSUserTimeCPU"]
-		system := metrics["OSSystemTimeCPU"]
-		idle := metrics["OSIdleTimeCPU"]
+		// Strategy 1: normalized CPU-time fractions.
+		user := metrics["OSUserTimeNormalized"]
+		system := metrics["OSSystemTimeNormalized"]
+		idle := metrics["OSIdleTimeNormalized"]
 		totalCPU := user + system + idle
 
 		var usedPct float64
 		var cpuDetail string
-		if totalCPU > 1.0 && idle > 0 {
+		if totalCPU > 0.001 {
 			usedPct = (user + system) / totalCPU * 100
+			if usedPct > 100 {
+				usedPct = 100
+			}
 			cpuDetail = fmt.Sprintf("User: %.1f%%, System: %.1f%%, Idle: %.1f%%", user/totalCPU*100, system/totalCPU*100, idle/totalCPU*100)
 		} else {
 			// Strategy 2: Altinity — LoadAverage / CGroupMaxCPU

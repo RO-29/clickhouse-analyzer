@@ -352,10 +352,18 @@ func Defaults() *Config {
 				MaxPartsPerPartition:  1000,
 			},
 			Merges: MergesThresholds{
-				MaxActive:            20,
-				WarnActive:           10,
-				MinActiveWhenBacklog: 30,
-				BacklogPartCount:     1000,
+				MaxActive:  20,
+				WarnActive: 10,
+				// "Stalled" means essentially no merges are running (< 1, i.e. 0)
+				// while a real backlog of active parts exists. This must stay well
+				// below WarnActive/MaxActive or the stalled and too-many-merges
+				// alerts contradict each other: the old default of 30 (> MaxActive
+				// 20) made every merge count simultaneously "stalled" and "too many"
+				// once the backlog floor was crossed. The floor is also raised to a
+				// genuinely concerning cluster-wide part count (a healthy busy
+				// cluster routinely holds a few thousand active parts).
+				MinActiveWhenBacklog: 1,
+				BacklogPartCount:     5000,
 			},
 			Mutations: MutationsThresholds{
 				StuckThreshold: Duration{30 * time.Minute},
