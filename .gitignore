@@ -3,3 +3,4 @@ bin/
 
 # Claude Code local state
 .claude/
+scripts/sync-upstream.sh
