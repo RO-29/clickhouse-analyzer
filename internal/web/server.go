@@ -3,6 +3,7 @@ package web
 
 import (
 	"context"
+	"crypto/subtle"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -166,7 +167,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	s.srv = &http.Server{
 		Addr:              s.addr,
-		Handler:           recoveryMiddleware(mux),
+		Handler:           recoveryMiddleware(s.authMiddleware(mux)),
 		ReadHeaderTimeout: 10 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
@@ -367,6 +368,23 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/api/") {
 		http.NotFound(w, r)
 		return
+	}
+	// Token bootstrap: when API auth is enabled, visiting `/?token=<t>` once with
+	// the correct token sets an httpOnly cookie so the same-origin SPA's /api/*
+	// calls authenticate automatically — no login screen or bundle change needed.
+	if s.cfg != nil && s.cfg.Security.APIToken != "" {
+		if t := r.URL.Query().Get("token"); t != "" && tokenEqual(t, s.cfg.Security.APIToken) {
+			http.SetCookie(w, &http.Cookie{
+				Name:     "ch_analyzer_token",
+				Value:    t,
+				Path:     "/",
+				HttpOnly: true,
+				SameSite: http.SameSiteLaxMode,
+				Secure:   r.TLS != nil,
+			})
+			http.Redirect(w, r, "/", http.StatusFound)
+			return
+		}
 	}
 	data, err := staticFS.ReadFile("static/index.html")
 	if err != nil {
@@ -1573,6 +1591,54 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 
 func writeErr(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// authMiddleware gates /api/* behind a bearer token when one is configured.
+// When security.api_token is empty it is a no-op, preserving the default
+// single-binary experience. Static assets and the SPA shell (/, /assets/) and
+// the liveness endpoint (/health) are always reachable so the app can bootstrap
+// and load balancers can probe it.
+//
+// The token is accepted as `Authorization: Bearer <t>`, `X-API-Token: <t>`, or
+// the `ch_analyzer_token` cookie — the cookie lets the bundled SPA authenticate
+// after a one-time `?token=` visit (see handleIndex) without a rebuild.
+func (s *Server) authMiddleware(next http.Handler) http.Handler {
+	token := ""
+	if s.cfg != nil {
+		token = s.cfg.Security.APIToken
+	}
+	if token == "" {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/") || requestHasToken(r, token) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		w.Header().Set("WWW-Authenticate", `Bearer realm="ch-analyzer"`)
+		writeErr(w, http.StatusUnauthorized, "authentication required")
+	})
+}
+
+// requestHasToken reports whether r carries the expected API token via any of
+// the accepted transports, using a constant-time comparison.
+func requestHasToken(r *http.Request, token string) bool {
+	if h := r.Header.Get("Authorization"); h != "" {
+		if t, ok := strings.CutPrefix(h, "Bearer "); ok && tokenEqual(t, token) {
+			return true
+		}
+	}
+	if t := r.Header.Get("X-API-Token"); t != "" && tokenEqual(t, token) {
+		return true
+	}
+	if c, err := r.Cookie("ch_analyzer_token"); err == nil && tokenEqual(c.Value, token) {
+		return true
+	}
+	return false
+}
+
+func tokenEqual(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
 // recoveryMiddleware catches panics in HTTP handlers, logs the stack trace,

@@ -48,6 +48,21 @@ type Config struct {
 	Maintenance MaintenanceConfig  `yaml:"maintenance"`
 	Escalation  EscalationConfig   `yaml:"escalation"`
 	Alerting    AlertingConfig     `yaml:"alerting"`
+	Security    SecurityConfig     `yaml:"security"`
+}
+
+// SecurityConfig holds opt-in hardening for the dashboard/API. Defaults keep
+// existing single-binary deployments working (no auth) while defaulting TLS
+// verification ON (the safe posture) and test-only endpoints OFF.
+type SecurityConfig struct {
+	// APIToken, when non-empty, requires every /api/* request to present the
+	// token via `Authorization: Bearer <t>`, an `X-API-Token: <t>` header, or a
+	// `ch_analyzer_token` cookie. Empty = no authentication (unchanged default).
+	// Overridable at runtime with the CH_ANALYZER_API_TOKEN environment variable.
+	APIToken string `yaml:"api_token"`
+	// TLSSkipVerify disables ClickHouse TLS certificate verification. Defaults to
+	// false (verify) — set true only for self-signed certs in trusted networks.
+	TLSSkipVerify bool `yaml:"tls_skip_verify"`
 }
 
 // AlertingConfig holds alerter-wide knobs that don't fit the per-threshold or

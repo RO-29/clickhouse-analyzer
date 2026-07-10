@@ -64,10 +64,13 @@ func New(cfg config.SlackConfig, webAddr string, alertMgr *alerter.AlertManager,
 		slack.OptionAppLevelToken(cfg.AppToken),
 	)
 	stdLogger := golog.New(os.Stderr, "socketmode: ", golog.LstdFlags|golog.Lshortfile)
-	socket := socketmode.New(client,
-		socketmode.OptionDebug(true),
-		socketmode.OptionLog(stdLogger),
-	)
+	// Socket Mode debug logging is very noisy; enable only when explicitly asked
+	// via CH_ANALYZER_SLACK_DEBUG rather than flooding production stderr.
+	smOpts := []socketmode.Option{socketmode.OptionLog(stdLogger)}
+	if os.Getenv("CH_ANALYZER_SLACK_DEBUG") != "" {
+		smOpts = append(smOpts, socketmode.OptionDebug(true))
+	}
+	socket := socketmode.New(client, smOpts...)
 
 	app := &App{
 		client:         client,
