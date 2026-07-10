@@ -321,18 +321,18 @@ func (c *TableCollector) collectMerges(ctx context.Context, client *chclient.Cli
 
 	result.AddMetric(client.Name(), "tables.merges.active_count", float64(mergeCount), nil)
 
+	// A high concurrent-merge count is the system healing itself, not a fault —
+	// it only matters if it saturates disk I/O, which this collector can't see.
+	// So this is a single warn (was critical at 20 / warn at 10), and it must not
+	// contradict the merges-stalled alert below, which fires on the opposite
+	// condition (near-zero merges with a part backlog).
 	if mergeCount >= c.MergesThresholds.MaxActive {
-		result.AddAlert(client.Name(), SeverityCritical, "tables",
-			"Too many concurrent merges (critical)",
-			fmt.Sprintf("%d active merges (max: %d). This can saturate disk I/O.\n\n%s",
+		result.AddAlert(client.Name(), SeverityWarn, "tables",
+			"High concurrent merge activity",
+			fmt.Sprintf("%d active merges (threshold: %d). Usually benign — merges are the "+
+				"system catching up. Worth a look only if disk I/O is saturated.\n\n%s",
 				mergeCount, c.MergesThresholds.MaxActive, activeMergesPlaybook),
 			fmt.Sprintf("%s:tables:merges:max", client.Name()))
-	} else if mergeCount >= c.MergesThresholds.WarnActive {
-		result.AddAlert(client.Name(), SeverityWarn, "tables",
-			"Elevated merge count",
-			fmt.Sprintf("%d active merges (warn: %d)\n\n%s",
-				mergeCount, c.MergesThresholds.WarnActive, activeMergesPlaybook),
-			fmt.Sprintf("%s:tables:merges:warn", client.Name()))
 	}
 
 	// Merges-stalled alert: low merge concurrency *while* parts are piling up.
@@ -474,14 +474,15 @@ func (c *TableCollector) collectDiskBalance(ctx context.Context, client *chclien
 
 	result.AddMetric(client.Name(), "tables.disk_balance.coeff_variation", coeffOfVar, nil)
 
-	// Flag significant imbalance (>30% coefficient of variation).
-	if coeffOfVar > 30 {
-		result.AddAlert(client.Name(), SeverityWarn, "tables",
-			"JBOD disk imbalance detected",
-			fmt.Sprintf("Data distribution across %d disks has %.1f%% coefficient of variation (mean: %s, stddev: %s)\n\n%s",
-				len(diskBytes), coeffOfVar, humanBytes(mean), humanBytes(stddev), disksBalancePlaybook),
-			fmt.Sprintf("%s:tables:disk_imbalance", client.Name()))
-	}
+	// Metric only — no alert. This groups by disk_name across ALL disks, which on
+	// a tiered storage policy mixes hot (NVMe) and cold (HDD/S3) tiers that are
+	// imbalanced *by design*, so the alert fired permanently on every tiered
+	// deployment. Real JBOD imbalance is only meaningful among disks that are
+	// peers within one volume, which requires storage-policy topology that isn't
+	// reliably queryable across versions. The coefficient-of-variation metric is
+	// still emitted for anyone who wants to alert on it with knowledge of their
+	// own storage policy.
+	_ = stddev
 }
 
 func (c *TableCollector) logger() *slog.Logger {

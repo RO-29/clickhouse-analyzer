@@ -141,6 +141,13 @@ type QueriesThresholds struct {
 	LongRunningWarnThreshold Duration `yaml:"long_running_warn_threshold"`
 	MaxConcurrent            int      `yaml:"max_concurrent"`
 	WarnConcurrent           int      `yaml:"warn_concurrent"`
+	// Floors for recent-failure / timeout alerts. Firing on a single exception
+	// in a 5-minute window (no floor) is the classic monitoring noise generator:
+	// one user typo pages the on-call. Alerts fire only at/above these counts.
+	FailuresWarnCount     int `yaml:"failures_warn_count"`
+	FailuresCriticalCount int `yaml:"failures_critical_count"`
+	TimeoutsWarnCount     int `yaml:"timeouts_warn_count"`
+	TimeoutsCriticalCount int `yaml:"timeouts_critical_count"`
 }
 
 type PartsThresholds struct {
@@ -338,10 +345,17 @@ func Defaults() *Config {
 				CriticalPercent: 95,
 			},
 			Queries: QueriesThresholds{
-				LongRunningThreshold:     Duration{time.Minute},
-				LongRunningWarnThreshold: Duration{30 * time.Second},
+				// OLAP queries routinely run for minutes; 30s/60s defaults paged on
+				// normal analytical work. Raised to values that indicate a genuinely
+				// stuck or runaway query.
+				LongRunningThreshold:     Duration{5 * time.Minute},
+				LongRunningWarnThreshold: Duration{2 * time.Minute},
 				MaxConcurrent:            100,
 				WarnConcurrent:           50,
+				FailuresWarnCount:        10,
+				FailuresCriticalCount:    50,
+				TimeoutsWarnCount:        10,
+				TimeoutsCriticalCount:    50,
 			},
 			Parts: PartsThresholds{
 				WarnCount:             1000,

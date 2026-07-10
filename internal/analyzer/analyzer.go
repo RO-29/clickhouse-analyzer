@@ -79,7 +79,13 @@ func (a *Analyzer) Analyze(instance string, results []*collector.CollectResult) 
 
 	ar := &AnalysisResult{}
 
-	// Aggregate metrics and alerts from all collectors.
+	// Aggregate metrics and alerts from all collectors. Only UNLABELED (scalar)
+	// metrics feed anomaly detection and cross-collector analysis. Labeled series
+	// (per-table, per-query, per-disk) share a metric name across many distinct
+	// entities, so collapsing them into one value keyed by name — as this did
+	// before — builds a ring buffer over interleaved, unrelated series, making
+	// every z-score on a labeled metric statistical noise. Cross-collector rules
+	// only reference scalar keys, so they are unaffected.
 	metricsByName := make(map[string]float64)
 	for _, r := range results {
 		if r == nil {
@@ -87,6 +93,9 @@ func (a *Analyzer) Analyze(instance string, results []*collector.CollectResult) 
 		}
 		ar.Alerts = append(ar.Alerts, r.Alerts...)
 		for _, m := range r.Metrics {
+			if len(m.Labels) > 0 {
+				continue
+			}
 			metricsByName[m.Name] = m.Value
 		}
 	}

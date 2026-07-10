@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rohitjain/ch-analyzer/internal/chclient"
@@ -16,6 +17,14 @@ import (
 // These are completely un-monitored despite being high-value signals.
 type ErrorsCollector struct {
 	Logger *slog.Logger
+
+	// lastCounts holds the previous poll's cumulative system.errors counter per
+	// (instance -> error name). system.errors.value is cumulative since server
+	// start, so alerting on it directly reported lifetime totals as if they were
+	// "in the last hour". We alert on the delta — new occurrences since the last
+	// poll — instead.
+	mu         sync.Mutex
+	lastCounts map[string]map[string]float64
 }
 
 func (c *ErrorsCollector) Name() string { return "errors" }
@@ -87,6 +96,19 @@ func (c *ErrorsCollector) collectSystemErrors(ctx context.Context, client *chcli
 		seriousSet[e] = true
 	}
 
+	// Delta bookkeeping: system.errors.value is cumulative since server start, so
+	// we alert on new occurrences since the previous poll, not the lifetime total.
+	instance := client.Name()
+	c.mu.Lock()
+	if c.lastCounts == nil {
+		c.lastCounts = make(map[string]map[string]float64)
+	}
+	prev, seenInstance := c.lastCounts[instance]
+	if !seenInstance {
+		prev = make(map[string]float64)
+		c.lastCounts[instance] = prev
+	}
+
 	var criticalErrors []string
 	var warnErrors []string
 	totalErrorCount := 0.0
@@ -94,11 +116,18 @@ func (c *ErrorsCollector) collectSystemErrors(ctx context.Context, client *chcli
 	for _, row := range rows {
 		name := getString(row, "name")
 		// The SQL aliases the count column as `cnt` (value on CH 22+, times on
-		// older builds). Read `cnt`, not `times` — reading the wrong key made
-		// every error show "×0" and, because the warn branch also fired on
-		// name alone, surfaced benign single-occurrence errors as alerts.
+		// older builds).
 		cnt := getFloat(row, "cnt")
 		lastMsg := getString(row, "last_error_message")
+
+		prevCnt, hadPrev := prev[name]
+		prev[name] = cnt
+		// New occurrences since the last poll. Missing prior (first sighting) or
+		// a counter reset across a CH restart → treat as baseline, delta 0.
+		delta := 0.0
+		if hadPrev && cnt >= prevCnt {
+			delta = cnt - prevCnt
+		}
 
 		// Drop benign, self-healing conditions that inflate the counter without
 		// being actionable — chiefly KEEPER_EXCEPTION "Transaction failed (Bad
@@ -108,23 +137,31 @@ func (c *ErrorsCollector) collectSystemErrors(ctx context.Context, client *chcli
 			continue
 		}
 
-		totalErrorCount += cnt
-
 		labels := map[string]string{"error": name}
 		result.AddMetric(client.Name(), "errors.system.count", cnt, labels)
+		result.AddMetric(client.Name(), "errors.system.delta", delta, labels)
+
+		// Baseline poll (first time we've seen this instance, or this error):
+		// record only, don't alert on a lifetime total masquerading as recent.
+		if !seenInstance || !hadPrev || delta == 0 {
+			continue
+		}
+
+		totalErrorCount += delta
 
 		// Truncate long messages
 		if len(lastMsg) > 150 {
 			lastMsg = lastMsg[:150] + "…"
 		}
-		entry := fmt.Sprintf("  - *%s* (×%.0f): %s", name, cnt, lastMsg)
+		entry := fmt.Sprintf("  - *%s* (+%.0f since last check): %s", name, delta, lastMsg)
 
-		if seriousSet[name] && cnt >= 5 {
+		if seriousSet[name] && delta >= 5 {
 			criticalErrors = append(criticalErrors, entry)
-		} else if cnt >= 10 || (seriousSet[name] && cnt >= 3) {
+		} else if delta >= 10 || (seriousSet[name] && delta >= 3) {
 			warnErrors = append(warnErrors, entry)
 		}
 	}
+	c.mu.Unlock()
 
 	result.AddMetric(client.Name(), "errors.system.total_recent", totalErrorCount, nil)
 
@@ -143,8 +180,8 @@ func (c *ErrorsCollector) collectSystemErrors(ctx context.Context, client *chcli
 		sort.Strings(criticalErrors)
 		// Playbook matches the critical filter: name ∈ seriousErrors AND
 		// occurrence ≥ 5, in the last hour (same window as alert).
-		msg := fmt.Sprintf("*%d serious ClickHouse error type(s)* detected in the last hour:\n%s\n\n"+
-			"*Investigate:*\n```\n-- Serious errors flagged by the alert\n"+
+		msg := fmt.Sprintf("*%d serious ClickHouse error type(s)* with new occurrences since the last check:\n%s\n\n"+
+			"*Investigate:*\n```\n-- Serious errors active in the last hour\n"+
 			"SELECT name, coalesce(value, times) AS occurrences,\n"+
 			"  last_error_time, last_error_message\n"+
 			"FROM system.errors\n"+
@@ -167,7 +204,7 @@ func (c *ErrorsCollector) collectSystemErrors(ctx context.Context, client *chcli
 		sort.Strings(warnErrors)
 		// Warn fires when occurrences ≥ 10 OR name ∈ seriousErrors. Playbook
 		// surfaces the same union.
-		msg := fmt.Sprintf("*%d ClickHouse error type(s)* have elevated occurrence in the last hour:\n%s\n\n"+
+		msg := fmt.Sprintf("*%d ClickHouse error type(s)* have elevated new occurrences since the last check:\n%s\n\n"+
 			"*Investigate:*\n```\nSELECT name, coalesce(value, times) AS occurrences,\n"+
 			"  last_error_time, last_error_message\n"+
 			"FROM system.errors\n"+
