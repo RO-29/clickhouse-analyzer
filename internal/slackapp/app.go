@@ -35,10 +35,11 @@ type App struct {
 	socket     *socketmode.Client
 	cfg        config.SlackConfig
 	webAddr    string // e.g. ":8080" — used for local analyze API calls
-	alertMgr   *alerter.AlertManager
-	maintStore *alerter.MaintenanceStore
-	ackStore   *alerter.AckStore
-	chMgr      *chclient.Manager
+	alertMgr    *alerter.AlertManager
+	maintStore  *alerter.MaintenanceStore
+	snoozeStore *alerter.SnoozeStore
+	ackStore    *alerter.AckStore
+	chMgr       *chclient.Manager
 
 	pinnedTS string
 	pinnedMu sync.Mutex
@@ -57,7 +58,7 @@ type App struct {
 }
 
 // New creates a SlackApp. Call Run to start the Socket Mode event loop.
-func New(cfg config.SlackConfig, webAddr string, alertMgr *alerter.AlertManager, maintStore *alerter.MaintenanceStore, ackStore *alerter.AckStore, chMgr *chclient.Manager) *App {
+func New(cfg config.SlackConfig, webAddr string, alertMgr *alerter.AlertManager, maintStore *alerter.MaintenanceStore, snoozeStore *alerter.SnoozeStore, ackStore *alerter.AckStore, chMgr *chclient.Manager) *App {
 	client := slack.New(
 		cfg.BotToken,
 		slack.OptionAppLevelToken(cfg.AppToken),
@@ -75,6 +76,7 @@ func New(cfg config.SlackConfig, webAddr string, alertMgr *alerter.AlertManager,
 		webAddr:        webAddr,
 		alertMgr:       alertMgr,
 		maintStore:     maintStore,
+		snoozeStore:    snoozeStore,
 		ackStore:       ackStore,
 		chMgr:          chMgr,
 		pendingRefresh: make(chan struct{}, 1),

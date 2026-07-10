@@ -10,9 +10,16 @@ import (
 )
 
 // SnoozeEntry represents a snoozed alert rule.
+//
+// There are two scopes:
+//   - per-alert: DedupKey set (e.g. "prod:queries:HighQueryDuration"). Created
+//     from the web UI to silence one specific alert.
+//   - per-instance: DedupKey empty, Instance set. Created from Slack
+//     (`/ch snooze <instance>`) to silence a whole node. Unlike a maintenance
+//     window, snoozed alerts are still recorded (they just don't notify).
 type SnoozeEntry struct {
 	ID        string `json:"id"`
-	DedupKey  string `json:"dedup_key"`  // e.g. "prod:queries:HighQueryDuration"
+	DedupKey  string `json:"dedup_key"`
 	Instance  string `json:"instance"`
 	Reason    string `json:"reason"`
 	SnoozedBy string `json:"snoozed_by"`
@@ -62,9 +69,11 @@ func (ss *SnoozeStore) Add(dedupKey, instance, reason, snoozedBy string, dur tim
 	return e
 }
 
-// IsSnoozed returns true if there is an active (non-expired) snooze for the
-// given dedupKey. Expired entries are pruned as a side effect.
-func (ss *SnoozeStore) IsSnoozed(dedupKey string) bool {
+// IsSnoozed reports whether the alert identified by (dedupKey, instance) is
+// currently silenced by an active snooze — either a per-alert snooze matching
+// the dedupKey, or a per-instance snooze (empty DedupKey) matching the instance.
+// Expired entries are pruned as a side effect.
+func (ss *SnoozeStore) IsSnoozed(dedupKey, instance string) bool {
 	nowSec := time.Now().UTC().Unix()
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
@@ -81,11 +90,37 @@ func (ss *SnoozeStore) IsSnoozed(dedupKey string) bool {
 	}
 
 	for _, e := range ss.snoozes {
-		if e.DedupKey == dedupKey && e.ExpiresAt > nowSec {
-			return true
+		if e.ExpiresAt <= nowSec {
+			continue
+		}
+		if e.DedupKey != "" && e.DedupKey == dedupKey {
+			return true // per-alert snooze
+		}
+		if e.DedupKey == "" && e.Instance != "" && e.Instance == instance {
+			return true // per-instance snooze
 		}
 	}
 	return false
+}
+
+// CancelInstance removes all active per-instance snoozes (empty DedupKey) for
+// the given instance. Returns the number removed. Used by `/ch unsnooze`.
+func (ss *SnoozeStore) CancelInstance(instance string) int {
+	ss.mu.Lock()
+	var del []string
+	for id, e := range ss.snoozes {
+		if e.DedupKey == "" && e.Instance == instance {
+			del = append(del, id)
+		}
+	}
+	for _, id := range del {
+		delete(ss.snoozes, id)
+	}
+	ss.mu.Unlock()
+	if len(del) > 0 {
+		ss.saveToFile()
+	}
+	return len(del)
 }
 
 // List returns all active (not yet expired) snooze entries.

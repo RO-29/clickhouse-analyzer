@@ -101,6 +101,40 @@ func TestResolveAndNotify_FiresResolveSideEffects(t *testing.T) {
 	}
 }
 
+// A per-instance snooze (empty dedup key, from `/ch snooze <instance>`) must
+// persist the alert to the store (UI stays honest) but suppress notification —
+// the behaviour that distinguishes snooze from a maintenance window.
+func TestReconcile_InstanceSnoozeSuppressesNotify(t *testing.T) {
+	fs := newFakeStore()
+	wh, cap := newWebhookCapture(t)
+	ss := NewSnoozeStore("")
+	ss.Add("", "h1", "snoozed via slack", "me", time.Hour) // instance-level snooze
+	am := newTestAlertManager(fs, WithWebhook(wh), WithSnooze(ss))
+
+	a := collector.Alert{
+		Instance: "h1", Category: "memory", Title: "OOM", DedupKey: "h1:memory:OOM",
+		Severity: collector.SeverityCritical,
+	}
+	if err := am.Reconcile(context.Background(), []collector.Alert{a}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(fs.GetAllActiveAlerts()) != 1 {
+		t.Fatal("snoozed alert must still be persisted (visible in UI)")
+	}
+	if got := cap.byEvent("alert_firing"); len(got) != 0 {
+		t.Fatalf("snoozed instance must not notify, got %d firing events", len(got))
+	}
+
+	// Cancelling the instance snooze lets it notify again on the next cycle.
+	if n := ss.CancelInstance("h1"); n != 1 {
+		t.Fatalf("CancelInstance should remove 1 snooze, got %d", n)
+	}
+	if ss.IsSnoozed("h1:memory:OOM", "h1") {
+		t.Fatal("instance should no longer be snoozed after cancel")
+	}
+}
+
 // The heartbeat stale-sweep must also fire resolve side effects, or ghost alerts
 // swept after 24h leave their PagerDuty incidents open forever.
 func TestResolveStaleAndNotify_FiresResolveSideEffects(t *testing.T) {

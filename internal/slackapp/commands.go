@@ -104,6 +104,9 @@ func (a *App) cmdStatus(cmd slack.SlashCommand, instance string) {
 		if a.maintStore != nil && a.maintStore.GetActiveWindow(inst) != nil {
 			emoji = "🔧"
 			status = "In Maintenance"
+		} else if a.snoozeStore != nil && a.snoozeStore.IsSnoozed("", inst) {
+			emoji = "🔇"
+			status = "Snoozed"
 		}
 		lines = append(lines, fmt.Sprintf("%s  `%s`  —  %s", emoji, inst, status))
 	}
@@ -137,6 +140,9 @@ func (a *App) cmdStatusSingle(cmd slack.SlashCommand, instance string) {
 			until := time.Unix(w.EndTime, 0).UTC().Format("15:04 UTC")
 			lines = append(lines, fmt.Sprintf("🔧  Maintenance active until %s  ·  _%s_", until, w.Reason))
 		}
+	}
+	if a.snoozeStore != nil && a.snoozeStore.IsSnoozed("", instance) {
+		lines = append(lines, "🔇  Snoozed — alerts recorded but notifications silenced")
 	}
 
 	if len(alerts) > 0 {
@@ -208,31 +214,31 @@ func (a *App) cmdAlerts(cmd slack.SlashCommand, instance string) {
 	a.postEphemeral(cmd.ChannelID, cmd.UserID, msg)
 }
 
-// cmdSnoozed lists all currently active maintenance/snooze windows.
+// cmdSnoozed lists all currently active snoozes (per-instance and per-alert).
 func (a *App) cmdSnoozed(cmd slack.SlashCommand) {
-	if a.maintStore == nil {
+	if a.snoozeStore == nil {
 		a.postEphemeral(cmd.ChannelID, cmd.UserID, "✅ No active snoozes.")
 		return
 	}
-	windows := a.maintStore.List()
-	if len(windows) == 0 {
+	snoozes := a.snoozeStore.List()
+	if len(snoozes) == 0 {
 		a.postEphemeral(cmd.ChannelID, cmd.UserID, "✅ No active snoozes.")
 		return
 	}
-	// Sort by end time for a consistent display order.
-	sort.Slice(windows, func(i, j int) bool {
-		return windows[i].EndTime < windows[j].EndTime
+	// Sort by expiry for a consistent display order.
+	sort.Slice(snoozes, func(i, j int) bool {
+		return snoozes[i].ExpiresAt < snoozes[j].ExpiresAt
 	})
 	var lines []string
-	for _, w := range windows {
-		until := time.Unix(w.EndTime, 0).UTC().Format("15:04 UTC")
-		inst := w.Instance
-		if inst == "*" {
-			inst = "all instances"
+	for _, s := range snoozes {
+		until := time.Unix(s.ExpiresAt, 0).UTC().Format("15:04 UTC")
+		scope := s.Instance // per-instance snooze
+		if s.DedupKey != "" {
+			scope = s.DedupKey // per-alert snooze
 		}
-		lines = append(lines, fmt.Sprintf("• *%s*  —  _%s_  —  until %s", inst, w.Reason, until))
+		lines = append(lines, fmt.Sprintf("• *%s*  —  _%s_  —  until %s", scope, s.Reason, until))
 	}
-	msg := "*Active Snoozes / Maintenance Windows:*\n" + strings.Join(lines, "\n")
+	msg := "*Active Snoozes:*\n" + strings.Join(lines, "\n")
 	if a.cfg.DashboardURL != "" {
 		msg += fmt.Sprintf("\n\n<%s|Open Dashboard →>", a.cfg.DashboardURL)
 	}
@@ -298,41 +304,37 @@ func (a *App) cmdAnalyze(ctx context.Context, cmd slack.SlashCommand, instance s
 	go a.runAnalysis(ctx, cmd.ChannelID, ts, instance)
 }
 
-// cmdUnsnooze cancels the active snooze/maintenance window for an instance.
+// cmdUnsnooze cancels the active per-instance snooze for an instance.
 func (a *App) cmdUnsnooze(cmd slack.SlashCommand, instance string) {
-	if a.maintStore == nil {
-		a.postEphemeral(cmd.ChannelID, cmd.UserID, "❌  Maintenance store unavailable.")
+	if a.snoozeStore == nil {
+		a.postEphemeral(cmd.ChannelID, cmd.UserID, "❌  Snooze store unavailable.")
 		return
 	}
 
 	if instance == "" {
-		// No instance specified — list active snoozes so user can pick one.
-		windows := a.maintStore.List()
-		if len(windows) == 0 {
+		// No instance specified — list active instance snoozes so user can pick.
+		var lines []string
+		for _, s := range a.snoozeStore.List() {
+			if s.DedupKey != "" {
+				continue // per-alert snoozes are managed from the UI
+			}
+			until := time.Unix(s.ExpiresAt, 0).UTC().Format("15:04 UTC")
+			lines = append(lines, fmt.Sprintf("• `%s`  —  until %s", s.Instance, until))
+		}
+		if len(lines) == 0 {
 			a.postEphemeral(cmd.ChannelID, cmd.UserID, "✅  No active snoozes to cancel.")
 			return
-		}
-		var lines []string
-		for _, w := range windows {
-			until := time.Unix(w.EndTime, 0).UTC().Format("15:04 UTC")
-			inst := w.Instance
-			if inst == "*" {
-				inst = "all instances"
-			}
-			lines = append(lines, fmt.Sprintf("• `%s`  —  until %s", inst, until))
 		}
 		msg := "Active snoozes (use `/ch unsnooze <instance>` to cancel one):\n" + strings.Join(lines, "\n")
 		a.postEphemeral(cmd.ChannelID, cmd.UserID, msg)
 		return
 	}
 
-	w := a.maintStore.GetActiveWindow(instance)
-	if w == nil {
+	if n := a.snoozeStore.CancelInstance(instance); n == 0 {
 		a.postEphemeral(cmd.ChannelID, cmd.UserID,
 			fmt.Sprintf("ℹ️  No active snooze for `%s`.", instance))
 		return
 	}
-	a.maintStore.Delete(w.ID)
 	a.postEphemeral(cmd.ChannelID, cmd.UserID,
 		fmt.Sprintf("🔔  Snooze cancelled for `%s`. Alerts will resume immediately.", instance))
 	go a.UpdatePinned()
@@ -371,16 +373,20 @@ func (a *App) cmdHelp(cmd slack.SlashCommand) {
 	a.postEphemeral(cmd.ChannelID, cmd.UserID, help)
 }
 
-// doSnooze creates a maintenance window for the given instance for `hours` hours.
+// doSnooze creates a per-instance SNOOZE for `hours` hours. A snooze silences
+// notifications (Slack / PagerDuty / webhook) while STILL recording alerts to
+// the DB and the UI — unlike `/ch maintenance`, which drops alerts entirely.
+// This is the distinction users expect from "snooze": be quiet, don't go blind.
 func (a *App) doSnooze(instance string, hours int, createdBy string) error {
-	if a.maintStore == nil {
-		return fmt.Errorf("maintenance store not available")
+	if a.snoozeStore == nil {
+		return fmt.Errorf("snooze store not available")
 	}
 	instances := a.instanceNames()
 	if !contains(instances, instance) {
 		return fmt.Errorf("unknown instance")
 	}
-	a.maintStore.Add(instance,
+	// Empty dedup key = instance-level snooze (silences the whole node).
+	a.snoozeStore.Add("", instance,
 		fmt.Sprintf("Snoozed via Slack by @%s", createdBy),
 		createdBy,
 		time.Duration(hours)*time.Hour,

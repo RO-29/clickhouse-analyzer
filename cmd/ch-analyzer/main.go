@@ -364,7 +364,7 @@ func main() {
 
 	// Start Slack Socket Mode app (slash commands + interactive buttons + pinned dashboard).
 	if cfg.Slack.BotToken != "" && cfg.Slack.AppToken != "" {
-		app := slackapp.New(cfg.Slack, cfg.Web.ListenAddr, alertMgr, maintenanceStore, ackStore, clientMgr)
+		app := slackapp.New(cfg.Slack, cfg.Web.ListenAddr, alertMgr, maintenanceStore, snoozeStore, ackStore, clientMgr)
 		go func() {
 			slog.Info("slack socket mode app starting")
 			app.Run(ctx)

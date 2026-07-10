@@ -377,7 +377,7 @@ func (am *AlertManager) ReconcileWithObservation(ctx context.Context, currentAle
 		}
 
 		// Snooze: persist but don't notify.
-		if am.snooze != nil && am.snooze.IsSnoozed(a.DedupKey) {
+		if am.snooze != nil && am.snooze.IsSnoozed(a.DedupKey, a.Instance) {
 			am.logger.Debug("alert snoozed",
 				slog.String("dedup_key", a.DedupKey),
 				slog.String("instance", a.Instance))
@@ -673,7 +673,7 @@ func (am *AlertManager) notifiable(a collector.Alert, inhibActive map[string]*Ac
 	if am.inhibition != nil && am.inhibition.IsInhibited(ActiveAlert{Alert: a}, inhibActive) {
 		return false
 	}
-	if am.snooze != nil && am.snooze.IsSnoozed(a.DedupKey) {
+	if am.snooze != nil && am.snooze.IsSnoozed(a.DedupKey, a.Instance) {
 		return false
 	}
 	return true
@@ -963,7 +963,7 @@ func (am *AlertManager) GetActiveAlertsForInstance(instance string) []*ActiveAle
 		// it — previously snooze only suppressed the initial notify and a firing
 		// alert kept appearing in Slack and driving escalation. The alert stays
 		// visible in the UI (which reads the store directly).
-		if am.snooze != nil && am.snooze.IsSnoozed(a.DedupKey) {
+		if am.snooze != nil && am.snooze.IsSnoozed(a.DedupKey, a.Instance) {
 			continue
 		}
 		result = append(result, projectActiveAlert(a))
