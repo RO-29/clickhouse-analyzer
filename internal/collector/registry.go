@@ -28,7 +28,7 @@ func AllCollectorMeta() []CollectorMeta {
 WHERE metric IN ('MemoryResident','OSMemoryAvailable','OSMemoryTotal',
                  'OSCPUWaitMicroseconds','OSCPUVirtualTimeMicroseconds')`,
 				`SELECT metric, value FROM system.metrics
-WHERE metric IN ('MemoryTracking','BackgroundMergesMutationsPoolTask')`,
+WHERE metric IN ('MemoryTracking','BackgroundMergesAndMutationsPoolTask')`,
 			},
 		},
 		{
@@ -164,9 +164,9 @@ LIMIT 20`,
 			Queries: []string{
 				`SELECT metric, value FROM system.metrics
 WHERE metric IN (
-  'BackgroundMergesMutationsPoolTask','BackgroundMergesMutationsPoolSize',
+  'BackgroundMergesAndMutationsPoolTask','BackgroundMergesAndMutationsPoolSize',
   'BackgroundFetchesPoolTask','BackgroundFetchesPoolSize',
-  'BackgroundProcessingPoolTask','BackgroundProcessingPoolSize'
+  'BackgroundCommonPoolTask','BackgroundCommonPoolSize'
 )`,
 			},
 		},
@@ -302,7 +302,7 @@ GROUP BY t.database, t.name HAVING part_count > 5 AND oldest_part_days > 14`,
 			Description: "Monitors async insert flush failures and queue depth. No-ops gracefully if async inserts are not configured.",
 			Category:    "inserts",
 			Queries: []string{
-				`SELECT count() AS total, countIf(status = 'ExceptionWhileFlushing') AS errors
+				`SELECT count() AS total, countIf(status = 'FlushError') AS errors
 FROM system.asynchronous_insert_log
 WHERE event_time > now() - INTERVAL 5 MINUTE`,
 				`SELECT count() AS queue_depth FROM system.asynchronous_inserts`,
@@ -311,7 +311,7 @@ WHERE event_time > now() - INTERVAL 5 MINUTE`,
 		{
 			Name:        "parts_age",
 			DisplayName: "Parts Age",
-			Description: "Detects tables where active parts have not been merged for an unusually long time, indicating merge pressure.",
+			Description: "Reports the age of the oldest active part per table (data only, no alerts) for the Parts Age view.",
 			Category:    "tables",
 			Queries: []string{
 				`SELECT database, table, count() AS part_count,
@@ -345,12 +345,12 @@ ORDER BY exec_count DESC LIMIT 10`,
 		{
 			Name:        "keeper",
 			DisplayName: "Keeper / ZooKeeper Health",
-			Description: "Checks ClickHouse Keeper or ZooKeeper reachability and monitors connection latency and request backlog.",
+			Description: "Checks ClickHouse Keeper / ZooKeeper reachability and detects expired sessions (which flip replicas to read-only).",
 			Category:    "system",
 			Queries: []string{
 				`SELECT count() AS cnt FROM system.zookeeper WHERE path = '/'`,
-				`SELECT count() AS connected_nodes, sum(outstanding_requests) AS total_outstanding,
-  max(avg_latency) AS max_avg_latency_ms, max(max_latency) AS max_latency_ms
+				`SELECT count() AS connected_nodes, sum(is_expired) AS expired_sessions,
+  min(session_uptime_elapsed_seconds) AS min_session_uptime_s
 FROM system.zookeeper_connection`,
 			},
 		},

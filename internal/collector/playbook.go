@@ -71,7 +71,7 @@ func asyncInsertErrorPlaybook(limit int) string {
 	return fmt.Sprintf("*Investigate:*\n```\n"+
 		"SELECT query, exception, event_time\n"+
 		"FROM system.asynchronous_insert_log\n"+
-		"WHERE status = 'ExceptionWhileFlushing'\n"+
+		"WHERE status = 'FlushError'\n"+
 		"  AND event_time > now() - INTERVAL 5 MINUTE\n"+
 		"ORDER BY event_time DESC LIMIT %d\n```", limit)
 }
@@ -198,16 +198,6 @@ const stuckMutationsPlaybook = "*Investigate:*\n```\n" +
 	"WHERE NOT is_done\n" +
 	"ORDER BY create_time\n```"
 
-// disksBalancePlaybook: bytes per disk for the current node. For
-// tables.disk_balance (JBOD imbalance).
-const disksBalancePlaybook = "*Investigate:*\n```\n" +
-	"SELECT disk_name,\n" +
-	"  formatReadableSize(sum(bytes_on_disk)) AS used,\n" +
-	"  count() AS parts\n" +
-	"FROM system.parts\n" +
-	"WHERE active\n" +
-	"GROUP BY disk_name\n" +
-	"ORDER BY sum(bytes_on_disk) DESC\n```"
 
 // ---------------------------------------------------------------------------
 // Query-behaviour playbooks

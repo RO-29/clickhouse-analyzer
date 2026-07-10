@@ -79,7 +79,13 @@ func (a *Analyzer) Analyze(instance string, results []*collector.CollectResult) 
 
 	ar := &AnalysisResult{}
 
-	// Aggregate metrics and alerts from all collectors.
+	// Aggregate metrics and alerts from all collectors. Only UNLABELED (scalar)
+	// metrics feed anomaly detection and cross-collector analysis. Labeled series
+	// (per-table, per-query, per-disk) share a metric name across many distinct
+	// entities, so collapsing them into one value keyed by name — as this did
+	// before — builds a ring buffer over interleaved, unrelated series, making
+	// every z-score on a labeled metric statistical noise. Cross-collector rules
+	// only reference scalar keys, so they are unaffected.
 	metricsByName := make(map[string]float64)
 	for _, r := range results {
 		if r == nil {
@@ -87,6 +93,9 @@ func (a *Analyzer) Analyze(instance string, results []*collector.CollectResult) 
 		}
 		ar.Alerts = append(ar.Alerts, r.Alerts...)
 		for _, m := range r.Metrics {
+			if len(m.Labels) > 0 {
+				continue
+			}
 			metricsByName[m.Name] = m.Value
 		}
 	}
@@ -225,12 +234,18 @@ func (a *Analyzer) crossCollectorAnalysis(instance string, m map[string]float64,
 
 	memUsedPct := m["system.memory.used_percent"]
 	runningQueries := m["system.metrics.Query"]
-	activeMerges := m["system.metrics.Merge"]
-	totalParts := m["tables.total_parts"]
-	s3Latency := m["storage.s3.avg_latency"]
-	s3Reads := m["storage.s3.concurrent_reads"]
 
-	// High memory + many queries = OOM risk.
+	// High memory + many concurrent queries = elevated OOM-kill risk. This is a
+	// genuine multi-signal correlation not covered by any single collector: each
+	// signal alone is benign, together they mean the next heavy query may tip the
+	// server over.
+	//
+	// The three other cross-alerts that used to live here (merges-behind,
+	// s3-contention, system-overloaded) were removed: each read a metric name no
+	// collector ever emits (tables.total_parts, storage.s3.avg_latency,
+	// inserts.rows_per_sec) so none could fire, and each duplicated a dedicated
+	// collector alert (tables merges-stalled, storage S3 latency, inserts
+	// backpressure). Resurrecting them would only add redundant noise.
 	if memUsedPct > 85 && runningQueries > 20 {
 		ar.CrossAlerts = append(ar.CrossAlerts, collector.Alert{
 			Instance: instance,
@@ -240,49 +255,6 @@ func (a *Analyzer) crossCollectorAnalysis(instance string, m map[string]float64,
 			Message: formatf("Memory at %.1f%% with %d running queries. "+
 				"Risk of OOM kill.", memUsedPct, int(runningQueries)),
 			DedupKey:  instance + ":cross:oom_risk",
-			Timestamp: now,
-		})
-	}
-
-	// High merges + many parts = merges can't keep up.
-	if activeMerges > 15 && totalParts > 300 {
-		ar.CrossAlerts = append(ar.CrossAlerts, collector.Alert{
-			Instance: instance,
-			Severity: collector.SeverityCritical,
-			Category: "cross",
-			Title:    "Merges falling behind",
-			Message: formatf("%.0f active merges with %.0f total parts. "+
-				"Merges cannot keep up with ingestion.", activeMerges, totalParts),
-			DedupKey:  instance + ":cross:merges_behind",
-			Timestamp: now,
-		})
-	}
-
-	// S3 latency + concurrent S3 reads = S3 contention.
-	if s3Latency > 5 && s3Reads > 10 {
-		ar.CrossAlerts = append(ar.CrossAlerts, collector.Alert{
-			Instance: instance,
-			Severity: collector.SeverityWarn,
-			Category: "cross",
-			Title:    "S3 contention detected",
-			Message: formatf("S3 avg latency %.1fs with %.0f concurrent reads. "+
-				"Queries reading from S3 are experiencing contention.", s3Latency, s3Reads),
-			DedupKey:  instance + ":cross:s3_contention",
-			Timestamp: now,
-		})
-	}
-
-	// High merges + high insert rate = system overloaded.
-	insertRate := m["inserts.rows_per_sec"]
-	if activeMerges > 15 && insertRate > 100 {
-		ar.CrossAlerts = append(ar.CrossAlerts, collector.Alert{
-			Instance: instance,
-			Severity: collector.SeverityWarn,
-			Category: "cross",
-			Title:    "System overloaded: high merges + inserts",
-			Message: formatf("%.0f active merges with %.0f inserts/sec. "+
-				"Consider throttling ingestion.", activeMerges, insertRate),
-			DedupKey:  instance + ":cross:overloaded",
 			Timestamp: now,
 		})
 	}
@@ -313,19 +285,25 @@ func (a *Analyzer) computeHealthScore(instance string, alerts, crossAlerts []col
 		seen[k] = true
 		switch alert.Severity {
 		case collector.SeverityCritical:
-			totalDeduct += 10
+			totalDeduct += 30
 		case collector.SeverityWarn:
-			totalDeduct += 3
+			totalDeduct += 8
 		case collector.SeverityInfo:
-			totalDeduct += 1
+			totalDeduct += 2
 		}
 	}
 
-	// Cap total deduction at 50.
-	// With 10 possible categories all critical: 100 → capped → min score 50.
-	// Typical "has some issues" node (3 criticals): ~30 deducted → score ~70 (yellow).
-	if totalDeduct > 50 {
-		totalDeduct = 50
+	// Deductions are per distinct (category, severity), so scores map to the UI
+	// bands (critical <50, warning <80, else healthy) as:
+	//   0 issues            -> 100  healthy
+	//   1 critical category ->  70  warning
+	//   2 critical categories-> 40  critical
+	//   3 warn categories   ->  76  warning
+	// The old code capped deductions at 50, so the score floored at 50 and the
+	// "critical" band (<50) — and any SLO metric counting score<50 — was
+	// literally unreachable. Allow the score to fall to 0.
+	if totalDeduct > 100 {
+		totalDeduct = 100
 	}
 	score -= totalDeduct
 

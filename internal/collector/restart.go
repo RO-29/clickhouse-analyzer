@@ -156,8 +156,13 @@ func (c *RestartCollector) previousUptime(ctx context.Context, client *chclient.
 func (c *RestartCollector) detectCrash(ctx context.Context, client *chclient.Client, startTime time.Time) (bool, string) {
 	qctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+	// system.crash_log exposes the stack as trace_full (Array(String)); there is
+	// no trace_str column. Concatenate a slice of frames for an inline summary.
+	// (The old trace_str reference errored, so detectCrash always returned "no
+	// crash" and genuine crashes were downgraded to a clean-restart WARN.)
 	sql := fmt.Sprintf(`
-		SELECT event_time, signal, thread_id, query_id, substring(trace_str, 1, 200) AS trace
+		SELECT event_time, signal, thread_id, query_id,
+			substring(arrayStringConcat(arraySlice(trace_full, 1, 8), ' ← '), 1, 200) AS trace
 		FROM system.crash_log
 		WHERE event_time >= toDateTime(%d) - INTERVAL 10 MINUTE
 		  AND event_time <= toDateTime(%d) + INTERVAL 1 MINUTE
@@ -226,7 +231,7 @@ func restartInvestigationPlaybook(startEpoch int64) string {
 		"  AND type IN ('QueryFinish','ExceptionWhileProcessing')\n"+
 		"ORDER BY memory_usage DESC LIMIT 10;\n\n"+
 		"-- Crash log (populated on SIGSEGV/abort — silent on clean restart)\n"+
-		"SELECT event_time, signal, thread_id, query_id, trace_str\n"+
+		"SELECT event_time, signal, thread_id, query_id, trace_full\n"+
 		"FROM system.crash_log\n"+
 		"WHERE event_time >= toDateTime(%d) - INTERVAL 10 MINUTE\n"+
 		"ORDER BY event_time DESC LIMIT 10\n```",

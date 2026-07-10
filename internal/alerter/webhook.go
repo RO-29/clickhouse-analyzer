@@ -44,16 +44,26 @@ type WebhookPayload struct {
 }
 
 // Send POSTs payload as JSON to the configured webhook URL.
-// Calls with a non-empty DedupKey are rate-limited to once per 5 minutes per
-// key to prevent alert storms. all_clear events (empty DedupKey) always pass.
+//
+// Only "alert_firing" events are rate-limited (once per 5 minutes), and the
+// rate-limit key includes severity so that:
+//   - resolve / all_clear events are NEVER suppressed — they are terminal and
+//     dropping them would leave downstream systems thinking an alert is still
+//     firing; and
+//   - a genuine escalation (warn -> critical on the same key) is delivered
+//     rather than being swallowed as a "repeat" of the earlier warn.
+//
 // Errors are logged but not propagated to callers.
 func (w *WebhookNotifier) Send(payload WebhookPayload) error {
-	if payload.DedupKey != "" && !w.rateLimiter.Allow(payload.DedupKey) {
-		slog.Debug("webhook: rate limited, skipping send",
-			slog.String("dedup_key", payload.DedupKey),
-			slog.String("event", payload.Event),
-		)
-		return nil
+	if payload.Event == "alert_firing" && payload.DedupKey != "" {
+		rlKey := payload.Severity + ":" + payload.DedupKey
+		if !w.rateLimiter.Allow(rlKey) {
+			slog.Debug("webhook: rate limited, skipping send",
+				slog.String("dedup_key", payload.DedupKey),
+				slog.String("event", payload.Event),
+			)
+			return nil
+		}
 	}
 
 	body, err := json.Marshal(payload)

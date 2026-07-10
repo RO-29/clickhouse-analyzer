@@ -55,7 +55,7 @@ func (c *DictionaryCollector) collectDictionaries(ctx context.Context, client *c
 
 	result.AddMetric(client.Name(), "dictionaries.total_count", float64(len(rows)), nil)
 
-	var notLoaded int
+	var failed int
 	for _, row := range rows {
 		db := getString(row, "database")
 		name := getString(row, "name")
@@ -76,51 +76,45 @@ func (c *DictionaryCollector) collectDictionaries(ctx context.Context, client *c
 		result.AddMetric(client.Name(), "dictionaries.loading_duration_sec", loadingDuration, labels)
 		result.AddMetric(client.Name(), "dictionaries.bytes_allocated", bytesAllocated, labels)
 
-		// Status check: LOADED is healthy; anything else is problematic.
 		isLoaded := status == "LOADED"
 		if isLoaded {
 			result.AddMetric(client.Name(), "dictionaries.loaded", 1, labels)
 		} else {
 			result.AddMetric(client.Name(), "dictionaries.loaded", 0, labels)
-			notLoaded++
+		}
 
-			sev := SeverityWarn
-			msg := fmt.Sprintf("Dictionary %s status is %s", fqn, status)
-			if lastException != "" {
-				sev = SeverityCritical
-				if len(lastException) > 200 {
-					lastException = lastException[:200] + "..."
-				}
-				msg += fmt.Sprintf(", last_exception: %s", lastException)
+		// Only a dictionary with a real load exception is an actionable failure.
+		// A bare non-LOADED status is NOT: dictionaries created with LAYOUT
+		// lifetime / lazy loading sit in NOT_LOADED until first use by design,
+		// and FAILED_AND_RELOADING is a transient state that self-heals. Alerting
+		// on status alone flagged those permanently. FAILED with an exception is
+		// the real signal.
+		if lastException != "" {
+			failed++
+			if len(lastException) > 200 {
+				lastException = lastException[:200] + "..."
 			}
-			msg += "\n\n" + dictionariesStatusPlaybook
-
-			result.AddAlert(client.Name(), sev, "dictionaries",
-				"Dictionary not loaded",
-				msg,
+			result.AddAlert(client.Name(), SeverityCritical, "dictionaries",
+				"Dictionary failed to load",
+				fmt.Sprintf("Dictionary %s status is %s with a load error.\n\nlast_exception: %s\n\n%s",
+					fqn, status, lastException, dictionariesStatusPlaybook),
 				fmt.Sprintf("%s:dictionaries:status:%s", client.Name(), fqn))
 		}
-
-		// Flag if element_count is 0 for a LOADED dictionary (possibly
-		// misconfigured source).
-		if isLoaded && elementCount == 0 {
-			result.AddAlert(client.Name(), SeverityWarn, "dictionaries",
-				"Dictionary loaded but empty",
-				fmt.Sprintf("Dictionary %s is LOADED but has 0 elements. Source may be misconfigured.\n\n%s",
-					fqn, dictionariesStatusPlaybook),
-				fmt.Sprintf("%s:dictionaries:empty:%s", client.Name(), fqn))
-		}
+		// element_count == 0 on a LOADED dictionary is intentionally NOT alerted:
+		// dictionaries backed by a legitimately-empty source are common and this
+		// produced permanent warn noise. The element_count metric is emitted for
+		// anyone who wants to chart it.
 	}
 
-	result.AddMetric(client.Name(), "dictionaries.not_loaded_count", float64(notLoaded), nil)
+	result.AddMetric(client.Name(), "dictionaries.failed_count", float64(failed), nil)
 
-	// Detect consecutive reload failures via last_exception being set on
-	// multiple dictionaries. If more than the threshold have errors, escalate.
-	if notLoaded >= c.Thresholds.ReloadFailThreshold {
+	// Escalate when several dictionaries are failing with load errors at once —
+	// usually a shared upstream source or credential problem.
+	if failed >= c.Thresholds.ReloadFailThreshold {
 		result.AddAlert(client.Name(), SeverityCritical, "dictionaries",
 			"Multiple dictionaries failing to load",
-			fmt.Sprintf("%d dictionaries are not in LOADED status (threshold: %d)\n\n%s",
-				notLoaded, c.Thresholds.ReloadFailThreshold, dictionariesStatusPlaybook),
+			fmt.Sprintf("%d dictionaries have load errors (threshold: %d) — check their shared source.\n\n%s",
+				failed, c.Thresholds.ReloadFailThreshold, dictionariesStatusPlaybook),
 			fmt.Sprintf("%s:dictionaries:multi_fail", client.Name()))
 	}
 }

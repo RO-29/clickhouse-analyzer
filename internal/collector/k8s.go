@@ -50,8 +50,13 @@ func (c *K8sCollector) Collect(ctx context.Context, client *chclient.Client) (*C
 		return result, nil // graceful degradation
 	}
 
-	c.collectPodStatus(ctx, result)
-	c.collectPodMetrics(ctx, result)
+	// Associate K8s findings with the ClickHouse instance being polled. Using a
+	// literal "k8s" here meant the alerter's per-instance store lookup found no
+	// client, so the alert was never persisted or shown and PagerDuty re-fired
+	// forever with no resolve.
+	instance := client.Name()
+	c.collectPodStatus(ctx, result, instance)
+	c.collectPodMetrics(ctx, result, instance)
 
 	result.Duration = time.Since(start)
 	return result, nil
@@ -95,7 +100,7 @@ func (c *K8sCollector) doInitClients() error {
 
 // collectPodStatus queries the K8s API for pod status: restarts, OOMKills,
 // container states, and resource limits.
-func (c *K8sCollector) collectPodStatus(ctx context.Context, result *CollectResult) {
+func (c *K8sCollector) collectPodStatus(ctx context.Context, result *CollectResult, instance string) {
 	namespace := c.Config.Namespace
 	if namespace == "" {
 		namespace = "default"
@@ -115,7 +120,7 @@ func (c *K8sCollector) collectPodStatus(ctx context.Context, result *CollectResu
 		return
 	}
 
-	result.AddMetric("k8s", "k8s.pods.count", float64(len(pods.Items)), map[string]string{
+	result.AddMetric(instance, "k8s.pods.count", float64(len(pods.Items)), map[string]string{
 		"namespace": namespace,
 	})
 
@@ -132,7 +137,7 @@ func (c *K8sCollector) collectPodStatus(ctx context.Context, result *CollectResu
 		if phase == "Running" {
 			running = 1.0
 		}
-		result.AddMetric("k8s", "k8s.pod.running", running, podLabels)
+		result.AddMetric(instance, "k8s.pod.running", running, podLabels)
 
 		for _, cs := range pod.Status.ContainerStatuses {
 			cLabels := map[string]string{
@@ -142,10 +147,10 @@ func (c *K8sCollector) collectPodStatus(ctx context.Context, result *CollectResu
 			}
 
 			restarts := float64(cs.RestartCount)
-			result.AddMetric("k8s", "k8s.container.restarts", restarts, cLabels)
+			result.AddMetric(instance, "k8s.container.restarts", restarts, cLabels)
 
 			if restarts > 5 {
-				result.AddAlert("k8s", SeverityWarn, "k8s",
+				result.AddAlert(instance, SeverityWarn, "k8s",
 					"Container restart count high",
 					fmt.Sprintf("Pod %s container %s has %d restarts",
 						podName, cs.Name, cs.RestartCount),
@@ -154,8 +159,8 @@ func (c *K8sCollector) collectPodStatus(ctx context.Context, result *CollectResu
 
 			// Detect OOMKilled.
 			if isOOMKilled(cs) {
-				result.AddMetric("k8s", "k8s.container.oomkill", 1, cLabels)
-				result.AddAlert("k8s", SeverityCritical, "k8s",
+				result.AddMetric(instance, "k8s.container.oomkill", 1, cLabels)
+				result.AddAlert(instance, SeverityCritical, "k8s",
 					"Container OOMKilled",
 					fmt.Sprintf("Pod %s container %s was OOMKilled (restarts: %d)",
 						podName, cs.Name, cs.RestartCount),
@@ -172,19 +177,19 @@ func (c *K8sCollector) collectPodStatus(ctx context.Context, result *CollectResu
 			}
 
 			if limMem, ok := container.Resources.Limits[corev1.ResourceMemory]; ok {
-				result.AddMetric("k8s", "k8s.container.limit.memory_bytes",
+				result.AddMetric(instance, "k8s.container.limit.memory_bytes",
 					float64(limMem.Value()), cLabels)
 			}
 			if limCPU, ok := container.Resources.Limits[corev1.ResourceCPU]; ok {
-				result.AddMetric("k8s", "k8s.container.limit.cpu_millicores",
+				result.AddMetric(instance, "k8s.container.limit.cpu_millicores",
 					float64(limCPU.MilliValue()), cLabels)
 			}
 			if reqMem, ok := container.Resources.Requests[corev1.ResourceMemory]; ok {
-				result.AddMetric("k8s", "k8s.container.request.memory_bytes",
+				result.AddMetric(instance, "k8s.container.request.memory_bytes",
 					float64(reqMem.Value()), cLabels)
 			}
 			if reqCPU, ok := container.Resources.Requests[corev1.ResourceCPU]; ok {
-				result.AddMetric("k8s", "k8s.container.request.cpu_millicores",
+				result.AddMetric(instance, "k8s.container.request.cpu_millicores",
 					float64(reqCPU.MilliValue()), cLabels)
 			}
 		}
@@ -193,7 +198,7 @@ func (c *K8sCollector) collectPodStatus(ctx context.Context, result *CollectResu
 
 // collectPodMetrics queries the Metrics API (metrics.k8s.io) for live
 // resource usage of ClickHouse pods.
-func (c *K8sCollector) collectPodMetrics(ctx context.Context, result *CollectResult) {
+func (c *K8sCollector) collectPodMetrics(ctx context.Context, result *CollectResult, instance string) {
 	namespace := c.Config.Namespace
 	if namespace == "" {
 		namespace = "default"
@@ -226,9 +231,9 @@ func (c *K8sCollector) collectPodMetrics(ctx context.Context, result *CollectRes
 			cpuNano := cm.Usage.Cpu().MilliValue()
 			memBytes := cm.Usage.Memory().Value()
 
-			result.AddMetric("k8s", "k8s.container.usage.cpu_millicores",
+			result.AddMetric(instance, "k8s.container.usage.cpu_millicores",
 				float64(cpuNano), cLabels)
-			result.AddMetric("k8s", "k8s.container.usage.memory_bytes",
+			result.AddMetric(instance, "k8s.container.usage.memory_bytes",
 				float64(memBytes), cLabels)
 		}
 	}

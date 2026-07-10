@@ -31,11 +31,15 @@ func (c *AsyncInsertsCollector) Collect(ctx context.Context, client *chclient.Cl
 	result := &CollectResult{}
 
 	// system.asynchronous_insert_log is available in CH 22.4+.
+	// status is Enum8('Ok' = 1, 'ParsingError' = 2, 'FlushError' = 3); a flush
+	// failure — the data-loss case — is status = 'FlushError'. (The previous
+	// 'ExceptionWhileFlushing'/'Flushed' values do not exist in any CH release,
+	// so this check silently never fired.)
 	logSQL := `
 		SELECT
 			count() AS total,
-			countIf(status = 'ExceptionWhileFlushing') AS errors,
-			countIf(status = 'Flushed') AS flushed
+			countIf(status = 'FlushError') AS errors,
+			countIf(status = 'Ok') AS flushed
 		FROM system.asynchronous_insert_log
 		WHERE event_time > now() - INTERVAL 5 MINUTE`
 

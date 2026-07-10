@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/rohitjain/ch-analyzer/internal/chclient"
@@ -16,6 +17,12 @@ type InsertCollector struct {
 	Thresholds      config.InsertsThresholds
 	PollingInterval time.Duration // used as the "current interval" window
 	Logger          *slog.Logger
+
+	// lastRejected holds the previous poll's cumulative RejectedInserts counter
+	// per instance, so we can alert on the delta (new rejections this interval)
+	// rather than the lifetime total. Keyed by instance name.
+	mu           sync.Mutex
+	lastRejected map[string]float64
 }
 
 func (c *InsertCollector) Name() string { return "inserts" }
@@ -413,23 +420,37 @@ func (c *InsertCollector) collectIngestDelay(ctx context.Context, client *chclie
 		}
 	}
 
-	// system.events: cumulative counter — diff via system.query_log not
-	// available, so we compute rate from RejectedInserts as a per-second figure
-	// using the live counter divided by the server uptime, with our own
-	// poll-interval fallback. Cheaper alternative: ProfileEvents in query_log,
-	// but we want "rejected anywhere" not "rejected by some specific query".
+	// system.events.RejectedInserts is a cumulative counter since server start.
+	// Alerting on the raw value would fire critical forever after the first-ever
+	// rejection (and never resolve). Instead we track the previous poll's value
+	// per instance and alert only on the DELTA — rejections that happened in
+	// this interval. The very first poll only records a baseline.
 	rejSQL := `SELECT value FROM system.events WHERE event = 'RejectedInserts'`
 	if raw, rerr := client.QuerySingleValue(ctx, rejSQL); rerr == nil && raw != "" {
 		if rejected, perr := toFloat64(raw); perr == nil {
 			result.AddMetric(client.Name(), "inserts.rejected.total", rejected, nil)
-			// Rate is meaningful only relative to a baseline. Surface the raw
-			// counter via the metric; alert only when it's clearly active —
-			// any non-zero value seen this cycle, gated by a cooldown via the
-			// dedup key including the rounded count so re-fires reset.
-			if rejected > 0 && c.Thresholds.RejectedInsertsRateWarn > 0 {
+
+			c.mu.Lock()
+			if c.lastRejected == nil {
+				c.lastRejected = make(map[string]float64)
+			}
+			prev, hadPrev := c.lastRejected[client.Name()]
+			c.lastRejected[client.Name()] = rejected
+			c.mu.Unlock()
+
+			// Counter can reset to a smaller value across a CH restart; treat a
+			// regression as "no new rejections this interval".
+			delta := 0.0
+			if hadPrev && rejected >= prev {
+				delta = rejected - prev
+			}
+			result.AddMetric(client.Name(), "inserts.rejected.delta", delta, nil)
+
+			if hadPrev && delta > 0 && c.Thresholds.RejectedInsertsRateWarn > 0 {
 				result.AddAlert(client.Name(), SeverityCritical, "inserts",
 					"INSERTs rejected (TOO_MANY_PARTS)",
-					fmt.Sprintf("ClickHouse has rejected *%.0f INSERTs* total (`system.events.RejectedInserts`). "+
+					fmt.Sprintf("ClickHouse rejected *%.0f INSERT(s) in the last %ds* "+
+						"(`system.events.RejectedInserts`, %.0f total since start). "+
 						"Each rejection is a dropped client request — `parts_to_throw_insert` was crossed for some partition.\n\n"+
 						"*Investigate:*\n```\n"+
 						"-- Which exception code is the application seeing\n"+
@@ -444,7 +465,7 @@ func (c *InsertCollector) collectIngestDelay(ctx context.Context, client *chclie
 						"FROM system.parts WHERE active\n"+
 						"GROUP BY database, table, partition\n"+
 						"HAVING parts > 500 ORDER BY parts DESC LIMIT 20\n```",
-						rejected, intervalSec),
+						delta, intervalSec, rejected, intervalSec),
 					fmt.Sprintf("%s:inserts:rejected", client.Name()))
 			}
 		}

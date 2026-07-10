@@ -224,7 +224,11 @@ func (s *Server) handleAdvisorTableAntiPatterns(w http.ResponseWriter, r *http.R
 			FROM system.tables
 			WHERE database NOT IN ` + skipDBs + `
 			  AND engine LIKE '%MergeTree%'
-			  AND (has_ttl_expression = 0 OR has_ttl_expression IS NULL)
+			  -- system.tables has no has_ttl_expression column; TTL presence is
+			  -- visible in the DDL. Exclude any table whose DDL mentions TTL at
+			  -- all (table- or column-level) to avoid advising "add a TTL" to a
+			  -- table that already has one.
+			  AND create_table_query NOT ILIKE '%TTL%'
 			  AND total_bytes > 53687091200
 			ORDER BY total_bytes DESC
 			LIMIT 25`,

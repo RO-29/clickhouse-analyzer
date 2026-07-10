@@ -42,7 +42,7 @@ describe('resolveView', () => {
     expect(resolveView('runcheck')).toBe('runcheck')
   })
 
-  // ── All 17 valid views ───────────────────────────────────────────────────
+  // ── All 18 valid views ───────────────────────────────────────────────────
   const allViews: View[] = [
     'overview',
     'detail',
@@ -61,10 +61,11 @@ describe('resolveView', () => {
     'runcheck',
     'audit',
     'thresholds',
+    'guide',
   ]
 
-  it('has exactly 17 valid views', () => {
-    expect(VALID_VIEWS).toHaveLength(17)
+  it('has exactly 18 valid views', () => {
+    expect(VALID_VIEWS).toHaveLength(18)
   })
 
   it('VALID_VIEWS contains every expected route', () => {

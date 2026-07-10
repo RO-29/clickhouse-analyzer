@@ -84,5 +84,16 @@ func DefaultInhibitionRules() []InhibitionRule {
 			TargetCategory: "inserts",
 			TargetSeverity: "warn",
 		},
+		{
+			// Broken replication makes replicas read-only / rejects inserts, so
+			// the insert-failure warnings are downstream symptoms of the same root
+			// cause. (Keeper is the root of this chain, but keeper alerts are
+			// categorised "system"; the replication:critical alert is the reliable
+			// proximate signal to inhibit on.)
+			SourceCategory: "replication",
+			SourceSeverity: "critical",
+			TargetCategory: "inserts",
+			TargetSeverity: "warn",
+		},
 	}
 }

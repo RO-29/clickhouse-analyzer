@@ -3,6 +3,7 @@ package web
 
 import (
 	"context"
+	"crypto/subtle"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -166,7 +167,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	s.srv = &http.Server{
 		Addr:              s.addr,
-		Handler:           recoveryMiddleware(mux),
+		Handler:           recoveryMiddleware(s.authMiddleware(mux)),
 		ReadHeaderTimeout: 10 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
@@ -367,6 +368,23 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/api/") {
 		http.NotFound(w, r)
 		return
+	}
+	// Token bootstrap: when API auth is enabled, visiting `/?token=<t>` once with
+	// the correct token sets an httpOnly cookie so the same-origin SPA's /api/*
+	// calls authenticate automatically — no login screen or bundle change needed.
+	if s.cfg != nil && s.cfg.Security.APIToken != "" {
+		if t := r.URL.Query().Get("token"); t != "" && tokenEqual(t, s.cfg.Security.APIToken) {
+			http.SetCookie(w, &http.Cookie{
+				Name:     "ch_analyzer_token",
+				Value:    t,
+				Path:     "/",
+				HttpOnly: true,
+				SameSite: http.SameSiteLaxMode,
+				Secure:   r.TLS != nil,
+			})
+			http.Redirect(w, r, "/", http.StatusFound)
+			return
+		}
 	}
 	data, err := staticFS.ReadFile("static/index.html")
 	if err != nil {
@@ -1575,6 +1593,54 @@ func writeErr(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
+// authMiddleware gates /api/* behind a bearer token when one is configured.
+// When security.api_token is empty it is a no-op, preserving the default
+// single-binary experience. Static assets and the SPA shell (/, /assets/) and
+// the liveness endpoint (/health) are always reachable so the app can bootstrap
+// and load balancers can probe it.
+//
+// The token is accepted as `Authorization: Bearer <t>`, `X-API-Token: <t>`, or
+// the `ch_analyzer_token` cookie — the cookie lets the bundled SPA authenticate
+// after a one-time `?token=` visit (see handleIndex) without a rebuild.
+func (s *Server) authMiddleware(next http.Handler) http.Handler {
+	token := ""
+	if s.cfg != nil {
+		token = s.cfg.Security.APIToken
+	}
+	if token == "" {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/") || requestHasToken(r, token) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		w.Header().Set("WWW-Authenticate", `Bearer realm="ch-analyzer"`)
+		writeErr(w, http.StatusUnauthorized, "authentication required")
+	})
+}
+
+// requestHasToken reports whether r carries the expected API token via any of
+// the accepted transports, using a constant-time comparison.
+func requestHasToken(r *http.Request, token string) bool {
+	if h := r.Header.Get("Authorization"); h != "" {
+		if t, ok := strings.CutPrefix(h, "Bearer "); ok && tokenEqual(t, token) {
+			return true
+		}
+	}
+	if t := r.Header.Get("X-API-Token"); t != "" && tokenEqual(t, token) {
+		return true
+	}
+	if c, err := r.Cookie("ch_analyzer_token"); err == nil && tokenEqual(c.Value, token) {
+		return true
+	}
+	return false
+}
+
+func tokenEqual(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
 // recoveryMiddleware catches panics in HTTP handlers, logs the stack trace,
 // and returns a 500 to the client instead of crashing the server.
 func recoveryMiddleware(next http.Handler) http.Handler {
@@ -1659,16 +1725,20 @@ func (s *Server) handleResolveAlert(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "dedup_key required")
 		return
 	}
-	if err := s.store.ResolveAlert(body.DedupKey); err != nil {
+	// Route through the alert manager so the resolution fires its side effects
+	// (PagerDuty resolve, webhook alert_resolved, ack clear, Slack refresh) and
+	// resets the clean-check counter. Resolving via store.ResolveAlert directly
+	// would close the DB row but leave the PagerDuty incident open forever.
+	if s.alertMgr != nil {
+		if err := s.alertMgr.ResolveAndNotify(body.DedupKey); err != nil {
+			slog.Warn("resolve alert failed", "err", err, "dedup_key", body.DedupKey)
+			writeErr(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
+	} else if err := s.store.ResolveAlert(body.DedupKey); err != nil {
 		slog.Warn("resolve alert failed", "err", err, "dedup_key", body.DedupKey)
 		writeErr(w, http.StatusInternalServerError, "internal server error")
 		return
-	}
-	// Reset the clean-check counter so the next reconcile doesn't carry a
-	// stale count for this key. If the condition is still firing, reconcile
-	// will re-insert a fresh DB row on the next tick — that's intended.
-	if s.alertMgr != nil {
-		s.alertMgr.ClearCleanChecks(body.DedupKey)
 	}
 	slog.Info("alert resolved via API", "dedup_key", body.DedupKey)
 
@@ -1686,7 +1756,15 @@ func (s *Server) handleResolveStale(w http.ResponseWriter, r *http.Request) {
 	if hours < 1 {
 		hours = 1
 	}
-	resolved, err := s.store.BulkResolveStale(hours)
+	// Route through the alert manager so each resolved alert fires its resolve
+	// side effects (PagerDuty resolve, webhook) instead of just closing DB rows.
+	var resolved int64
+	var err error
+	if s.alertMgr != nil {
+		resolved, err = s.alertMgr.ResolveStaleAndNotify(time.Duration(hours) * time.Hour)
+	} else {
+		resolved, err = s.store.BulkResolveStale(hours)
+	}
 	if err != nil {
 		slog.Warn("bulk resolve stale failed", "err", err, "hours", hours)
 		writeErr(w, http.StatusInternalServerError, "internal server error")

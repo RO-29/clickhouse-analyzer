@@ -35,13 +35,17 @@ func (c *TTLCollector) Collect(ctx context.Context, client *chclient.Client) (*C
 	result := &CollectResult{}
 
 	// --- Stuck TTL / MODIFY mutations ---
+	// Scope to TTL operations only. The old '%MODIFY%' clause matched every
+	// ALTER … MODIFY COLUMN mutation and mislabeled them as TTL work; generic
+	// stuck mutations are already covered by TableCollector's mutation check.
+	// '%TTL%' catches MATERIALIZE TTL and MODIFY TTL.
 	mutSQL := `
 		SELECT database, table,
 			count() AS pending,
 			min(create_time) AS oldest_create
 		FROM system.mutations
 		WHERE NOT is_done
-		  AND (command LIKE '%TTL%' OR command LIKE '%MODIFY%')
+		  AND command LIKE '%TTL%'
 		  AND create_time < now() - INTERVAL 1 HOUR
 		GROUP BY database, table
 		ORDER BY oldest_create ASC
@@ -134,21 +138,14 @@ func (c *TTLCollector) Collect(ctx context.Context, client *chclient.Client) (*C
 		partCount := getFloat(row, "part_count")
 		oldestDays := getFloat(row, "oldest_part_days")
 
-		dedupKey := fmt.Sprintf("%s:ttl:stale_ttl_table:%s.%s", client.Name(), db, tbl)
+		// Metric only — no alert. "Oldest part is N days old" cannot be judged
+		// without the table's actual TTL interval: a `TTL date + INTERVAL 90 DAY`
+		// table legitimately holds 89-day-old parts, and the old >30d threshold
+		// flagged them as "TTL not running". Parsing the interval reliably from
+		// the DDL isn't worth the false positives, so this stays a charted metric.
+		_ = partCount
 		result.AddMetric(client.Name(), "ttl.stale_table_days", oldestDays,
 			map[string]string{"database": db, "table": tbl})
-
-		if oldestDays > 30 {
-			result.AddAlert(client.Name(), SeverityWarn, "tables",
-				fmt.Sprintf("TTL may not be running on %s.%s (oldest part %.0fd)", db, tbl, oldestDays),
-				fmt.Sprintf("Table `%s.%s` has TTL configured but %.0f active parts — oldest is %.0f days old. "+
-					"Expected TTL to have expired some by now.\n\n"+
-					"*Check:*\n```\nSELECT ttl_expression FROM system.tables\nWHERE database='%s' AND name='%s'\n\n"+
-					"SELECT count(), min(modification_time), max(modification_time)\nFROM system.parts\n"+
-					"WHERE database='%s' AND table='%s' AND active=1\n```",
-					db, tbl, partCount, oldestDays, db, tbl, db, tbl),
-				dedupKey)
-		}
 	}
 
 	result.Duration = time.Since(start)

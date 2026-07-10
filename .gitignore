@@ -3,3 +3,13 @@ bin/
 
 # Claude Code local state
 .claude/
+
+# Secrets — real credentials must never be committed. These are excluded
+# repo-locally (not just via a user-global gitignore) so a fresh clone or a
+# different machine can't accidentally track them.
+configs/staging-env.yaml
+**/ai-changes-md/
+*-staging.yaml
+*.secret.yaml
+.env
+.env.local

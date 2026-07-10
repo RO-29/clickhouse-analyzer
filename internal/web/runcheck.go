@@ -200,6 +200,10 @@ type triggerAlertRequest struct {
 // Writes a single alert directly into the alerts table — equivalent to what the
 // background poll would do when it fires the same condition.
 func (s *Server) handleTriggerAlert(w http.ResponseWriter, r *http.Request) {
+	// Promotes a Run Check finding into the live alerts table. It writes directly
+	// to the store, bypassing inhibition/notification — acceptable for a manual,
+	// operator-initiated promotion, and protected like every other endpoint by
+	// the API-token middleware when auth is enabled.
 	if s.store == nil {
 		writeErr(w, http.StatusServiceUnavailable, "store not available")
 		return

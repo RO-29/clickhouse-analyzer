@@ -305,13 +305,19 @@ func (am *AlertManager) ReconcileWithObservation(ctx context.Context, currentAle
 
 	// ── Compute diff ────────────────────────────────────────────────────────
 	var (
-		toInsert []collector.Alert // firing now, no open DB row
-		toTouch  []collector.Alert // firing now, open DB row (refresh in place)
-		missing  []collector.Alert // open DB row, not firing now
+		toInsert  []collector.Alert // firing now, no open DB row
+		toTouch   []collector.Alert // firing now, open DB row (refresh in place)
+		missing   []collector.Alert // open DB row, not firing now
+		escalated []collector.Alert // open DB row whose severity increased this cycle
 	)
 	for key, a := range currentByKey {
-		if _, ok := dbByKey[key]; ok {
+		if db, ok := dbByKey[key]; ok {
 			toTouch = append(toTouch, a)
+			// severityOrder: critical=0 < warn=1 < info=2, so a smaller order is
+			// a higher severity. An increase (e.g. warn -> critical) must notify.
+			if severityOrder(a.Severity) < severityOrder(db.Severity) {
+				escalated = append(escalated, a)
+			}
 		} else {
 			toInsert = append(toInsert, a)
 		}
@@ -371,7 +377,7 @@ func (am *AlertManager) ReconcileWithObservation(ctx context.Context, currentAle
 		}
 
 		// Snooze: persist but don't notify.
-		if am.snooze != nil && am.snooze.IsSnoozed(a.DedupKey) {
+		if am.snooze != nil && am.snooze.IsSnoozed(a.DedupKey, a.Instance) {
 			am.logger.Debug("alert snoozed",
 				slog.String("dedup_key", a.DedupKey),
 				slog.String("instance", a.Instance))
@@ -382,6 +388,23 @@ func (am *AlertManager) ReconcileWithObservation(ctx context.Context, currentAle
 		toPersist = append(toPersist, a)
 		toNotify = append(toNotify, a)
 		dirtyInstances[a.Instance] = true
+	}
+
+	// ── Severity escalation (warn -> critical on an already-open alert) ──────
+	// This is a touch, not an insert, so it doesn't flow through the loop above.
+	// Force an immediate refresh (bypassing the rate limit) so the DB severity
+	// updates now, then notify unless suppressed — otherwise an alert going
+	// critical would silently ride the existing warn row and never page.
+	if len(escalated) > 0 {
+		if err := am.store.RefreshAlerts(escalated); err != nil {
+			am.logger.Debug("refresh escalated alerts failed", slog.String("err", err.Error()))
+		}
+		for _, a := range escalated {
+			if am.notifiable(a, inhibActive) {
+				toNotify = append(toNotify, a)
+				dirtyInstances[a.Instance] = true
+			}
+		}
 	}
 
 	// ── Clean-check accounting + resolve candidates ─────────────────────────
@@ -446,37 +469,7 @@ func (am *AlertManager) ReconcileWithObservation(ctx context.Context, currentAle
 				slog.String("err", err.Error()))
 			continue
 		}
-		if am.ack != nil {
-			am.ack.ClearForDedupKey(a.DedupKey)
-		}
-		if am.pagerduty != nil {
-			if perr := am.pagerduty.ResolveAlert(a.DedupKey); perr != nil {
-				am.logger.Warn("pagerduty resolve failed",
-					slog.String("dedup_key", a.DedupKey),
-					slog.String("err", perr.Error()))
-			}
-		}
-		if am.webhook != nil {
-			wp := WebhookPayload{
-				Event:     "alert_resolved",
-				Instance:  a.Instance,
-				Severity:  string(a.Severity),
-				Category:  a.Category,
-				Title:     a.Title,
-				Message:   a.Message,
-				DedupKey:  a.DedupKey,
-				FiredAt:   a.FirstSeenAt,
-				FireCount: a.FireCount,
-			}
-			if werr := am.webhook.Send(wp); werr != nil {
-				am.logger.Warn("webhook send (resolve) failed",
-					slog.String("dedup_key", a.DedupKey),
-					slog.String("err", werr.Error()))
-			}
-		}
-		am.logger.Info("alert resolved",
-			slog.String("dedup_key", a.DedupKey),
-			slog.String("instance", a.Instance))
+		am.notifyResolved(a)
 	}
 
 	// ── Info batch ──────────────────────────────────────────────────────────
@@ -550,6 +543,140 @@ func (am *AlertManager) ReconcileWithObservation(ctx context.Context, currentAle
 	}
 
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Resolution side effects — shared by every resolve path
+// ---------------------------------------------------------------------------
+
+// notifyResolved fires the external side effects of a resolution: clear any
+// acknowledgment, resolve the PagerDuty incident, and emit the webhook
+// alert_resolved event. It is called from EVERY resolve path (reconcile
+// clean-check, UI resolve, and the stale sweep) so a PagerDuty incident is
+// never left open after the alert clears — previously only the clean-check
+// path notified, so UI and stale-sweep resolutions leaked open incidents.
+func (am *AlertManager) notifyResolved(a collector.Alert) {
+	if am.ack != nil {
+		am.ack.ClearForDedupKey(a.DedupKey)
+	}
+	if am.pagerduty != nil {
+		if perr := am.pagerduty.ResolveAlert(a.DedupKey); perr != nil {
+			am.logger.Warn("pagerduty resolve failed",
+				slog.String("dedup_key", a.DedupKey),
+				slog.String("err", perr.Error()))
+		}
+	}
+	if am.webhook != nil {
+		wp := WebhookPayload{
+			Event:     "alert_resolved",
+			Instance:  a.Instance,
+			Severity:  string(a.Severity),
+			Category:  a.Category,
+			Title:     a.Title,
+			Message:   a.Message,
+			DedupKey:  a.DedupKey,
+			FiredAt:   a.FirstSeenAt,
+			FireCount: a.FireCount,
+		}
+		if werr := am.webhook.Send(wp); werr != nil {
+			am.logger.Warn("webhook send (resolve) failed",
+				slog.String("dedup_key", a.DedupKey),
+				slog.String("err", werr.Error()))
+		}
+	}
+	am.logger.Info("alert resolved",
+		slog.String("dedup_key", a.DedupKey),
+		slog.String("instance", a.Instance))
+}
+
+// ResolveAndNotify resolves a single alert by dedup_key and fires all resolve
+// side effects (PagerDuty resolve, webhook, ack clear, Slack refresh). UI
+// resolve handlers must call this instead of store.ResolveAlert directly, or
+// the PagerDuty incident stays open forever.
+func (am *AlertManager) ResolveAndNotify(dedupKey string) error {
+	if am.store == nil {
+		return fmt.Errorf("resolve: store not configured")
+	}
+	var found *collector.Alert
+	for _, a := range am.store.GetAllActiveAlerts() {
+		if a.DedupKey == dedupKey {
+			cp := a
+			found = &cp
+			break
+		}
+	}
+	if err := am.store.ResolveAlert(dedupKey); err != nil {
+		return err
+	}
+	am.ClearCleanChecks(dedupKey)
+	if found != nil {
+		am.notifyResolved(*found)
+		am.updateInstanceMessage(found.Instance)
+	} else {
+		// Row already gone from the active set; still close the external incident.
+		am.notifyResolved(collector.Alert{DedupKey: dedupKey})
+	}
+	return nil
+}
+
+// ResolveStaleAndNotify resolves every alert whose updated_at is older than
+// olderThan and fires resolve side effects for each. It diffs the active set
+// before and after so it works regardless of how the store bulk-resolves.
+// Returns the number resolved.
+func (am *AlertManager) ResolveStaleAndNotify(olderThan time.Duration) (int64, error) {
+	if am.store == nil {
+		return 0, fmt.Errorf("resolve stale: store not configured")
+	}
+	before := am.store.GetAllActiveAlerts()
+	n, err := am.store.AutoResolveStale(olderThan)
+	if err != nil {
+		return 0, err
+	}
+	if n > 0 {
+		am.notifyResolvedDiff(before)
+	}
+	return n, nil
+}
+
+// notifyResolvedDiff compares the active set against a prior snapshot and fires
+// resolve side effects for every alert that disappeared, then refreshes the
+// affected instances' Slack messages.
+func (am *AlertManager) notifyResolvedDiff(before []collector.Alert) {
+	after := am.store.GetAllActiveAlerts()
+	stillActive := make(map[string]bool, len(after))
+	for _, a := range after {
+		stillActive[a.DedupKey] = true
+	}
+	instances := make(map[string]bool)
+	for _, a := range before {
+		if !stillActive[a.DedupKey] {
+			am.notifyResolved(a)
+			instances[a.Instance] = true
+		}
+	}
+	for inst := range instances {
+		am.updateInstanceMessage(inst)
+	}
+}
+
+// notifiable reports whether an alert should produce a notification this cycle,
+// applying the same suppression rules as the new-insert path: info severity,
+// maintenance windows, inhibition, and snooze all suppress notification (the
+// alert is still persisted for the UI). Used for severity escalations.
+func (am *AlertManager) notifiable(a collector.Alert, inhibActive map[string]*ActiveAlert) bool {
+	if a.Severity == collector.SeverityInfo {
+		return false
+	}
+	if am.maintenance != nil && am.maintenance.IsInMaintenance(a.Instance) {
+		return false
+	}
+	if am.inhibition != nil && am.inhibition.IsInhibited(ActiveAlert{Alert: a}, inhibActive) {
+		return false
+	}
+	if am.snooze != nil && am.snooze.IsSnoozed(a.DedupKey, a.Instance) {
+		return false
+	}
+	return true
 }
 
 // ---------------------------------------------------------------------------
@@ -645,8 +772,10 @@ func (am *AlertManager) heartbeatTick() {
 	// the configured stale threshold. This handles the case where cleanChecks
 	// can't resolve (process restarted, counter lost) or flapping conditions
 	// keep resetting the counter but the underlying condition is actually gone.
+	// ResolveStaleAndNotify fires the same resolve side effects as the reconcile
+	// path (PagerDuty resolve, webhook) so swept ghosts don't leak open incidents.
 	if am.staleResolveAfter > 0 {
-		if n, err := am.store.AutoResolveStale(am.staleResolveAfter); err != nil {
+		if n, err := am.ResolveStaleAndNotify(am.staleResolveAfter); err != nil {
 			am.logger.Warn("stale sweep failed", slog.String("err", err.Error()))
 		} else if n > 0 {
 			am.logger.Info("stale sweep resolved alerts",
@@ -689,6 +818,25 @@ func (am *AlertManager) heartbeatTick() {
 		}
 		if hasEscalated && time.Since(last) <= am.escalation.RepeatEvery {
 			continue
+		}
+		// Acknowledgment stops escalation: if every active non-info alert on the
+		// instance has been acked, someone is already handling it, so the
+		// "firing for N minutes with no response" notice must not fire — that is
+		// precisely what an ack is for.
+		if am.ack != nil {
+			allAcked := true
+			for _, a := range am.store.GetActiveAlertsForInstance(inst) {
+				if a.Severity == collector.SeverityInfo {
+					continue
+				}
+				if !am.ack.IsAcked(a.DedupKey) {
+					allAcked = false
+					break
+				}
+			}
+			if allAcked {
+				continue
+			}
 		}
 		firingMinutes := int(time.Since(first).Minutes())
 		if am.slack != nil {
@@ -808,6 +956,14 @@ func (am *AlertManager) GetActiveAlertsForInstance(instance string) []*ActiveAle
 	var result []*ActiveAlert
 	for _, a := range am.store.GetActiveAlertsForInstance(instance) {
 		if a.Severity == collector.SeverityInfo {
+			continue
+		}
+		// Snoozed alerts are hidden from the Slack per-instance message (and thus
+		// from escalation), so snoozing an ALREADY-firing alert actually silences
+		// it — previously snooze only suppressed the initial notify and a firing
+		// alert kept appearing in Slack and driving escalation. The alert stays
+		// visible in the UI (which reads the store directly).
+		if am.snooze != nil && am.snooze.IsSnoozed(a.DedupKey, a.Instance) {
 			continue
 		}
 		result = append(result, projectActiveAlert(a))

@@ -157,20 +157,24 @@ func (c *QueryCollector) collectRunningQueries(ctx context.Context, client *chcl
 			fmt.Sprintf("%s:queries:long_running_warn", client.Name()))
 	}
 
-	// Single grouped alert for full table scans.
+	// Single grouped alert for full table scans. Info-level: reading >1B rows is
+	// frequently the intended shape of a large GROUP BY/aggregation, so this is
+	// advisory (surfaced in the UI, folded into digests) rather than a page.
 	if len(fullScans) > 0 {
-		msg := fmt.Sprintf("*%d queries* doing full table scans (>1B rows):\n%s\n\n%s",
+		msg := fmt.Sprintf("*%d queries* reading >1B rows (possible missing PK/partition pruning):\n%s\n\n%s",
 			len(fullScans), strings.Join(fullScans, "\n"), fullScansPlaybook)
-		result.AddAlert(client.Name(), SeverityWarn, "queries",
-			fmt.Sprintf("Full table scans: %d queries", len(fullScans)),
+		result.AddAlert(client.Name(), SeverityInfo, "queries",
+			fmt.Sprintf("High-row-scan queries: %d", len(fullScans)),
 			msg,
 			fmt.Sprintf("%s:queries:full_scans", client.Name()))
 	}
 
-	// Single grouped alert for query storms.
+	// Single grouped alert for query storms — one user monopolising the server.
+	// The floor must be high enough that a normal dashboard/BI user issuing a
+	// handful of concurrent queries doesn't trip it.
 	stormThreshold := c.Thresholds.WarnConcurrent / 2
-	if stormThreshold < 5 {
-		stormThreshold = 5
+	if stormThreshold < 20 {
+		stormThreshold = 20
 	}
 	var storms []string
 	for user, count := range userCounts {
@@ -218,9 +222,21 @@ func (c *QueryCollector) collectFailedQueries(ctx context.Context, client *chcli
 
 	result.AddMetric(client.Name(), "queries.failed_5m", float64(len(rows)), nil)
 
-	if len(rows) > 0 {
+	// Require a floor before alerting. A handful of exceptions in 5 minutes on a
+	// busy cluster is background noise (bad user SQL, transient client issues) —
+	// only a real spike is actionable.
+	warnFloor := c.Thresholds.FailuresWarnCount
+	if warnFloor <= 0 {
+		warnFloor = 10
+	}
+	critFloor := c.Thresholds.FailuresCriticalCount
+	if critFloor <= warnFloor {
+		critFloor = warnFloor * 5
+	}
+
+	if len(rows) >= warnFloor {
 		severity := SeverityWarn
-		if len(rows) > 20 {
+		if len(rows) >= critFloor {
 			severity = SeverityCritical
 		}
 		exCounts := make(map[string]int)
@@ -281,7 +297,6 @@ func (c *QueryCollector) collectTimeouts(ctx context.Context, client *chclient.C
 
 	var lines []string
 	totalCount := 0
-	hasCrit := false
 
 	for _, row := range rows {
 		code := int64(getFloat(row, "exception_code"))
@@ -294,9 +309,6 @@ func (c *QueryCollector) collectTimeouts(ctx context.Context, client *chclient.C
 		}
 		lines = append(lines, fmt.Sprintf("  - %s (%d): %dx user=%s sample: %s", name, code, cnt, user, sample))
 		totalCount += cnt
-		if cnt > 5 {
-			hasCrit = true
-		}
 
 		result.AddMetric(client.Name(), "queries.timeouts_5m", float64(cnt), map[string]string{
 			"exception_code": fmt.Sprintf("%d", code),
@@ -304,8 +316,23 @@ func (c *QueryCollector) collectTimeouts(ctx context.Context, client *chclient.C
 		})
 	}
 
+	// Timeouts and cancellations are usually the client's own max_execution_time
+	// working as intended, so a few are expected. Require a floor, matching the
+	// failure-alert behaviour, so only a genuine spike pages anyone.
+	warnFloor := c.Thresholds.TimeoutsWarnCount
+	if warnFloor <= 0 {
+		warnFloor = 10
+	}
+	critFloor := c.Thresholds.TimeoutsCriticalCount
+	if critFloor <= warnFloor {
+		critFloor = warnFloor * 5
+	}
+	if totalCount < warnFloor {
+		return
+	}
+
 	sev := SeverityWarn
-	if hasCrit {
+	if totalCount >= critFloor {
 		sev = SeverityCritical
 	}
 

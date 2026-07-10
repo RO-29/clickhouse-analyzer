@@ -48,6 +48,21 @@ type Config struct {
 	Maintenance MaintenanceConfig  `yaml:"maintenance"`
 	Escalation  EscalationConfig   `yaml:"escalation"`
 	Alerting    AlertingConfig     `yaml:"alerting"`
+	Security    SecurityConfig     `yaml:"security"`
+}
+
+// SecurityConfig holds opt-in hardening for the dashboard/API. Defaults keep
+// existing single-binary deployments working (no auth) while defaulting TLS
+// verification ON (the safe posture) and test-only endpoints OFF.
+type SecurityConfig struct {
+	// APIToken, when non-empty, requires every /api/* request to present the
+	// token via `Authorization: Bearer <t>`, an `X-API-Token: <t>` header, or a
+	// `ch_analyzer_token` cookie. Empty = no authentication (unchanged default).
+	// Overridable at runtime with the CH_ANALYZER_API_TOKEN environment variable.
+	APIToken string `yaml:"api_token"`
+	// TLSSkipVerify disables ClickHouse TLS certificate verification. Defaults to
+	// false (verify) — set true only for self-signed certs in trusted networks.
+	TLSSkipVerify bool `yaml:"tls_skip_verify"`
 }
 
 // AlertingConfig holds alerter-wide knobs that don't fit the per-threshold or
@@ -141,6 +156,13 @@ type QueriesThresholds struct {
 	LongRunningWarnThreshold Duration `yaml:"long_running_warn_threshold"`
 	MaxConcurrent            int      `yaml:"max_concurrent"`
 	WarnConcurrent           int      `yaml:"warn_concurrent"`
+	// Floors for recent-failure / timeout alerts. Firing on a single exception
+	// in a 5-minute window (no floor) is the classic monitoring noise generator:
+	// one user typo pages the on-call. Alerts fire only at/above these counts.
+	FailuresWarnCount     int `yaml:"failures_warn_count"`
+	FailuresCriticalCount int `yaml:"failures_critical_count"`
+	TimeoutsWarnCount     int `yaml:"timeouts_warn_count"`
+	TimeoutsCriticalCount int `yaml:"timeouts_critical_count"`
 }
 
 type PartsThresholds struct {
@@ -338,10 +360,17 @@ func Defaults() *Config {
 				CriticalPercent: 95,
 			},
 			Queries: QueriesThresholds{
-				LongRunningThreshold:     Duration{time.Minute},
-				LongRunningWarnThreshold: Duration{30 * time.Second},
+				// OLAP queries routinely run for minutes; 30s/60s defaults paged on
+				// normal analytical work. Raised to values that indicate a genuinely
+				// stuck or runaway query.
+				LongRunningThreshold:     Duration{5 * time.Minute},
+				LongRunningWarnThreshold: Duration{2 * time.Minute},
 				MaxConcurrent:            100,
 				WarnConcurrent:           50,
+				FailuresWarnCount:        10,
+				FailuresCriticalCount:    50,
+				TimeoutsWarnCount:        10,
+				TimeoutsCriticalCount:    50,
 			},
 			Parts: PartsThresholds{
 				WarnCount:             1000,
@@ -352,10 +381,18 @@ func Defaults() *Config {
 				MaxPartsPerPartition:  1000,
 			},
 			Merges: MergesThresholds{
-				MaxActive:            20,
-				WarnActive:           10,
-				MinActiveWhenBacklog: 30,
-				BacklogPartCount:     1000,
+				MaxActive:  20,
+				WarnActive: 10,
+				// "Stalled" means essentially no merges are running (< 1, i.e. 0)
+				// while a real backlog of active parts exists. This must stay well
+				// below WarnActive/MaxActive or the stalled and too-many-merges
+				// alerts contradict each other: the old default of 30 (> MaxActive
+				// 20) made every merge count simultaneously "stalled" and "too many"
+				// once the backlog floor was crossed. The floor is also raised to a
+				// genuinely concerning cluster-wide part count (a healthy busy
+				// cluster routinely holds a few thousand active parts).
+				MinActiveWhenBacklog: 1,
+				BacklogPartCount:     5000,
 			},
 			Mutations: MutationsThresholds{
 				StuckThreshold: Duration{30 * time.Minute},

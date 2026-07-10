@@ -237,7 +237,19 @@ func (s *Store) Database() string { return s.database }
 // on an unrelated node's alerts table, making it invisible to the UI filter
 // and triggering nonsense Slack routing. Callers must now handle nil.
 func (s *Store) clientFor(instance string) *chclient.Client {
-	return s.manager.Get(instance)
+	if c := s.manager.Get(instance); c != nil {
+		return c
+	}
+	// Fleet-wide actions (alert_resolve_stale, threshold_update, snooze/ack/
+	// maintenance deletes) log with an empty instance. Fall back to the first
+	// registered instance so those actions are actually audited rather than
+	// silently dropped, which is what happened when Get("") returned nil.
+	if instance == "" {
+		if names := s.manager.Names(); len(names) > 0 {
+			return s.manager.Get(names[0])
+		}
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -599,10 +611,10 @@ func (s *Store) GetActiveAlerts(instance string) ([]Alert, error) {
 	// DESC — then filter WHERE resolved = 0. That way ghost duplicates don't
 	// inflate counts across UI views.
 	sql := fmt.Sprintf(`SELECT id, instance, severity, category, title, message,
-			resolved, resolved_at, created_at, dedup_key, updated_at
+			resolved, resolved_at, created_at, dedup_key, updated_at, first_seen_at, fire_count
 		FROM (
 			SELECT id, instance, severity, category, title, message,
-				resolved, resolved_at, created_at, dedup_key, updated_at
+				resolved, resolved_at, created_at, dedup_key, updated_at, first_seen_at, fire_count
 			FROM %s.alerts
 			WHERE instance = '%s'
 			ORDER BY dedup_key, created_at DESC, version DESC
@@ -651,10 +663,10 @@ func (s *Store) GetAlertHistory(instance string, from, to time.Time, limit int) 
 	defer cancel()
 
 	sql := fmt.Sprintf(`SELECT id, instance, severity, category, title, message,
-			resolved, resolved_at, created_at, dedup_key, updated_at
+			resolved, resolved_at, created_at, dedup_key, updated_at, first_seen_at, fire_count
 		FROM (
 			SELECT id, instance, severity, category, title, message,
-				resolved, resolved_at, created_at, dedup_key, updated_at
+				resolved, resolved_at, created_at, dedup_key, updated_at, first_seen_at, fire_count
 			FROM %s.alerts
 			WHERE instance = '%s'
 			AND created_at >= '%s' AND created_at <= '%s'
@@ -787,11 +799,15 @@ func (s *Store) GetHealthTrend(ctx context.Context, instance string, from, to ti
 		bucketSize = 14400 // maximum 4 hours
 	}
 
+	// Use max() per bucket, not sum(): a single critical firing continuously
+	// across a bucket is recorded once per poll, so sum() reported "240 criticals"
+	// for one alert over a 4h bucket at 1-minute polls. max() reflects the worst
+	// concurrent count in the bucket, which is what the trend chart should show.
 	sql := fmt.Sprintf(`SELECT
 		toDateTime(intDiv(toUInt32(ts), %d) * %d) AS bucket_ts,
 		avg(score) AS avg_score,
-		sum(criticals) AS sum_criticals,
-		sum(warns) AS sum_warns
+		max(criticals) AS sum_criticals,
+		max(warns) AS sum_warns
 	FROM %s.health_snapshots
 	WHERE instance = '%s'
 	AND ts >= '%s' AND ts <= '%s'

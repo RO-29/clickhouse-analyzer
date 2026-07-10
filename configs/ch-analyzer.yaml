@@ -160,3 +160,19 @@ prometheus:
 # ---------------------------------------------------------------------------
 k8s:
   enabled: false
+
+# ---------------------------------------------------------------------------
+# Security (opt-in hardening — defaults preserve the open single-binary UX
+# except TLS verification, which defaults ON)
+# ---------------------------------------------------------------------------
+security:
+  # Require a token on every /api/* request. Empty = no auth (the dashboard,
+  # SQL terminal, and KILL QUERY are open to anyone who can reach the port).
+  # Set this (or the CH_ANALYZER_API_TOKEN env var) whenever the port is
+  # network-reachable. Present the token as `Authorization: Bearer <token>`,
+  # `X-API-Token: <token>`, or visit `https://host:8080/?token=<token>` once to
+  # set the auth cookie for the bundled UI.
+  api_token: ""
+  # Verify ClickHouse TLS certificates. Leave false (verify) unless you use
+  # self-signed certs on a trusted network, in which case set true.
+  tls_skip_verify: false

@@ -81,17 +81,26 @@ func (c *SlowQueryFingerprintCollector) Collect(ctx context.Context, client *chc
 		result.AddMetric(client.Name(), "queries.pattern_exec_count_5m", execCount,
 			map[string]string{"hash": hash, "user": user})
 
-		if execCount > 200 || (execCount > 50 && avgMs > 5000) {
+		// Severity tracks aggregate LOAD (frequency × per-exec cost), not raw
+		// frequency. The old thresholds fired *critical* at 200 exec/5min — that's
+		// 0.67 QPS of one pattern, i.e. ordinary application traffic. A pattern is
+		// only worth paging on if it is both frequent AND non-trivially slow, so
+		// the aggregate query-time it burns is real. Purely-frequent, fast patterns
+		// are advisory (surfaced by the repeated-patterns info alert), not here.
+		switch {
+		case execCount >= 100 && avgMs >= 5000:
 			result.AddAlert(client.Name(), SeverityCritical, "queries",
-				fmt.Sprintf("Query storm: %.0f executions/5min, avg %.0fms", execCount, avgMs),
-				fmt.Sprintf("Single query pattern executed *%.0f times* in 5 minutes (avg %.0fms, max %.0fms, user: %s).\n\n"+
+				fmt.Sprintf("Heavy repeated query: %.0f×/5min at avg %.1fs", execCount, avgMs/1000),
+				fmt.Sprintf("One query pattern ran *%.0f times* in 5 minutes at avg %.0fms (max %.0fms, user: %s) — "+
+					"roughly %.0f query-seconds of load from a single pattern.\n\n"+
 					"*Sample query:*\n```\n%s\n```\n\n%s",
-					execCount, avgMs, maxMs, user, displayQuery, slowQueryByHashPlaybook(hash)),
+					execCount, avgMs, maxMs, user, execCount*avgMs/1000, displayQuery, slowQueryByHashPlaybook(hash)),
 				dedupKey)
-		} else if execCount > 50 || (execCount > 10 && avgMs > 30000) {
+		case execCount >= 50 && avgMs >= 1000:
 			result.AddAlert(client.Name(), SeverityWarn, "queries",
-				fmt.Sprintf("High-frequency pattern: %.0f exec/5min, avg %.0fms", execCount, avgMs),
-				fmt.Sprintf("Query pattern executed %.0f times in 5 min (avg %.0fms, max %.0fms, user: %s).\n\n"+
+				fmt.Sprintf("Frequent slow query: %.0f×/5min at avg %.1fs", execCount, avgMs/1000),
+				fmt.Sprintf("Query pattern ran %.0f times in 5 min at avg %.0fms (max %.0fms, user: %s). "+
+					"Consider caching or a materialized view.\n\n"+
 					"*Sample query:*\n```\n%s\n```\n\n%s",
 					execCount, avgMs, maxMs, user, displayQuery, slowQueryByHashPlaybook(hash)),
 				dedupKey)

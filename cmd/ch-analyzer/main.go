@@ -78,9 +78,9 @@ func main() {
 			os.Exit(1)
 		}
 		client := chclient.NewClient(*instCfg, chclient.ClientOptions{
-			ConnectTimeout: 10 * time.Second,
-			QueryTimeout:   30 * time.Second,
-			InsecureSkipVerify: true,
+			ConnectTimeout:     10 * time.Second,
+			QueryTimeout:       30 * time.Second,
+			InsecureSkipVerify: cfg.Security.TLSSkipVerify,
 		})
 		ctx := context.Background()
 		web.RunMCPServer(ctx, client)
@@ -119,6 +119,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Environment override for the API token so it need not be written to the
+	// config file on disk.
+	if tok := os.Getenv("CH_ANALYZER_API_TOKEN"); tok != "" {
+		cfg.Security.APIToken = tok
+	}
+	if cfg.Security.APIToken == "" {
+		slog.Warn("API authentication is DISABLED — the dashboard/API (including the SQL terminal and KILL QUERY) is open to anyone who can reach the port; set security.api_token or CH_ANALYZER_API_TOKEN to require a token")
+	}
+	if cfg.Security.TLSSkipVerify {
+		slog.Warn("ClickHouse TLS certificate verification is DISABLED (security.tls_skip_verify=true)")
+	}
+
 	slog.Info("config loaded", "instances", len(cfg.Instances), "poll_interval", cfg.Polling.Interval.String())
 
 	// Context with signal handling
@@ -148,9 +160,9 @@ func main() {
 		}
 	}
 	clientMgr := chclient.NewManager(instances, chclient.ClientOptions{
-		ConnectTimeout:    10 * time.Second,
-		QueryTimeout:      30 * time.Second,
-		InsecureSkipVerify: true,
+		ConnectTimeout:     10 * time.Second,
+		QueryTimeout:       30 * time.Second,
+		InsecureSkipVerify: cfg.Security.TLSSkipVerify,
 	})
 
 	// Ping all instances
@@ -364,7 +376,7 @@ func main() {
 
 	// Start Slack Socket Mode app (slash commands + interactive buttons + pinned dashboard).
 	if cfg.Slack.BotToken != "" && cfg.Slack.AppToken != "" {
-		app := slackapp.New(cfg.Slack, cfg.Web.ListenAddr, alertMgr, maintenanceStore, ackStore, clientMgr)
+		app := slackapp.New(cfg.Slack, cfg.Web.ListenAddr, alertMgr, maintenanceStore, snoozeStore, ackStore, clientMgr)
 		go func() {
 			slog.Info("slack socket mode app starting")
 			app.Run(ctx)
