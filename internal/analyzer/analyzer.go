@@ -276,19 +276,25 @@ func (a *Analyzer) computeHealthScore(instance string, alerts, crossAlerts []col
 		seen[k] = true
 		switch alert.Severity {
 		case collector.SeverityCritical:
-			totalDeduct += 10
+			totalDeduct += 30
 		case collector.SeverityWarn:
-			totalDeduct += 3
+			totalDeduct += 8
 		case collector.SeverityInfo:
-			totalDeduct += 1
+			totalDeduct += 2
 		}
 	}
 
-	// Cap total deduction at 50.
-	// With 10 possible categories all critical: 100 → capped → min score 50.
-	// Typical "has some issues" node (3 criticals): ~30 deducted → score ~70 (yellow).
-	if totalDeduct > 50 {
-		totalDeduct = 50
+	// Deductions are per distinct (category, severity), so scores map to the UI
+	// bands (critical <50, warning <80, else healthy) as:
+	//   0 issues            -> 100  healthy
+	//   1 critical category ->  70  warning
+	//   2 critical categories-> 40  critical
+	//   3 warn categories   ->  76  warning
+	// The old code capped deductions at 50, so the score floored at 50 and the
+	// "critical" band (<50) — and any SLO metric counting score<50 — was
+	// literally unreachable. Allow the score to fall to 0.
+	if totalDeduct > 100 {
+		totalDeduct = 100
 	}
 	score -= totalDeduct
 
