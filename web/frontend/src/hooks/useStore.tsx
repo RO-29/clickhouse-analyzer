@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from 'react'
+import { createContext, useContext, useState, useCallback, useEffect, useRef, type ReactNode } from 'react'
 import { presetToRange } from '../lib/utils'
 import type { ChatSession } from '../types/api'
 import { resolveView, type View } from './viewRouting'
@@ -165,14 +165,41 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       }))
     } catch { return [] }
   })
+  // Persisting chat sessions means serializing up to 100 sessions (with all
+  // their messages) and writing localStorage. During SSE streaming setChatSessions
+  // is called on every chunk, so doing that write inline stringified everything
+  // on the main thread per token. Update React state synchronously (the UI needs
+  // it live) but debounce the persist, and flush on unmount / tab-hide so nothing
+  // is lost.
+  const persistTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const latestSessions = useRef<ChatSession[]>([])
+  const flushSessions = useCallback(() => {
+    if (persistTimer.current) { clearTimeout(persistTimer.current); persistTimer.current = null }
+    try { localStorage.setItem('ch-chat-sessions', JSON.stringify(latestSessions.current)) } catch {}
+  }, [])
   const setChatSessions = useCallback((updater: ChatSession[] | ((prev: ChatSession[]) => ChatSession[])) => {
     setChatSessionsState(prev => {
       const next = typeof updater === 'function' ? updater(prev) : updater
       const trimmed = next.slice(0, 100)
-      try { localStorage.setItem('ch-chat-sessions', JSON.stringify(trimmed)) } catch {}
+      latestSessions.current = trimmed
+      if (persistTimer.current) clearTimeout(persistTimer.current)
+      persistTimer.current = setTimeout(flushSessions, 400)
       return trimmed
     })
-  }, [])
+  }, [flushSessions])
+
+  // Flush the debounced session write when the tab is hidden or closed so the
+  // last streamed content survives a reload/close within the debounce window.
+  useEffect(() => {
+    const onHide = () => { if (document.visibilityState === 'hidden') flushSessions() }
+    window.addEventListener('beforeunload', flushSessions)
+    document.addEventListener('visibilitychange', onHide)
+    return () => {
+      window.removeEventListener('beforeunload', flushSessions)
+      document.removeEventListener('visibilitychange', onHide)
+      flushSessions()
+    }
+  }, [flushSessions])
 
   // Sync chat sessions across tabs — when another tab writes ch-chat-sessions,
   // update local state so all tabs stay consistent (last-write-wins sync).
